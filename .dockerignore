@@ -1,0 +1,13 @@
+.git
+.github
+.env
+.env.*
+!.env.portainer.example
+**/node_modules
+**/dist
+**/coverage
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.log
+backend/server

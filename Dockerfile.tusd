@@ -1,0 +1,10 @@
+# syntax=docker/dockerfile:1
+FROM tusproject/tusd:v2.10.0
+
+USER root
+COPY deploy/tusd-entrypoint.sh /usr/local/bin/wedding-gallery-tusd
+RUN chmod 0555 /usr/local/bin/wedding-gallery-tusd
+USER 1000:1000
+
+EXPOSE 1080
+ENTRYPOINT ["/usr/local/bin/wedding-gallery-tusd"]

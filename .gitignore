@@ -1,0 +1,6 @@
+.env
+.env.local
+backend/server
+frontend/coverage/
+frontend/dist/
+frontend/node_modules/

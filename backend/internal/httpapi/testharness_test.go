@@ -71,7 +71,7 @@ func newTestHarness(t *testing.T) *testHarness {
 // backend URL (used to stand in for tusd via httptest.Server).
 func (h *testHarness) withTusTarget(t *testing.T, targetURL string) {
 	t.Helper()
-	proxy, err := newTusReverseProxy(targetURL, h.cfg.TusHookSecret)
+	proxy, err := newTusReverseProxy(targetURL, h.cfg.TusHookSecret, h.cfg.TrustedProxyCIDRs)
 	if err != nil {
 		t.Fatalf("new tus reverse proxy: %v", err)
 	}

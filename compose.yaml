@@ -1,0 +1,101 @@
+name: wedding-gallery
+
+services:
+  app:
+    image: ghcr.io/nikolaxmarkovic/wedding-gallery:${APP_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in the Portainer stack environment}"
+      TUS_HOOK_SECRET: "${TUS_HOOK_SECRET:?Set TUS_HOOK_SECRET in the Portainer stack environment}"
+      TUS_INTERNAL_URL: "http://tusd:1080"
+      TRUSTED_PROXY_CIDRS: "${EDGE_SUBNET:-172.30.0.0/24}"
+      MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-314572800}"
+      COOKIE_SECURE: "true"
+      TZ: "${TZ:-UTC}"
+      UMASK: "${UMASK:-022}"
+    volumes:
+      - type: bind
+        source: "${APP_DATA_PATH:?Set APP_DATA_PATH to an existing NAS directory}"
+        target: /data/app
+      - type: bind
+        source: "${MEDIA_PATH:?Set MEDIA_PATH to an existing NAS directory}"
+        target: /data/media
+      - type: bind
+        source: "${TUS_UPLOAD_PATH:?Set TUS_UPLOAD_PATH to an existing NAS directory}"
+        target: /data/tusd-incoming
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    networks:
+      - edge
+      - uploads
+    depends_on:
+      tusd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  tusd:
+    image: ghcr.io/nikolaxmarkovic/wedding-gallery-tusd:${APP_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    read_only: true
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      TUS_UPLOAD_DIR: /data/tusd-incoming
+      TUS_HOOKS_URL: "http://app:8080/api/internal/tus-hooks"
+      MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-314572800}"
+      UMASK: "${UMASK:-022}"
+    volumes:
+      - type: bind
+        source: "${TUS_UPLOAD_PATH:?Set TUS_UPLOAD_PATH to an existing NAS directory}"
+        target: /data/tusd-incoming
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    networks:
+      - uploads
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:1080/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.2
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in the Portainer stack environment}"
+    command: tunnel run
+    networks:
+      - edge
+    depends_on:
+      app:
+        condition: service_healthy
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: "${EDGE_SUBNET:-172.30.0.0/24}"
+  uploads:
+    internal: true

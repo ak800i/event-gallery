@@ -12,7 +12,7 @@ import (
 // controls better suited to large binary uploads.
 func (s *Server) publicRateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := clientIP(r)
+		ip := clientIP(r, s.cfg.TrustedProxyCIDRs)
 		if !s.publicLimiter.Allow(ip) {
 			w.Header().Set("Retry-After", "5")
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded, please slow down")
@@ -47,7 +47,7 @@ func (rec *statusRecorder) WriteHeader(status int) {
 // requestLogger logs one structured line per request with method, path,
 // status, duration, and client IP -- useful for spotting abuse patterns
 // even without a dedicated log aggregator.
-func requestLogger(next http.Handler) http.Handler {
+func (s *Server) requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
@@ -57,7 +57,7 @@ func requestLogger(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", rec.status,
 			"duration_ms", time.Since(start).Milliseconds(),
-			"ip", clientIP(r),
+			"ip", clientIP(r, s.cfg.TrustedProxyCIDRs),
 		)
 	})
 }
