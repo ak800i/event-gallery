@@ -1,126 +1,201 @@
 # Wedding Gallery
 
-A self-hosted wedding photo and video gallery with resumable uploads, an
-administration UI, and SQLite storage. The production image contains the Go
-API and React UI; `tusd` handles resumable upload transport behind the API.
+A private, self-hosted photo and video gallery for a single wedding. Guests
+open one mobile-friendly page, enter a display name, upload media, and browse
+the gallery without creating an account or installing an app. A
+password-protected admin area provides moderation and gallery settings.
 
-## Portainer deployment
+## Features
 
-The supplied `compose.yaml` is intended for a Portainer Git stack on a NAS. It
-pulls prebuilt `linux/amd64` or `linux/arm64` images from GHCR and runs:
+### Guest gallery
 
-- `cloudflared` on the outbound-capable `edge` network;
-- `app` on `edge` and the isolated `uploads` network;
-- `tusd` only on `uploads`.
+- Remembers each guest's display name on their device and attributes uploads to
+  that name.
+- Displays photos and playable videos in an infinite-scroll gallery and
+  lightbox.
+- Sorts by upload time or EXIF capture time.
+- Supports per-device likes and individual original-file downloads.
+- Accepts only configured image and video MIME types and enforces a configurable
+  maximum file size.
 
-No service publishes a host port. The application is reachable only through
-the Cloudflare Tunnel, and `tusd` is reachable only through the application.
+### Reliable large uploads
 
-### 1. Prepare NAS directories
+- Uses the tus resumable upload protocol with 8 MiB requests, safely below
+  Cloudflare's 100 MB request-body limit.
+- Retries failed chunks automatically and resumes interrupted uploads instead
+  of restarting the file.
+- Calculates a SHA-256 checksum for each chunk and verifies it before accepting
+  the chunk.
+- Calculates a whole-file SHA-256 hash in the browser to skip known duplicates,
+  then verifies the completed file again on the server before storing it.
+- Limits public requests, concurrent uploads, and upload bandwidth per client
+  IP.
 
-Create three persistent directories. The paths below are examples:
+### Administration
+
+Open `/admin` and sign in with the password supplied through
+`ADMIN_PASSWORD`. There is no username. An administrator can:
+
+- select one or more files and move them to trash;
+- browse trashed files and restore them;
+- review uploads, deletes, restores, logins, and configuration changes in the
+  audit log;
+- set an upload expiry date. After expiry, browsing and downloads remain
+  available, but new uploads are rejected.
+
+Deleted originals are moved into a trash area beneath the media directory; they
+are retained on disk and excluded from the public gallery.
+
+## Architecture
+
+The production stack contains three containers:
+
+- **app**: the Go API, React frontend, SQLite database access, media processing,
+  authorization, and upload proxy;
+- **tusd**: resumable upload transport, available only to `app` on an isolated
+  Docker network;
+- **cloudflared**: outbound Cloudflare Tunnel connection to the public
+  hostname.
+
+No host ports are published. Cloudflare sends traffic to `http://app:8080`, and
+guests cannot reach `tusd` directly. SQLite data and generated thumbnails are
+stored separately from original media.
+
+## Deploy on Synology with Portainer
+
+The supplied `compose.yaml` is ready to use as a Portainer Git stack. It pulls
+multi-architecture images from GHCR and restarts containers automatically after
+a NAS reboot.
+
+### 1. Prepare persistent directories
+
+Create these directories on the NAS:
 
 ```text
-/volume1/docker/wedding-gallery/app
-/volume1/photos/wedding-gallery
-/volume1/docker/wedding-gallery/uploads
+/volume1/data/media/wedding-photos
+/volume2/docker-data/wedding-gallery/app
+/volume2/docker-data/wedding-gallery/uploads
 ```
 
-The numeric `PUID` and `PGID` configured in Portainer must own all three
-directories and have read/write/execute access. The app directory contains
-SQLite state and thumbnails, the media directory contains original files, and
-the uploads directory is temporary shared storage used while `tusd` finishes
-an upload.
+The first directory stores original media and its trash area. The `app`
+directory stores SQLite data and thumbnails. The `uploads` directory holds
+incomplete tus uploads and does not normally need to be backed up.
+
+Ensure user `1027` and group `65536` own all three directories and can read,
+write, and traverse them:
+
+```sh
+sudo chown -R 1027:65536 \
+  /volume1/data/media/wedding-photos \
+  /volume2/docker-data/wedding-gallery
+```
 
 ### 2. Create the Cloudflare Tunnel
 
 In Cloudflare Zero Trust:
 
 1. Create a remotely managed Cloudflare Tunnel.
-2. Add a public hostname for the gallery.
-3. Set its service type to HTTP and URL to `http://app:8080`.
-4. Copy the tunnel token for the Portainer environment.
+2. Add the public hostname guests will use.
+3. Set its service type to **HTTP** and its URL to `http://app:8080`.
+4. Copy the tunnel token.
 
-Cloudflare terminates public TLS. `COOKIE_SECURE` remains enabled in the stack,
-so use the HTTPS public hostname for administration. Do not add a host port for
-the app or `tusd`.
+Cloudflare terminates TLS, so use the public HTTPS hostname. Do not publish a
+host port for `app` or `tusd`.
 
-For large uploads, ensure Cloudflare account limits and any policies permit the
-configured file size and long-running resumable requests.
+### 3. Configure the Portainer stack
 
-### 3. Create the Portainer Git stack
+In Portainer, create a stack from this Git repository and select
+`compose.yaml`. Add the following environment variables in the stack
+configuration:
 
-Create a stack from this repository and select `compose.yaml`. Add the
-variables from `.env.portainer.example` in Portainer's **Environment
-variables** section. At minimum, replace:
+```dotenv
+# Use an immutable sha-<40-character-commit> or release tag from GHCR.
+APP_IMAGE_TAG=sha-REPLACE_WITH_FULL_COMMIT_SHA
 
-- `APP_DATA_PATH`, `MEDIA_PATH`, and `TUS_UPLOAD_PATH` with existing absolute
-  NAS paths;
-- `ADMIN_PASSWORD` with a strong password of at least 8 characters;
-- `TUS_HOOK_SECRET` with an independent random value of at least 16 characters
-  (32 bytes or more is recommended);
-- `CLOUDFLARE_TUNNEL_TOKEN` with the remotely managed tunnel token;
-- `PUID` and `PGID` with the owner of the NAS directories.
+APP_DATA_PATH=/volume2/docker-data/wedding-gallery/app
+MEDIA_PATH=/volume1/data/media/wedding-photos
+TUS_UPLOAD_PATH=/volume2/docker-data/wedding-gallery/uploads
 
-Generate secrets locally, for example with `openssl rand -hex 32`. Never put
-real values in Git.
+PUID=1027
+PGID=65536
+TZ=Europe/Belgrade
+UMASK=022
 
-`EDGE_SUBNET` defaults to `172.30.0.0/24`. Change it if that range overlaps
-another NAS network. The backend trusts forwarded client IP headers only from
-this subnet; requests from any other peer cannot spoof those headers.
+# Set independent secret values. Do not commit them to this repository.
+ADMIN_PASSWORD=REPLACE_WITH_A_STRONG_PASSWORD
+TUS_HOOK_SECRET=REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS
+CLOUDFLARE_TUNNEL_TOKEN=REPLACE_WITH_THE_TUNNEL_TOKEN
 
-The GHCR packages must be public, or Portainer must be configured with a GHCR
-registry credential that can pull them. Deploy the stack, then confirm all
-three containers are running and `app` and `tusd` are healthy.
+# 1 GiB; increase if guests need to upload larger videos.
+MAX_UPLOAD_BYTES=1073741824
 
-### Image tags and releases
+# Change this if it overlaps another Docker or LAN subnet.
+EDGE_SUBNET=172.30.0.0/24
+```
 
-`.github/workflows/containers.yml` tests the backend and frontend, then builds
-both container images for `linux/amd64` and `linux/arm64`. Pushes to `main`
-publish `latest` and `sha-<full-commit>` tags. Git tags beginning with `v`
-also publish the matching release tag.
+Generate independent secrets locally, for example with
+`openssl rand -hex 32`. `ADMIN_PASSWORD` must contain at least 8 characters and
+`TUS_HOOK_SECRET` at least 16. Never commit actual passwords or tokens.
 
-For repeatable deployments, set `APP_IMAGE_TAG` to a
-`sha-<full-commit>` or release tag instead of `latest`. The same tag is
-published for both application and `tusd` images.
+The GHCR packages must be public, or Portainer must have a registry credential
+that can pull them. Prefer an immutable `sha-...` or release image tag rather
+than `latest` so redeployments remain repeatable.
 
-## Operations
+### 4. Deploy and verify
 
-### Health and logs
+Deploy the stack and confirm that `app`, `tusd`, and `cloudflared` are running
+and that the first two report healthy. Then test from a phone on mobile data:
 
-The app health check calls `/healthz`, which verifies SQLite connectivity.
-The `tusd` health check reads its internal metrics endpoint. Both endpoints are
-container-internal and are not published on the NAS.
+1. Open the HTTPS public hostname and save a guest display name.
+2. Upload a photo and a video larger than 500 MB.
+3. Interrupt the video upload, reload, and confirm that it resumes.
+4. Confirm both items appear, the video plays, and the original photo
+   downloads.
+5. Upload the same photo again and confirm it is skipped.
+6. Open `/admin`, test trash and restore, and inspect the audit log.
 
-Use Portainer container logs for startup validation. Common startup failures
-are missing secrets, unwritable bind mounts, an overlapping `EDGE_SUBNET`, or
-a Cloudflare hostname that does not target `http://app:8080`.
+Use Portainer container logs to diagnose startup failures. Common causes are
+missing secrets, incorrect directory ownership, an overlapping `EDGE_SUBNET`,
+or a Tunnel hostname that does not target `http://app:8080`.
 
-### Backups and restoration
+## Configuration
+
+The most useful optional application settings are:
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `MAX_UPLOAD_BYTES` | `314572800` | Maximum whole-file size in bytes |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE` | `120` | Sustained public requests per IP |
+| `PUBLIC_RATE_LIMIT_BURST` | `40` | Public request burst allowance |
+| `UPLOAD_CONCURRENCY_PER_IP` | `3` | Concurrent upload requests per IP |
+| `UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC` | `3145728` | Upload bandwidth per IP |
+| `ADMIN_SESSION_TTL_MINUTES` | `720` | Admin session lifetime |
+| `THUMBNAIL_MAX_DIMENSION` | `800` | Longest thumbnail edge in pixels |
+| `ALLOWED_IMAGE_MIME_TYPES` | common image formats | Comma-separated image MIME types |
+| `ALLOWED_VIDEO_MIME_TYPES` | MP4, QuickTime, WebM | Comma-separated video MIME types |
+
+The stack enables secure cookies and configures trusted proxy addresses
+automatically. Only change those internal settings if you also change the
+network design.
+
+## Backups, upgrades, and restoration
 
 For a consistent backup:
 
-1. Stop the stack so SQLite and media writes are quiescent.
-2. Back up `APP_DATA_PATH` and `MEDIA_PATH` together.
-3. Start the stack again.
+1. Stop the stack so SQLite and media writes are idle.
+2. Back up `/volume2/docker-data/wedding-gallery/app` and
+   `/volume1/data/media/wedding-photos` together.
+3. Start the stack.
 
-`TUS_UPLOAD_PATH` contains incomplete uploads and normally does not need to be
-backed up. To restore, stop the stack, restore the two persistent directories
-to their original paths with the configured ownership, and redeploy the same
-image tag. Database migrations run automatically at startup.
+To restore, stop the stack, restore both directories with ownership
+`1027:65536`, select the same immutable image tag, and redeploy. Database
+migrations run automatically at startup.
 
-### Upgrade and rollback
+Before upgrading, take a backup and change `APP_IMAGE_TAG` to the tested release
+or commit tag. To roll back after a database migration, restore the matching
+pre-upgrade data and media backup as well as the earlier image tag.
 
-To upgrade, choose a tested release or commit tag in `APP_IMAGE_TAG`, pull and
-redeploy the stack, and verify health and an upload. Back up first because a
-new version may migrate SQLite.
-
-To roll back application code, restore the matching pre-upgrade backup and set
-`APP_IMAGE_TAG` to the previous immutable tag. Redeploying an older image
-against a database already migrated by a newer version is not guaranteed to
-work.
-
-## Local validation
+## Development and validation
 
 Backend:
 
@@ -142,7 +217,7 @@ npm test
 npm run build
 ```
 
-Render the deployment configuration without starting it:
+Render the production deployment configuration without starting it:
 
 ```sh
 docker compose --env-file .env.portainer.example config
