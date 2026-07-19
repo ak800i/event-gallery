@@ -13,6 +13,7 @@ func clearEnv(t *testing.T) {
 		"UPLOAD_CONCURRENCY_PER_IP", "UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC",
 		"COOKIE_SECURE", "ADMIN_SESSION_TTL_MINUTES", "THUMBNAIL_MAX_DIMENSION",
 		"ALLOWED_IMAGE_MIME_TYPES", "ALLOWED_VIDEO_MIME_TYPES", "GUEST_NAME_MAX_LENGTH", "TZ",
+		"TRUSTED_PROXY_CIDRS",
 	}
 	for _, k := range keys {
 		t.Setenv(k, "")
@@ -38,6 +39,7 @@ func TestLoad_ShortAdminPassword(t *testing.T) {
 func TestLoad_Defaults(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -62,10 +64,12 @@ func TestLoad_Defaults(t *testing.T) {
 func TestLoad_CustomOverrides(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
 	t.Setenv("MAX_UPLOAD_BYTES", "1048576")
 	t.Setenv("ALLOWED_IMAGE_MIME_TYPES", "image/jpeg, image/png")
 	t.Setenv("COOKIE_SECURE", "false")
 	t.Setenv("UPLOAD_CONCURRENCY_PER_IP", "5")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "172.30.0.0/24, 2001:db8::/32")
 
 	cfg, err := Load()
 	if err != nil {
@@ -83,11 +87,15 @@ func TestLoad_CustomOverrides(t *testing.T) {
 	if cfg.UploadConcurrencyPerIP != 5 {
 		t.Errorf("expected overridden upload concurrency, got %d", cfg.UploadConcurrencyPerIP)
 	}
+	if len(cfg.TrustedProxyCIDRs) != 2 {
+		t.Errorf("expected two trusted proxy CIDRs, got %v", cfg.TrustedProxyCIDRs)
+	}
 }
 
 func TestLoad_InvalidInteger(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
 	t.Setenv("MAX_UPLOAD_BYTES", "not-a-number")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for invalid integer env var")
@@ -97,10 +105,33 @@ func TestLoad_InvalidInteger(t *testing.T) {
 func TestValidate_NoAllowedMimeTypes(t *testing.T) {
 	cfg := &Config{
 		AdminPassword:          "supersecretpassword",
+		TusHookSecret:          "supersecrethookvalue",
 		MaxUploadBytes:         1,
 		UploadConcurrencyPerIP: 1,
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error when no mime types allowed")
+	}
+}
+
+func TestLoad_InvalidTrustedProxyCIDR(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+	t.Setenv("TRUSTED_PROXY_CIDRS", "not-a-cidr")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for invalid trusted proxy CIDR")
+	}
+}
+
+func TestValidate_MissingTusHookSecret(t *testing.T) {
+	cfg := &Config{
+		AdminPassword:          "supersecretpassword",
+		MaxUploadBytes:         1,
+		UploadConcurrencyPerIP: 1,
+		AllowedImageMIMEs:      []string{"image/jpeg"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when TUS_HOOK_SECRET is missing")
 	}
 }

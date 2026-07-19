@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -35,7 +36,7 @@ type tusReverseProxy struct {
 	hookSecret string
 }
 
-func newTusReverseProxy(targetURL, hookSecret string) (*tusReverseProxy, error) {
+func newTusReverseProxy(targetURL, hookSecret string, trustedProxies []netip.Prefix) (*tusReverseProxy, error) {
 	target, err := url.Parse(targetURL)
 	if err != nil {
 		return nil, err
@@ -43,7 +44,7 @@ func newTusReverseProxy(targetURL, hookSecret string) (*tusReverseProxy, error) 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	baseDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
-		ip := clientIP(req)
+		ip := clientIP(req, trustedProxies)
 		baseDirector(req)
 		req.Host = target.Host
 		req.URL.Path = "/files" + strings.TrimPrefix(req.URL.Path, "/api/tus")
@@ -62,7 +63,7 @@ func newTusReverseProxy(targetURL, hookSecret string) (*tusReverseProxy, error) 
 // data-carrying PATCH requests and blocking new uploads once the admin has
 // set an upload expiry in the past.
 func (s *Server) handleTusProxy(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := clientIP(r, s.cfg.TrustedProxyCIDRs)
 	if !s.publicLimiter.Allow(ip) {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded, please slow down")
 		return

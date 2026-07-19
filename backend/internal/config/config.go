@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -38,6 +39,10 @@ type Config struct {
 	// verifies) on every hook HTTP call, so that the hook endpoint cannot be
 	// invoked by anyone else even if network isolation is ever misconfigured.
 	TusHookSecret string
+
+	// TrustedProxyCIDRs identifies reverse proxies whose client-address
+	// headers may be trusted. Requests from all other peers use RemoteAddr.
+	TrustedProxyCIDRs []netip.Prefix
 
 	// MaxUploadBytes is the maximum accepted whole-file size.
 	MaxUploadBytes int64
@@ -126,6 +131,7 @@ func envList(key string, def []string) []string {
 	if !ok || strings.TrimSpace(v) == "" {
 		return def
 	}
+
 	parts := strings.Split(v, ",")
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
@@ -135,6 +141,19 @@ func envList(key string, def []string) []string {
 		}
 	}
 	return out
+}
+
+func envPrefixes(key string) ([]netip.Prefix, error) {
+	values := envList(key, nil)
+	prefixes := make([]netip.Prefix, 0, len(values))
+	for _, value := range values {
+		prefix, err := netip.ParsePrefix(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR for %s: %q", key, value)
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes, nil
 }
 
 // Load reads configuration from the environment, applying defaults and
@@ -181,6 +200,9 @@ func Load() (*Config, error) {
 	if cfg.ThumbnailMaxDimension, err = envInt("THUMBNAIL_MAX_DIMENSION", 800); err != nil {
 		return nil, err
 	}
+	if cfg.TrustedProxyCIDRs, err = envPrefixes("TRUSTED_PROXY_CIDRS"); err != nil {
+		return nil, err
+	}
 
 	cfg.AllowedImageMIMEs = envList("ALLOWED_IMAGE_MIME_TYPES", []string{
 		"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif",
@@ -210,6 +232,12 @@ func (c *Config) Validate() error {
 	}
 	if len(c.AdminPassword) < 8 {
 		return fmt.Errorf("ADMIN_PASSWORD must be at least 8 characters long")
+	}
+	if strings.TrimSpace(c.TusHookSecret) == "" {
+		return fmt.Errorf("TUS_HOOK_SECRET environment variable must be set")
+	}
+	if len(c.TusHookSecret) < 16 {
+		return fmt.Errorf("TUS_HOOK_SECRET must be at least 16 characters long")
 	}
 	if c.MaxUploadBytes <= 0 {
 		return fmt.Errorf("MAX_UPLOAD_BYTES must be positive")

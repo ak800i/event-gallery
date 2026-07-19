@@ -19,7 +19,7 @@ type loginRequest struct {
 // stricter per-IP rate limit guards against brute-force password guessing
 // on top of the general public API limiter.
 func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := clientIP(r, s.cfg.TrustedProxyCIDRs)
 	if !s.loginLimiter.Allow(ip) {
 		writeError(w, http.StatusTooManyRequests, "too many login attempts, please wait before trying again")
 		return
@@ -64,7 +64,7 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 		_ = s.store.DeleteSession(r.Context(), sess.ID)
 	}
 	clearSessionCookies(w, s.cfg.CookieSecure)
-	_ = s.store.RecordAudit(r.Context(), models.ActionLogout, clientIP(r), "", "", "")
+	_ = s.store.RecordAudit(r.Context(), models.ActionLogout, clientIP(r, s.cfg.TrustedProxyCIDRs), "", "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 

@@ -65,7 +65,7 @@ func NewServer(cfg *config.Config, st *store.Store, proc *media.Processor, spaHa
 		),
 	}
 
-	proxy, err := newTusReverseProxy(cfg.TusInternalURL, cfg.TusHookSecret)
+	proxy, err := newTusReverseProxy(cfg.TusInternalURL, cfg.TusHookSecret, cfg.TrustedProxyCIDRs)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func (s *Server) StartCleanupLoops(stop <-chan struct{}) {
 // Router builds the complete HTTP handler tree.
 func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
-	r.Use(recoverPanic, requestLogger, securityHeaders)
+	r.Use(recoverPanic, s.requestLogger, securityHeaders)
 
 	r.Get("/healthz", s.handleHealth)
 
