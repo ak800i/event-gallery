@@ -2,7 +2,7 @@
 #
 # Multi-stage build for the wedding-gallery application server. Produces a
 # single image that serves both the API and the built React frontend.
-# tusd runs as a separate container (see docker-compose.yml) and is never
+# tusd runs as a separate container (see compose.yaml) and is never
 # reachable directly from outside this compose stack.
 
 # --- Stage 1: build the frontend -------------------------------------------

@@ -67,9 +67,22 @@ The supplied `compose.yaml` is ready to use as a Portainer Git stack. It pulls
 multi-architecture images from GHCR and restarts containers automatically after
 a NAS reboot.
 
+The NAS paths and container identity are Compose environment variables, not
+hardcoded deployment values:
+
+- `APP_DATA_PATH`, `MEDIA_PATH`, and `TUS_UPLOAD_PATH` are required host paths.
+  The `/data/app`, `/data/media`, and `/data/tusd-incoming` paths inside the
+  containers are fixed.
+- `PUID` and `PGID` select the numeric user and group used by both `app` and
+  `tusd`. They default to `1000:1000` if omitted and should be set to an account
+  that can access all three host paths.
+
+All Synology paths and IDs below are examples; replace them with values from
+your NAS.
+
 ### 1. Prepare persistent directories
 
-Create these directories on the NAS:
+For example, create these directories on the NAS:
 
 ```text
 /volume1/data/media/wedding-photos
@@ -81,8 +94,8 @@ The first directory stores original media and its trash area. The `app`
 directory stores SQLite data and thumbnails. The `uploads` directory holds
 incomplete tus uploads and does not normally need to be backed up.
 
-Ensure user `1027` and group `65536` own all three directories and can read,
-write, and traverse them:
+If using the example `PUID=1027` and `PGID=65536`, ensure that identity can
+read, write, and traverse all three directories:
 
 ```sh
 sudo chown -R 1027:65536 \
@@ -187,9 +200,9 @@ For a consistent backup:
    `/volume1/data/media/wedding-photos` together.
 3. Start the stack.
 
-To restore, stop the stack, restore both directories with ownership
-`1027:65536`, select the same immutable image tag, and redeploy. Database
-migrations run automatically at startup.
+To restore, stop the stack, restore the configured app-data and media
+directories with ownership matching `PUID:PGID`, select the same immutable
+image tag, and redeploy. Database migrations run automatically at startup.
 
 Before upgrading, take a backup and change `APP_IMAGE_TAG` to the tested release
 or commit tag. To roll back after a database migration, restore the matching
