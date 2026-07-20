@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Uppy from '@uppy/core'
 import Tus from '@uppy/tus'
-import Webcam from '@uppy/webcam'
-import Dashboard from '@uppy/react/dashboard'
+import DashboardModal from '@uppy/react/dashboard-modal'
+import { CloudUpload } from 'lucide-react'
 
 import '@uppy/core/css/style.min.css'
 import '@uppy/dashboard/css/style.min.css'
-import '@uppy/webcam/css/style.min.css'
 
 import { sha256OfFile } from '../utils/hash'
 import { checkUploadDuplicate } from '../api/client'
@@ -29,14 +28,16 @@ interface UploadPanelProps {
  *    already in the gallery (server re-verifies authoritatively too),
  *  - resumable, chunked uploads safely under common reverse-proxy body size
  *    limits (8 MiB chunks, well under Cloudflare's 100 MB request cap), with
- *    automatic retry of failed chunks and resume of interrupted uploads,
- *  - camera capture on mobile via the Webcam plugin.
+ *    automatic retry of failed chunks and resume of interrupted uploads.
  *
+ * The upload queue lives in Uppy Dashboard's battle-tested modal, opened by
+ * a compact trigger so it does not displace the gallery on small screens.
  * Byte integrity in transit is provided by HTTPS (TLS), so no application-
  * level per-chunk checksum is used; the whole-file hash above is still
  * re-verified server-side before the file is stored.
  */
 export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanelProps) {
+  const [modalOpen, setModalOpen] = useState(false)
   const onUploadCompleteRef = useRef(onUploadComplete)
   useEffect(() => {
     onUploadCompleteRef.current = onUploadComplete
@@ -58,8 +59,6 @@ export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanel
       retryDelays: [0, 1000, 3000, 5000, 10000],
       removeFingerprintOnSuccess: true,
     })
-
-    instance.use(Webcam, { modes: ['picture', 'video-audio'] })
 
     instance.addPreProcessor(async (fileIDs: string[]) => {
       await Promise.all(
@@ -104,12 +103,30 @@ export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanel
     return <p className="upload-closed">Uploads are closed for this gallery.</p>
   }
 
+  const maxSizeGiB = config.maxUploadBytes / (1024 * 1024 * 1024)
+  const maxSizeLabel = maxSizeGiB >= 1 ? `${Number(maxSizeGiB.toFixed(1))} GB` : `${Math.floor(config.maxUploadBytes / (1024 * 1024))} MB`
+
   return (
-    <Dashboard
-      uppy={uppy}
-      proudlyDisplayPoweredByUppy={false}
-      height={380}
-      note={`Photos & videos up to ${Math.floor(config.maxUploadBytes / (1024 * 1024))} MB`}
-    />
+    <>
+      <button type="button" className="upload-trigger" onClick={() => setModalOpen(true)}>
+        <span className="upload-trigger-icon" aria-hidden="true">
+          <CloudUpload size={22} strokeWidth={1.8} />
+        </span>
+        <span className="upload-trigger-copy">
+          <strong>Add photos & videos</strong>
+          <span>Up to {maxSizeLabel} per file · uploads resume automatically</span>
+        </span>
+      </button>
+
+      <DashboardModal
+        uppy={uppy}
+        open={modalOpen}
+        onRequestClose={() => setModalOpen(false)}
+        closeAfterFinish
+        closeModalOnClickOutside
+        proudlyDisplayPoweredByUppy={false}
+        note={`Photos & videos up to ${maxSizeLabel} per file`}
+      />
+    </>
   )
 }
