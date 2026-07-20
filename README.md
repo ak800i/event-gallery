@@ -24,8 +24,6 @@ password-protected admin area provides moderation and gallery settings.
   Cloudflare's 100 MB request-body limit.
 - Retries failed chunks automatically and resumes interrupted uploads instead
   of restarting the file.
-- Calculates a SHA-256 checksum for each chunk and verifies it before accepting
-  the chunk.
 - Calculates a whole-file SHA-256 hash in the browser to skip known duplicates,
   then verifies the completed file again on the server before storing it.
 - Limits public requests, concurrent uploads, and upload bandwidth per client

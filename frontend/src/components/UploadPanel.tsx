@@ -9,9 +9,13 @@ import '@uppy/dashboard/css/style.min.css'
 import '@uppy/webcam/css/style.min.css'
 
 import { sha256OfFile } from '../utils/hash'
-import { attachChunkChecksum, TUS_CHUNK_SIZE } from '../utils/tusChecksum'
 import { checkUploadDuplicate } from '../api/client'
 import type { PublicConfig } from '../types'
+
+// tus request (chunk) size. 8 MiB keeps each PATCH safely under common
+// reverse-proxy body limits (e.g. Cloudflare's 100 MB cap) while still
+// letting tus resume from the last completed chunk after an interruption.
+const TUS_CHUNK_SIZE = 8 * 1024 * 1024
 
 interface UploadPanelProps {
   guestName: string
@@ -24,9 +28,13 @@ interface UploadPanelProps {
  *  - a client-side whole-file SHA-256 preflight to skip re-uploading files
  *    already in the gallery (server re-verifies authoritatively too),
  *  - resumable, chunked uploads safely under common reverse-proxy body size
- *    limits (8 MiB chunks, well under Cloudflare's 100 MB request cap),
- *  - a SHA-256 checksum per chunk so tusd can detect corruption in transit,
+ *    limits (8 MiB chunks, well under Cloudflare's 100 MB request cap), with
+ *    automatic retry of failed chunks and resume of interrupted uploads,
  *  - camera capture on mobile via the Webcam plugin.
+ *
+ * Byte integrity in transit is provided by HTTPS (TLS), so no application-
+ * level per-chunk checksum is used; the whole-file hash above is still
+ * re-verified server-side before the file is stored.
  */
 export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanelProps) {
   const onUploadCompleteRef = useRef(onUploadComplete)
@@ -49,7 +57,6 @@ export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanel
       limit: config.uploadConcurrency,
       retryDelays: [0, 1000, 3000, 5000, 10000],
       removeFingerprintOnSuccess: true,
-      onBeforeRequest: attachChunkChecksum,
     })
 
     instance.use(Webcam, { modes: ['picture', 'video-audio'] })
