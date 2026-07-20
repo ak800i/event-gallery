@@ -8,6 +8,15 @@ Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
   value: 1024,
 })
 
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  class MockResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  globalThis.ResizeObserver = MockResizeObserver
+}
+
 // jsdom does not implement IntersectionObserver; the Gallery's infinite
 // scroll sentinel needs at least a no-op stand-in so tests don't crash.
 if (typeof globalThis.IntersectionObserver === 'undefined') {

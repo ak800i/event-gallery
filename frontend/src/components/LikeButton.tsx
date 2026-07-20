@@ -6,9 +6,10 @@ interface LikeButtonProps {
   mediaId: string
   initialLikeCount: number
   initialLiked: boolean
+  contextLabel?: string
 }
 
-export function LikeButton({ mediaId, initialLikeCount, initialLiked }: LikeButtonProps) {
+export function LikeButton({ mediaId, initialLikeCount, initialLiked, contextLabel }: LikeButtonProps) {
   const [likeCount, setLikeCount] = useState(initialLikeCount)
   const [liked, setLiked] = useState(initialLiked)
   const [busy, setBusy] = useState(false)
@@ -40,7 +41,7 @@ export function LikeButton({ mediaId, initialLikeCount, initialLiked }: LikeButt
       onClick={toggle}
       disabled={busy}
       aria-pressed={liked}
-      aria-label={liked ? 'Unlike' : 'Like'}
+      aria-label={`${liked ? 'Unlike' : 'Like'}${contextLabel ? ` ${contextLabel}` : ''}`}
     >
       <Heart size={16} strokeWidth={1.8} fill={liked ? 'currentColor' : 'none'} aria-hidden="true" />
       <span className="like-count">{likeCount}</span>

@@ -62,19 +62,29 @@ export function Lightbox({ items, index, onClose, onIndexChange }: LightboxProps
       slides={slides}
       plugins={[Video]}
       className="wedding-lightbox"
-      carousel={{ finite: true, padding: 0, spacing: '8%' }}
+      carousel={{ finite: true, padding: 0, spacing: '8%', preload: 1 }}
       controller={{ aria: true, closeOnBackdropClick: true }}
       video={{ controls: true, playsInline: true, preload: 'metadata' }}
-      on={{ view: ({ index: currentIndex }) => onIndexChange(currentIndex) }}
+      on={{ view: ({ index: currentIndex }) => currentIndex !== index && onIndexChange(currentIndex) }}
       render={{
         slideFooter: ({ slide }) => {
           const item = (slide as GallerySlide).mediaItem
           return (
-            <div className="lightbox-footer">
+            <div className={`lightbox-footer${item.kind === 'video' ? ' lightbox-footer-video' : ''}`}>
               <span className="lightbox-uploader">{item.uploaderName || 'Anonymous guest'}</span>
               <div className="lightbox-actions">
-                <LikeButton mediaId={item.id} initialLikeCount={item.likeCount} initialLiked={item.likedByDevice} />
-                <a href={mediaDownloadUrl(item.id)} download className="lightbox-download" aria-label="Download original">
+                <LikeButton
+                  mediaId={item.id}
+                  initialLikeCount={item.likeCount}
+                  initialLiked={item.likedByDevice}
+                  contextLabel={item.originalFilename}
+                />
+                <a
+                  href={mediaDownloadUrl(item.id)}
+                  download
+                  className="lightbox-download"
+                  aria-label={`Download original ${item.originalFilename}`}
+                >
                   <Download size={20} strokeWidth={1.8} aria-hidden="true" />
                   <span>Original</span>
                 </a>

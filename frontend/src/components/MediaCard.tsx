@@ -34,8 +34,18 @@ export function MediaCard({ item, onOpen, style }: MediaCardProps) {
           {item.uploaderName || 'Anonymous guest'}
         </span>
         <div className="media-card-actions">
-          <LikeButton mediaId={item.id} initialLikeCount={item.likeCount} initialLiked={item.likedByDevice} />
-          <a className="download-link" href={mediaDownloadUrl(item.id)} download aria-label="Download original">
+          <LikeButton
+            mediaId={item.id}
+            initialLikeCount={item.likeCount}
+            initialLiked={item.likedByDevice}
+            contextLabel={item.originalFilename}
+          />
+          <a
+            className="download-link"
+            href={mediaDownloadUrl(item.id)}
+            download
+            aria-label={`Download original ${item.originalFilename}`}
+          >
             <Download size={18} strokeWidth={1.8} aria-hidden="true" />
           </a>
         </div>

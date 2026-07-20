@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Gallery } from './Gallery'
 import * as apiClient from '../api/client'
@@ -13,6 +13,34 @@ vi.mock('../api/client', async () => {
     unlikeMedia: vi.fn(),
   }
 })
+
+// Gallery owns open/index state; YARL's rendering and slide mapping are
+// covered separately in Lightbox.test.tsx. Keeping this boundary mocked makes
+// these tests deterministic instead of waiting on third-party animations.
+vi.mock('./Lightbox', () => ({
+  Lightbox: ({
+    items,
+    index,
+    onClose,
+    onIndexChange,
+  }: {
+    items: MediaItem[]
+    index: number
+    onClose: () => void
+    onIndexChange: (index: number) => void
+  }) => (
+    <div role="dialog" aria-label="Lightbox">
+      <button type="button" aria-label="Previous" disabled={index === 0} onClick={() => onIndexChange(index - 1)} />
+      <button
+        type="button"
+        aria-label="Next"
+        disabled={index === items.length - 1}
+        onClick={() => onIndexChange(index + 1)}
+      />
+      <button type="button" aria-label="Close" onClick={onClose} />
+    </div>
+  ),
+}))
 
 function makeItem(overrides: Partial<MediaItem> = {}): MediaItem {
   return {
@@ -92,12 +120,21 @@ describe('Gallery', () => {
     render(<Gallery />)
 
     const { default: userEvent } = await import('@testing-library/user-event')
-    await userEvent.setup().click((await screen.findAllByRole('button', { name: /open/i }))[0])
+    const user = userEvent.setup()
+    const openButton = (await screen.findAllByRole('button', { name: /open/i }))[0]
+    await act(async () => {
+      await user.click(openButton)
+    })
 
     await screen.findByRole('dialog')
     const previous = screen.getByRole('button', { name: /previous/i })
     const next = screen.getByRole('button', { name: /next/i })
     expect(previous).toBeDisabled()
     expect(next).toBeEnabled()
+
+    await act(async () => {
+      await user.click(screen.getByRole('button', { name: /close/i }))
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 })
