@@ -180,7 +180,7 @@ The most useful optional application settings are:
 | `MAX_UPLOAD_BYTES` | `314572800` | Maximum whole-file size in bytes |
 | `PUBLIC_RATE_LIMIT_PER_MINUTE` | `120` | Sustained public requests per IP |
 | `PUBLIC_RATE_LIMIT_BURST` | `40` | Public request burst allowance |
-| `UPLOAD_CONCURRENCY_PER_IP` | `3` | Concurrent upload requests per IP |
+| `UPLOAD_CONCURRENCY_PER_IP` | `3` | Concurrent uploads per IP; also configures the browser uploader |
 | `UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC` | `3145728` | Upload bandwidth per IP |
 | `ADMIN_SESSION_TTL_MINUTES` | `720` | Admin session lifetime |
 | `THUMBNAIL_MAX_DIMENSION` | `800` | Longest thumbnail edge in pixels |

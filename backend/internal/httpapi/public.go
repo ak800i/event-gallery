@@ -126,12 +126,13 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 }
 
 type publicConfigResponse struct {
-	UploadsEnabled   bool     `json:"uploadsEnabled"`
-	UploadExpiresAt  *string  `json:"uploadExpiresAt,omitempty"`
-	MaxUploadBytes   int64    `json:"maxUploadBytes"`
-	AllowedImageMime []string `json:"allowedImageMimeTypes"`
-	AllowedVideoMime []string `json:"allowedVideoMimeTypes"`
-	GuestNameMaxLen  int      `json:"guestNameMaxLength"`
+	UploadsEnabled    bool     `json:"uploadsEnabled"`
+	UploadExpiresAt   *string  `json:"uploadExpiresAt,omitempty"`
+	MaxUploadBytes    int64    `json:"maxUploadBytes"`
+	UploadConcurrency int      `json:"uploadConcurrency"`
+	AllowedImageMime  []string `json:"allowedImageMimeTypes"`
+	AllowedVideoMime  []string `json:"allowedVideoMimeTypes"`
+	GuestNameMaxLen   int      `json:"guestNameMaxLength"`
 }
 
 func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
@@ -141,11 +142,12 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := publicConfigResponse{
-		UploadsEnabled:   !closed,
-		MaxUploadBytes:   s.cfg.MaxUploadBytes,
-		AllowedImageMime: s.cfg.AllowedImageMIMEs,
-		AllowedVideoMime: s.cfg.AllowedVideoMIMEs,
-		GuestNameMaxLen:  s.cfg.GuestNameMaxLength,
+		UploadsEnabled:    !closed,
+		MaxUploadBytes:    s.cfg.MaxUploadBytes,
+		UploadConcurrency: s.cfg.UploadConcurrencyPerIP,
+		AllowedImageMime:  s.cfg.AllowedImageMIMEs,
+		AllowedVideoMime:  s.cfg.AllowedVideoMIMEs,
+		GuestNameMaxLen:   s.cfg.GuestNameMaxLength,
 	}
 	if value, ok, err := s.store.GetConfig(r.Context(), store.ConfigKeyUploadExpiresAt); err == nil && ok && value != "" {
 		resp.UploadExpiresAt = &value
