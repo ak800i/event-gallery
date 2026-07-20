@@ -65,6 +65,9 @@ func TestHandlePublicConfig(t *testing.T) {
 	if resp.MaxUploadBytes != h.cfg.MaxUploadBytes {
 		t.Errorf("expected max upload bytes to match config")
 	}
+	if resp.UploadConcurrency != h.cfg.UploadConcurrencyPerIP {
+		t.Errorf("expected upload concurrency to match config")
+	}
 }
 
 func TestHandlePublicConfig_ReflectsExpiredUploads(t *testing.T) {

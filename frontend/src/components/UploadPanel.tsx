@@ -46,6 +46,7 @@ export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanel
     instance.use(Tus, {
       endpoint: '/api/tus/',
       chunkSize: TUS_CHUNK_SIZE,
+      limit: config.uploadConcurrency,
       retryDelays: [0, 1000, 3000, 5000, 10000],
       removeFingerprintOnSuccess: true,
       onBeforeRequest: attachChunkChecksum,
@@ -80,7 +81,7 @@ export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanel
     })
 
     return instance
-  }, [config.maxUploadBytes, config.allowedImageMimeTypes, config.allowedVideoMimeTypes])
+  }, [config.maxUploadBytes, config.uploadConcurrency, config.allowedImageMimeTypes, config.allowedVideoMimeTypes])
 
   useEffect(() => {
     uppy.setMeta({ guestName })

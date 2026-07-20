@@ -31,6 +31,7 @@ export interface PublicConfig {
   uploadsEnabled: boolean
   uploadExpiresAt?: string
   maxUploadBytes: number
+  uploadConcurrency: number
   allowedImageMimeTypes: string[]
   allowedVideoMimeTypes: string[]
   guestNameMaxLength: number
