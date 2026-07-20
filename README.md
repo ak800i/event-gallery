@@ -137,8 +137,8 @@ ADMIN_PASSWORD=REPLACE_WITH_A_STRONG_PASSWORD
 TUS_HOOK_SECRET=REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS
 CLOUDFLARE_TUNNEL_TOKEN=REPLACE_WITH_THE_TUNNEL_TOKEN
 
-# 1 GiB; increase if guests need to upload larger videos.
-MAX_UPLOAD_BYTES=1073741824
+# 5 GiB; accommodates long high-resolution phone videos.
+MAX_UPLOAD_BYTES=5368709120
 
 # Change this if it overlaps another Docker or LAN subnet.
 EDGE_SUBNET=172.30.0.0/24
@@ -175,11 +175,11 @@ The most useful optional application settings are:
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `MAX_UPLOAD_BYTES` | `314572800` | Maximum whole-file size in bytes |
-| `PUBLIC_RATE_LIMIT_PER_MINUTE` | `120` | Sustained public requests per IP |
-| `PUBLIC_RATE_LIMIT_BURST` | `40` | Public request burst allowance |
-| `UPLOAD_CONCURRENCY_PER_IP` | `3` | Concurrent uploads per IP; also configures the browser uploader |
-| `UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC` | `3145728` | Upload bandwidth per IP |
+| `MAX_UPLOAD_BYTES` | `5368709120` | Maximum whole-file size in bytes (5 GiB) |
+| `PUBLIC_RATE_LIMIT_PER_MINUTE` | `12000` | Sustained public requests per IP |
+| `PUBLIC_RATE_LIMIT_BURST` | `3000` | Public request burst allowance |
+| `UPLOAD_CONCURRENCY_PER_IP` | `50` | Concurrent uploads per IP; also configures the browser uploader |
+| `UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC` | `1073741824` | Upload bandwidth per IP (effectively unthrottled at 1 GiB/s) |
 | `ADMIN_SESSION_TTL_MINUTES` | `720` | Admin session lifetime |
 | `THUMBNAIL_MAX_DIMENSION` | `800` | Longest thumbnail edge in pixels |
 | `ALLOWED_IMAGE_MIME_TYPES` | common image formats | Comma-separated image MIME types |

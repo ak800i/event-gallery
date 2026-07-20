@@ -47,8 +47,17 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.ListenAddr != ":8080" {
 		t.Errorf("expected default listen addr, got %s", cfg.ListenAddr)
 	}
-	if cfg.MaxUploadBytes <= 0 {
-		t.Errorf("expected positive default max upload bytes")
+	if cfg.MaxUploadBytes != 5*1024*1024*1024 {
+		t.Errorf("expected 5 GiB default max upload bytes, got %d", cfg.MaxUploadBytes)
+	}
+	if cfg.PublicRateLimitPerMinute != 12000 || cfg.PublicRateLimitBurst != 3000 {
+		t.Errorf("unexpected public rate limit defaults: %d/minute, burst %d", cfg.PublicRateLimitPerMinute, cfg.PublicRateLimitBurst)
+	}
+	if cfg.UploadConcurrencyPerIP != 50 {
+		t.Errorf("expected upload concurrency default 50, got %d", cfg.UploadConcurrencyPerIP)
+	}
+	if cfg.UploadBandwidthPerIPBytesPerSec != 1024*1024*1024 {
+		t.Errorf("expected 1 GiB/s default upload bandwidth, got %d", cfg.UploadBandwidthPerIPBytesPerSec)
 	}
 	if len(cfg.AllowedImageMIMEs) == 0 {
 		t.Errorf("expected default allowed image mime types")

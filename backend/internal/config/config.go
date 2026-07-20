@@ -172,19 +172,22 @@ func Load() (*Config, error) {
 	}
 
 	var err error
-	if cfg.MaxUploadBytes, err = envInt64("MAX_UPLOAD_BYTES", 300*1024*1024); err != nil {
+	// Wedding guests commonly share one venue Wi-Fi/NAT address. Keep the
+	// per-IP defaults deliberately generous so a whole venue is not treated
+	// like one user and throttled to a handful of concurrent uploads.
+	if cfg.MaxUploadBytes, err = envInt64("MAX_UPLOAD_BYTES", 5*1024*1024*1024); err != nil {
 		return nil, err
 	}
-	if cfg.PublicRateLimitPerMinute, err = envInt("PUBLIC_RATE_LIMIT_PER_MINUTE", 120); err != nil {
+	if cfg.PublicRateLimitPerMinute, err = envInt("PUBLIC_RATE_LIMIT_PER_MINUTE", 12000); err != nil {
 		return nil, err
 	}
-	if cfg.PublicRateLimitBurst, err = envInt("PUBLIC_RATE_LIMIT_BURST", 40); err != nil {
+	if cfg.PublicRateLimitBurst, err = envInt("PUBLIC_RATE_LIMIT_BURST", 3000); err != nil {
 		return nil, err
 	}
-	if cfg.UploadConcurrencyPerIP, err = envInt("UPLOAD_CONCURRENCY_PER_IP", 3); err != nil {
+	if cfg.UploadConcurrencyPerIP, err = envInt("UPLOAD_CONCURRENCY_PER_IP", 50); err != nil {
 		return nil, err
 	}
-	if cfg.UploadBandwidthPerIPBytesPerSec, err = envInt64("UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC", 3*1024*1024); err != nil {
+	if cfg.UploadBandwidthPerIPBytesPerSec, err = envInt64("UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC", 1024*1024*1024); err != nil {
 		return nil, err
 	}
 	cookieSecureDefault := true

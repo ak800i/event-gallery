@@ -13,7 +13,7 @@ exec tusd \
   -port 1080 \
   -base-path /files/ \
   -upload-dir "${TUS_UPLOAD_DIR:-/data/tusd-incoming}" \
-  -max-size "${MAX_UPLOAD_BYTES:-314572800}" \
+  -max-size "${MAX_UPLOAD_BYTES:-5368709120}" \
   -hooks-http "${TUS_HOOKS_URL:-http://app:8080/api/internal/tus-hooks}" \
   -hooks-http-forward-headers "X-Internal-Proxy-Secret,X-Wg-Client-Ip" \
   -hooks-enabled-events "pre-create,post-finish" \
