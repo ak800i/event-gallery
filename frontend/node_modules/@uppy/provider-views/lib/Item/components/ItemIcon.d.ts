@@ -1,8 +1,0 @@
-import type { h } from 'preact';
-type ItemIconProps = {
-    itemIconString: string;
-    alt?: string;
-};
-export default function ItemIcon({ itemIconString, alt, }: ItemIconProps): h.JSX.Element | null;
-export {};
-//# sourceMappingURL=ItemIcon.d.ts.map

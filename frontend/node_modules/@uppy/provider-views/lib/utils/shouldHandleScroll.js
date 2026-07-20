@@ -1,6 +1,0 @@
-const shouldHandleScroll = (event) => {
-    const { scrollHeight, scrollTop, offsetHeight } = event.target;
-    const scrollPosition = scrollHeight - (scrollTop + offsetHeight);
-    return scrollPosition < 50;
-};
-export default shouldHandleScroll;

@@ -1,4 +1,0 @@
-import type { PartialTree, PartialTreeFolder, PartialTreeId } from '@uppy/core';
-declare const getBreadcrumbs: (partialTree: PartialTree, currentFolderId: PartialTreeId) => PartialTreeFolder[];
-export default getBreadcrumbs;
-//# sourceMappingURL=getBreadcrumbs.d.ts.map
