@@ -78,8 +78,8 @@ export function Gallery() {
           defaultContainerWidth={1100}
           spacing={(containerWidth) => (containerWidth < 600 ? 4 : 7)}
           padding={0}
-          targetRowHeight={(containerWidth) => (containerWidth < 600 ? 150 : containerWidth < 900 ? 190 : 220)}
-          rowConstraints={{ singleRowMaxHeight: 260 }}
+          targetRowHeight={(containerWidth) => (containerWidth < 600 ? 300 : containerWidth < 900 ? 380 : 440)}
+          rowConstraints={{ singleRowMaxHeight: 520 }}
           render={{
             photo: (_props, { photo, index, width, height }) => (
               <MediaCard
