@@ -31,6 +31,18 @@ button {
   cursor: pointer;
 }
 
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 input,
 select {
   font: inherit;
@@ -156,37 +168,72 @@ select {
 }
 
 .gallery-controls {
+  position: relative;
+  z-index: 2;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
   justify-content: flex-end;
-  margin-bottom: 1rem;
+  min-height: 2.75rem;
+  margin-bottom: 0.5rem;
 }
 
-.gallery-grid {
+.sort-control {
+  position: relative;
+  width: 2.5rem;
+  height: 2.5rem;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 0.75rem;
+  place-items: center;
+  color: var(--color-primary-dark);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(43, 36, 32, 0.06);
+}
+
+.sort-control:hover {
+  border-color: var(--color-primary);
+}
+
+.sort-control:focus-within {
+  outline: 3px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
+  outline-offset: 2px;
+}
+
+.sort-control select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .media-card {
-  background: var(--color-surface);
-  border-radius: 10px;
+  position: relative;
+  min-width: 0;
+  container-type: inline-size;
   overflow: hidden;
-  border: 1px solid var(--color-border);
-  display: flex;
-  flex-direction: column;
+  background: #e8e1d9;
+  border-radius: 5px;
+  box-shadow: 0 1px 4px rgba(43, 36, 32, 0.12);
 }
 
 .media-card-thumb {
-  position: relative;
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
-  aspect-ratio: 1 / 1;
+  height: 100%;
   padding: 0;
   border: none;
-  background: #eee;
+  background: #e8e1d9;
   overflow: hidden;
+}
+
+.media-card-thumb:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: -4px;
 }
 
 .media-card-thumb img {
@@ -194,56 +241,75 @@ select {
   height: 100%;
   object-fit: cover;
   display: block;
+  transition: transform 220ms ease;
+}
+
+.media-card:hover .media-card-thumb img {
+  transform: scale(1.015);
 }
 
 .media-card-placeholder {
   width: 100%;
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 2.5rem;
+  display: grid;
+  place-items: center;
+  color: var(--color-muted);
+  background: linear-gradient(145deg, #eee7df, #ded4c9);
 }
 
 .video-badge {
   position: absolute;
-  bottom: 0.35rem;
-  right: 0.35rem;
-  background: rgba(0, 0, 0, 0.6);
+  top: 0.5rem;
+  right: 0.5rem;
+  width: 2rem;
+  height: 2rem;
+  display: grid;
+  place-items: center;
   color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.35);
   border-radius: 50%;
-  width: 1.5rem;
-  height: 1.5rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.7rem;
+  backdrop-filter: blur(6px);
 }
 
 .media-card-meta {
+  position: absolute;
+  z-index: 1;
+  right: 0;
+  bottom: 0;
+  left: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.4rem 0.5rem;
+  min-height: 3.25rem;
+  padding: 1.1rem 0.5rem 0.4rem;
   gap: 0.4rem;
+  color: #fff;
+  pointer-events: none;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
 }
 
 .uploader-name {
-  font-size: 0.8rem;
-  color: var(--color-muted);
+  min-width: 0;
   overflow: hidden;
+  color: inherit;
+  font-size: 0.76rem;
+  font-weight: 550;
   text-overflow: ellipsis;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
   white-space: nowrap;
 }
 
 .media-card-actions {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.3rem;
   flex-shrink: 0;
+  pointer-events: auto;
 }
 
 .like-button {
+  min-height: 2rem;
   background: none;
   border: 1px solid var(--color-border);
   border-radius: 999px;
@@ -258,9 +324,28 @@ select {
   border-color: var(--color-primary);
 }
 
+.media-card-actions .like-button {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.35);
+  border-color: rgba(255, 255, 255, 0.38);
+  backdrop-filter: blur(6px);
+}
+
 .download-link {
+  width: 2rem;
+  height: 2rem;
+  display: grid;
+  place-items: center;
+  color: inherit;
   text-decoration: none;
-  font-size: 1rem;
+  border-radius: 50%;
+}
+
+.media-card-actions .download-link {
+  color: #fff;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.38);
+  backdrop-filter: blur(6px);
 }
 
 .gallery-loading,
@@ -280,83 +365,145 @@ select {
   height: 1px;
 }
 
-.lightbox-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
+.wedding-lightbox {
+  --yarl__color_backdrop: #111;
+  --yarl__color_button: rgba(255, 255, 255, 0.9);
+  --yarl__color_button_active: #fff;
+  --yarl__button_background_color: rgba(0, 0, 0, 0.22);
+  --yarl__button_border: 1px solid rgba(255, 255, 255, 0.14);
 }
 
-.lightbox-content {
-  position: relative;
-  max-width: 95vw;
-  max-height: 95vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.5rem;
+.wedding-lightbox .yarl__toolbar {
+  top: max(0.5rem, env(safe-area-inset-top));
+  right: max(0.5rem, env(safe-area-inset-right));
 }
 
-.lightbox-media img,
-.lightbox-media video {
-  max-width: 95vw;
-  max-height: 80vh;
-  display: block;
+/* YARL owns navigation behavior. Enlarging its semantic edge buttons gives
+ * phone users generous left/right tap zones without overlaying video controls. */
+.wedding-lightbox .yarl__navigation_prev,
+.wedding-lightbox .yarl__navigation_next {
+  width: clamp(3.25rem, 11vw, 5.5rem);
+  height: min(42vh, 22rem);
+  margin: 0;
+  padding: 0.75rem;
+  border: 0;
+  border-radius: 0;
 }
 
-.lightbox-close,
-.lightbox-nav {
-  position: absolute;
-  background: rgba(0, 0, 0, 0.5);
-  color: #fff;
-  border: none;
-  border-radius: 50%;
-  width: 2.5rem;
-  height: 2.5rem;
-  font-size: 1.25rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.wedding-lightbox .yarl__navigation_prev {
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.35), transparent);
 }
 
-.lightbox-close {
-  top: -1rem;
-  right: -1rem;
-}
-
-.lightbox-prev {
-  left: -3rem;
-  top: 50%;
-  transform: translateY(-50%);
-}
-
-.lightbox-next {
-  right: -3rem;
-  top: 50%;
-  transform: translateY(-50%);
+.wedding-lightbox .yarl__navigation_next {
+  background: linear-gradient(270deg, rgba(0, 0, 0, 0.35), transparent);
 }
 
 .lightbox-footer {
-  color: #fff;
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  min-height: 4.5rem;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  width: 100%;
   gap: 1rem;
+  padding:
+    1.8rem max(1rem, env(safe-area-inset-right))
+    max(0.75rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left));
+  color: #fff;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+  pointer-events: none;
+}
+
+.lightbox-uploader {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 4px #000;
+  white-space: nowrap;
 }
 
 .lightbox-actions {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 0.6rem;
+  flex-shrink: 0;
+  pointer-events: auto;
 }
 
-.lightbox-actions .download-link {
+.lightbox-actions .like-button,
+.lightbox-download {
+  min-height: 2.5rem;
   color: #fff;
-  text-decoration: underline;
+  background: rgba(25, 25, 25, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  backdrop-filter: blur(8px);
+}
+
+.lightbox-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 999px;
+}
+
+@container (max-width: 12rem) {
+  .media-card .uploader-name {
+    display: none;
+  }
+
+  .media-card-meta {
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 600px) {
+  .app {
+    padding: 0.75rem;
+  }
+
+  .app-header {
+    padding: 1rem 0.5rem;
+  }
+
+  .gallery-section {
+    margin-inline: -0.75rem;
+  }
+
+  .gallery-controls,
+  .gallery-empty,
+  .gallery-error {
+    margin-inline: 0.75rem;
+  }
+
+  .wedding-lightbox .yarl__navigation_prev,
+  .wedding-lightbox .yarl__navigation_next {
+    width: 3.75rem;
+    height: 35vh;
+    padding: 0.5rem;
+  }
+
+  .lightbox-footer {
+    min-height: 4.25rem;
+  }
+
+  .lightbox-download span {
+    display: none;
+  }
+
+  .lightbox-download {
+    width: 2.5rem;
+    padding: 0;
+    justify-content: center;
+  }
 }
 
 /* Admin */

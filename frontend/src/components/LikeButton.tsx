@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Heart } from 'lucide-react'
 import { likeMedia, unlikeMedia } from '../api/client'
 
 interface LikeButtonProps {
@@ -41,7 +42,7 @@ export function LikeButton({ mediaId, initialLikeCount, initialLiked }: LikeButt
       aria-pressed={liked}
       aria-label={liked ? 'Unlike' : 'Like'}
     >
-      <span aria-hidden="true">{liked ? '\u2764\ufe0f' : '\u{1f90d}'}</span>
+      <Heart size={16} strokeWidth={1.8} fill={liked ? 'currentColor' : 'none'} aria-hidden="true" />
       <span className="like-count">{likeCount}</span>
     </button>
   )

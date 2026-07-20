@@ -48,6 +48,9 @@ describe('Gallery', () => {
     })
     render(<Gallery />)
     await waitFor(() => expect(screen.getAllByRole('button', { name: /open/i })).toHaveLength(2))
+    const download = screen.getAllByRole('link', { name: /download original/i })[0]
+    expect(download.querySelector('svg')).toBeInTheDocument()
+    expect(download).not.toHaveTextContent('⬇️')
   })
 
   it('shows an error message when the fetch fails', async () => {
@@ -78,6 +81,23 @@ describe('Gallery', () => {
     const { default: userEvent } = await import('@testing-library/user-event')
     await userEvent.setup().click(openButton)
 
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('provides accessible previous and next controls for lightbox navigation', async () => {
+    vi.mocked(apiClient.fetchGallery).mockResolvedValue({
+      items: [makeItem({ id: 'id1' }), makeItem({ id: 'id2', originalFilename: 'second.jpg' })],
+      nextCursor: '',
+    })
+    render(<Gallery />)
+
+    const { default: userEvent } = await import('@testing-library/user-event')
+    await userEvent.setup().click((await screen.findAllByRole('button', { name: /open/i }))[0])
+
+    await screen.findByRole('dialog')
+    const previous = screen.getByRole('button', { name: /previous/i })
+    const next = screen.getByRole('button', { name: /next/i })
+    expect(previous).toBeDisabled()
+    expect(next).toBeEnabled()
   })
 })

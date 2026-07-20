@@ -1,63 +1,88 @@
-import { useEffect } from 'react'
-import { mediaDownloadUrl, mediaFileUrl } from '../api/client'
+import { useMemo } from 'react'
+import LightboxCore, { type Slide } from 'yet-another-react-lightbox'
+import Video from 'yet-another-react-lightbox/plugins/video'
+import { Download } from 'lucide-react'
+
+import 'yet-another-react-lightbox/styles.css'
+
+import { mediaDownloadUrl, mediaFileUrl, mediaThumbnailUrl } from '../api/client'
 import type { MediaItem } from '../types'
 import { LikeButton } from './LikeButton'
 
 interface LightboxProps {
-  item: MediaItem
+  items: MediaItem[]
+  index: number
   onClose: () => void
-  onPrev?: () => void
-  onNext?: () => void
+  onIndexChange: (index: number) => void
 }
 
-/** Full-screen viewer for a single photo or video, with keyboard
- * navigation (Escape to close, arrow keys to move between items). */
-export function Lightbox({ item, onClose, onPrev, onNext }: LightboxProps) {
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
-      if (e.key === 'ArrowLeft' && onPrev) onPrev()
-      if (e.key === 'ArrowRight' && onNext) onNext()
+type GallerySlide = Slide & { mediaItem: MediaItem }
+
+function toSlide(item: MediaItem): GallerySlide {
+  const width = item.width || 1600
+  const height = item.height || 1200
+
+  if (item.kind === 'video') {
+    return {
+      type: 'video',
+      mediaItem: item,
+      width,
+      height,
+      poster: item.hasThumbnail ? mediaThumbnailUrl(item.id) : undefined,
+      sources: [{ src: mediaFileUrl(item.id), type: item.mimeType }],
+      controls: true,
+      playsInline: true,
+      preload: 'metadata',
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose, onPrev, onNext])
+  }
+
+  return {
+    type: 'image',
+    mediaItem: item,
+    src: mediaFileUrl(item.id),
+    alt: item.originalFilename,
+    width,
+    height,
+  }
+}
+
+/**
+ * Full-viewport mixed-media viewer backed by Yet Another React Lightbox.
+ * The library owns swipe/drag, keyboard, focus, preloading, and video slide
+ * behavior; this wrapper only supplies wedding-specific metadata/actions.
+ */
+export function Lightbox({ items, index, onClose, onIndexChange }: LightboxProps) {
+  const slides = useMemo(() => items.map(toSlide), [items])
 
   return (
-    <div className="lightbox-backdrop" role="dialog" aria-modal="true" onClick={onClose}>
-      <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
-        <button type="button" className="lightbox-close" onClick={onClose} aria-label="Close">
-          {'\u2715'}
-        </button>
-        {onPrev && (
-          <button type="button" className="lightbox-nav lightbox-prev" onClick={onPrev} aria-label="Previous">
-            {'\u2039'}
-          </button>
-        )}
-        {onNext && (
-          <button type="button" className="lightbox-nav lightbox-next" onClick={onNext} aria-label="Next">
-            {'\u203a'}
-          </button>
-        )}
-
-        <div className="lightbox-media">
-          {item.kind === 'video' ? (
-            <video src={mediaFileUrl(item.id)} controls autoPlay />
-          ) : (
-            <img src={mediaFileUrl(item.id)} alt={item.originalFilename} />
-          )}
-        </div>
-
-        <div className="lightbox-footer">
-          <span>{item.uploaderName || 'Anonymous guest'}</span>
-          <div className="lightbox-actions">
-            <LikeButton mediaId={item.id} initialLikeCount={item.likeCount} initialLiked={item.likedByDevice} />
-            <a href={mediaDownloadUrl(item.id)} download className="download-link">
-              Download original
-            </a>
-          </div>
-        </div>
-      </div>
-    </div>
+    <LightboxCore
+      open
+      close={onClose}
+      index={index}
+      slides={slides}
+      plugins={[Video]}
+      className="wedding-lightbox"
+      carousel={{ finite: true, padding: 0, spacing: '8%' }}
+      controller={{ aria: true, closeOnBackdropClick: true }}
+      video={{ controls: true, playsInline: true, preload: 'metadata' }}
+      on={{ view: ({ index: currentIndex }) => onIndexChange(currentIndex) }}
+      render={{
+        slideFooter: ({ slide }) => {
+          const item = (slide as GallerySlide).mediaItem
+          return (
+            <div className="lightbox-footer">
+              <span className="lightbox-uploader">{item.uploaderName || 'Anonymous guest'}</span>
+              <div className="lightbox-actions">
+                <LikeButton mediaId={item.id} initialLikeCount={item.likeCount} initialLiked={item.likedByDevice} />
+                <a href={mediaDownloadUrl(item.id)} download className="lightbox-download" aria-label="Download original">
+                  <Download size={20} strokeWidth={1.8} aria-hidden="true" />
+                  <span>Original</span>
+                </a>
+              </div>
+            </div>
+          )
+        },
+      }}
+    />
   )
 }
