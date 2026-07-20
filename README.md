@@ -63,7 +63,7 @@ stored separately from original media.
 
 ## Deploy on Synology with Portainer
 
-The supplied `compose.yaml` is ready to use as a Portainer Git stack. It pulls
+The supplied `docker-compose.yml` is ready to use as a Portainer Git stack. It pulls
 multi-architecture images from GHCR and restarts containers automatically after
 a NAS reboot.
 
@@ -118,7 +118,7 @@ host port for `app` or `tusd`.
 ### 3. Configure the Portainer stack
 
 In Portainer, create a stack from this Git repository and select
-`compose.yaml`. Add the following environment variables in the stack
+`docker-compose.yml`. Add the following environment variables in the stack
 configuration:
 
 ```dotenv

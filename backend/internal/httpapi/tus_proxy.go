@@ -18,7 +18,7 @@ import (
 // the internal tusd instance on every proxied request. tusd is configured
 // (via -hooks-http-forward-headers) to copy this header's value into every
 // hook HTTP call it makes back to handleTusHook, which verifies it. Since
-// tusd is not reachable from the internet at all (see compose.yaml
+// tusd is not reachable from the internet at all (see docker-compose.yml
 // network isolation), this is defense in depth rather than the sole
 // safeguard, but it also means the hook endpoint itself cannot be invoked
 // by anyone who doesn't know this secret, even if network isolation were

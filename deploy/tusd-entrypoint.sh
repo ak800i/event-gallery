@@ -2,7 +2,7 @@
 # Entrypoint for the internal tusd container. tusd is never published to the
 # host or the internet -- it is only reachable from the "app" service over
 # the internal-only docker network, and app in turn is the only public
-# entry point (see compose.yaml). This script just applies UMASK and
+# entry point (see docker-compose.yml). This script just applies UMASK and
 # builds the tusd command line from environment variables so the compose
 # file can stay simple.
 set -e
