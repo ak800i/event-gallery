@@ -7,6 +7,7 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -53,6 +54,21 @@ func newTusReverseProxy(targetURL, hookSecret string, trustedProxies []netip.Pre
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusBadGateway, "upload service temporarily unavailable")
+	}
+	// tusd returns an absolute Location header pointing at its own internal
+	// address (e.g. http://tusd:1080/files/<id>) on upload creation. That URL
+	// is unreachable from the guest's browser (tusd is on an internal-only
+	// docker network) and would be blocked as mixed content on an HTTPS page,
+	// so tus-js-client's follow-up PATCH/HEAD requests fail and no upload ever
+	// completes. Rewrite the Location back to this backend's public tus route
+	// so the client keeps talking to us instead of tusd directly.
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if loc := resp.Header.Get("Location"); loc != "" {
+			if u, err := url.Parse(loc); err == nil {
+				resp.Header.Set("Location", "/api/tus/"+path.Base(u.Path))
+			}
+		}
+		return nil
 	}
 	return &tusReverseProxy{proxy: proxy, hookSecret: hookSecret}, nil
 }

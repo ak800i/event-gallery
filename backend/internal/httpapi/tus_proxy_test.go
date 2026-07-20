@@ -51,6 +51,25 @@ func TestTusProxy_RewritesPathAndInjectsSecret(t *testing.T) {
 	}
 }
 
+func TestTusProxy_RewritesLocationHeader(t *testing.T) {
+	h := newTestHarness(t)
+	fake, _ := newFakeTusd(t)
+	h.withTusTarget(t, fake.URL)
+
+	// tusd replies with an absolute Location pointing at its own (internal)
+	// address. The proxy must rewrite it to this backend's public tus route
+	// so the guest's browser keeps talking to us, not directly to tusd.
+	req := httptest.NewRequest(http.MethodPost, "/api/tus/", nil)
+	req.Header.Set("Upload-Length", "1000")
+	rec := serveRequest(h, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/api/tus/new-upload-id" {
+		t.Errorf("expected rewritten Location /api/tus/new-upload-id, got %q", got)
+	}
+}
+
 func TestTusProxy_BlocksNewUploadsWhenExpired(t *testing.T) {
 	h := newTestHarness(t)
 	fake, received := newFakeTusd(t)
