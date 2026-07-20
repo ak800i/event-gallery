@@ -400,16 +400,9 @@ select {
   height: min(42vh, 22rem);
   margin: 0;
   padding: 0.75rem;
+  background: transparent;
   border: 0;
   border-radius: 0;
-}
-
-.wedding-lightbox .yarl__navigation_prev {
-  background: linear-gradient(90deg, rgba(0, 0, 0, 0.35), transparent);
-}
-
-.wedding-lightbox .yarl__navigation_next {
-  background: linear-gradient(270deg, rgba(0, 0, 0, 0.35), transparent);
 }
 
 .lightbox-footer {
