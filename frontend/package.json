@@ -17,10 +17,12 @@
     "@uppy/dashboard": "5.1.1",
     "@uppy/react": "5.2.0",
     "@uppy/tus": "5.1.1",
-    "@uppy/webcam": "5.1.0",
     "hash-wasm": "4.12.0",
+    "lucide-react": "1.25.0",
     "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react-dom": "19.2.7",
+    "react-photo-album": "3.6.0",
+    "yet-another-react-lightbox": "3.32.1"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
