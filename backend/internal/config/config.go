@@ -22,12 +22,12 @@ type Config struct {
 	// admin account. There is intentionally no admin username.
 	AdminPassword string
 
-	// DataDir holds persistent application state: the SQLite database file
-	// and derived thumbnails cache. Maps to the Synology docker-data mount.
+	// DataDir holds persistent application state: the SQLite database file.
+	// Maps to the host app-data bind mount.
 	DataDir string
 
-	// MediaDir holds the permanent original media files (photos & videos).
-	// Maps to the Synology media mount.
+	// MediaDir holds permanent originals and generated thumbnails.
+	// Maps to the host media bind mount.
 	MediaDir string
 
 	// TusInternalURL is the base URL of the internal tusd instance that the

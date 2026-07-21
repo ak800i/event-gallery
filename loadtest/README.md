@@ -68,7 +68,7 @@ In Portainer, check:
 - app/tusd logs contain no processing errors, panics, or 5xx responses;
 - app memory is interpreted using RSS versus filesystem cache (large hashing
   and cross-volume copies can temporarily charge page cache to the container);
-- NAS storage and network utilization remain acceptable.
+- host storage and network utilization remain acceptable.
 
 At the intentional 60-way boundary, app logs may show 429 responses. The stage
 passes only if clients reconcile with HEAD/retry and all required uploads finish.

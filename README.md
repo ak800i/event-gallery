@@ -64,13 +64,14 @@ No host ports are published. Cloudflare sends traffic to `http://app:8080`, and
 guests cannot reach `tusd` directly. SQLite lives on the app-data mount;
 originals and generated thumbnails live together on the media mount.
 
-## Deploy on Synology with Portainer
+## Deploy on a Docker host
 
-The supplied `docker-compose.yml` is ready to use as a Portainer Git stack. It pulls
-multi-architecture images from GHCR and restarts containers automatically after
-a NAS reboot.
+The supplied `docker-compose.yml` runs on a standard Linux Docker host. It is
+ready for a Portainer Git stack and can also be used with ordinary Docker
+Compose. It pulls multi-architecture images from GHCR and restarts containers
+automatically after a host reboot.
 
-The NAS paths and container identity are Compose environment variables, not
+Host paths and container identity are Compose environment variables, not
 hardcoded deployment values:
 
 - `APP_DATA_PATH`, `MEDIA_PATH`, and `TUS_UPLOAD_PATH` are required host paths.
@@ -80,30 +81,28 @@ hardcoded deployment values:
   `tusd`. They default to `1000:1000` if omitted and should be set to an account
   that can access all three host paths.
 
-All Synology paths and IDs below are examples; replace them with values from
-your NAS.
+All paths and IDs below are examples; replace them with values appropriate for
+your Docker host.
 
 ### 1. Prepare persistent directories
 
-For example, create these directories on the NAS:
+For example, create these directories on the host:
 
 ```text
-/volume1/data/media/wedding-photos
-/volume2/docker-data/wedding-gallery/app
-/volume2/docker-data/wedding-gallery/uploads
+/srv/wedding-gallery/app
+/srv/wedding-gallery/media
+/srv/wedding-gallery/uploads
 ```
 
 The first directory stores original media and generated thumbnails. The `app`
 directory stores SQLite data. The `uploads` directory holds
 incomplete tus uploads and does not normally need to be backed up.
 
-If using the example `PUID=1027` and `PGID=65536`, ensure that identity can
-read, write, and traverse all three directories:
+Ensure the configured numeric identity can read, write, and traverse all three
+directories. For the default `PUID=1000` and `PGID=1000`:
 
 ```sh
-sudo chown -R 1027:65536 \
-  /volume1/data/media/wedding-photos \
-  /volume2/docker-data/wedding-gallery
+sudo chown -R 1000:1000 /srv/wedding-gallery
 ```
 
 ### 2. Create the Cloudflare Tunnel
@@ -128,13 +127,13 @@ configuration:
 # Use an immutable sha-<40-character-commit> or release tag from GHCR.
 APP_IMAGE_TAG=sha-REPLACE_WITH_FULL_COMMIT_SHA
 
-APP_DATA_PATH=/volume2/docker-data/wedding-gallery/app
-MEDIA_PATH=/volume1/data/media/wedding-photos
-TUS_UPLOAD_PATH=/volume2/docker-data/wedding-gallery/uploads
+APP_DATA_PATH=/srv/wedding-gallery/app
+MEDIA_PATH=/srv/wedding-gallery/media
+TUS_UPLOAD_PATH=/srv/wedding-gallery/uploads
 
-PUID=1027
-PGID=65536
-TZ=Europe/Belgrade
+PUID=1000
+PGID=1000
+TZ=UTC
 UMASK=022
 
 # Set independent secret values. Do not commit them to this repository.
@@ -148,6 +147,10 @@ MAX_UPLOAD_BYTES=5368709120
 # Change this if it overlaps another Docker or LAN subnet.
 EDGE_SUBNET=172.30.0.0/24
 ```
+
+For Docker Compose, save these values in a protected `.env` file beside the
+Compose file and run `docker compose up -d`. In Portainer, enter the same values
+in the stack environment.
 
 Generate independent secrets locally, for example with
 `openssl rand -hex 32`. `ADMIN_PASSWORD` must contain at least 8 characters and
@@ -170,7 +173,8 @@ and that the first two report healthy. Then test from a phone on mobile data:
 5. Upload the same photo again and confirm it is skipped.
 6. Open `/admin`, test trash and restore, and inspect the audit log.
 
-Use Portainer container logs to diagnose startup failures. Common causes are
+Use Docker/Compose or Portainer container logs to diagnose startup failures.
+Common causes are
 missing secrets, incorrect directory ownership, an overlapping `EDGE_SUBNET`,
 or a Tunnel hostname that does not target `http://app:8080`.
 
@@ -199,8 +203,8 @@ network design.
 For a consistent backup:
 
 1. Stop the stack so SQLite and media writes are idle.
-2. Back up `/volume2/docker-data/wedding-gallery/app` and
-   `/volume1/data/media/wedding-photos` together.
+2. Back up `/srv/wedding-gallery/app` and `/srv/wedding-gallery/media`
+   together.
 3. Start the stack.
 
 To restore, stop the stack, restore the configured app-data and media

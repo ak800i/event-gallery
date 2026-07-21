@@ -25,8 +25,8 @@ type Processor struct {
 	AllowedVideoMIMEs     []string
 }
 
-// NewProcessor constructs a Processor. mediaDir is the root of permanent
-// media storage (the Synology media mount in production).
+// NewProcessor constructs a Processor. mediaDir is the root of the host's
+// persistent media bind mount.
 func NewProcessor(mediaDir string, thumbnailMaxDimension int, allowedImages, allowedVideos []string) *Processor {
 	return &Processor{
 		MediaDir:              mediaDir,

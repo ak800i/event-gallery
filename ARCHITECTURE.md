@@ -7,8 +7,8 @@ Wedding Gallery is a single-event, self-hosted photo/video gallery. Guests use o
 The design optimizes for:
 
 - reliable mobile uploads over an ordinary internet connection;
-- simple single-NAS operation and backup;
-- no public inbound NAS ports;
+- simple single-host Docker operation and backup;
+- no public inbound host ports;
 - minimal infrastructure: one Go app, tusd, SQLite, and filesystem storage.
 
 It deliberately does **not** provide multi-tenant accounts, horizontal scaling, high availability, permanent trash purge, or distributed processing.
@@ -21,7 +21,7 @@ flowchart LR
     Admin[Admin browser]
     CF[Cloudflare edge]
 
-    subgraph NAS[Single Docker / Portainer host]
+    subgraph Host[Single Docker / Portainer host]
         Tunnel[cloudflared]
 
         subgraph EdgeNet[edge network]
@@ -48,7 +48,7 @@ flowchart LR
     Tusd -->|pre-create / post-finish hooks| App
 
     CI[GitHub Actions] -->|multi-arch images| Registry[GHCR]
-    Registry -->|pull/redeploy| NAS
+    Registry -->|pull/redeploy| Host
 ```
 
 No host ports are published. `cloudflared` reaches the app on the `edge` network. Only the app bridges `edge` and the internal-only `uploads` network, so browsers cannot reach tusd directly.
@@ -183,7 +183,7 @@ This is a KISS single-node design.
 **Strengths**
 
 - few moving parts and low idle resource use;
-- no exposed NAS ports;
+- no exposed host ports;
 - strong resumable upload path;
 - simple, consistent stop-the-stack backup;
 - browser, API, transport, and processing responsibilities are clearly separated.
