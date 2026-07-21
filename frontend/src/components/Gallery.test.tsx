@@ -59,8 +59,11 @@ function makeItem(overrides: Partial<MediaItem> = {}): MediaItem {
   }
 }
 
-function renderGallery(branding: BrandingConfig = DEFAULT_BRANDING) {
-  return render(<Gallery branding={branding} />)
+function renderGallery(
+  branding: BrandingConfig = DEFAULT_BRANDING,
+  refreshRequest = { id: 0, expectedUploads: 0 },
+) {
+  return render(<Gallery branding={branding} refreshRequest={refreshRequest} />)
 }
 
 describe('Gallery', () => {
@@ -72,6 +75,20 @@ describe('Gallery', () => {
     vi.mocked(apiClient.fetchGallery).mockResolvedValue({ items: [], nextCursor: '' })
     renderGallery({ ...DEFAULT_BRANDING, emptyGalleryText: 'Bring on the memories!' })
     await waitFor(() => expect(screen.getByText('Bring on the memories!')).toBeInTheDocument())
+  })
+
+  it('merges a processed upload in the background without remounting', async () => {
+    const uploaded = makeItem({ id: 'new-id', originalFilename: 'just-uploaded.jpg' })
+    vi.mocked(apiClient.fetchGallery)
+      .mockResolvedValueOnce({ items: [], nextCursor: '' })
+      .mockResolvedValueOnce({ items: [uploaded], nextCursor: '' })
+
+    const view = renderGallery()
+    await waitFor(() => expect(screen.getByText(/be the first to upload/i)).toBeInTheDocument())
+    view.rerender(<Gallery branding={DEFAULT_BRANDING} refreshRequest={{ id: 1, expectedUploads: 1 }} />)
+
+    expect(await screen.findByRole('button', { name: /open just-uploaded/i })).toBeInTheDocument()
+    expect(apiClient.fetchGallery).toHaveBeenLastCalledWith({ sort: 'uploaded', order: 'desc', limit: 30 })
   })
 
   it('renders returned items', async () => {

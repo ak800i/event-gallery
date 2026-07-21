@@ -16,15 +16,17 @@ interface GalleryPhoto extends Photo {
 
 interface GalleryProps {
   branding: BrandingConfig
+  refreshRequest: { id: number; expectedUploads: number }
 }
 
 /** The main public gallery: a responsive, image-first timeline with
  * cursor-based infinite scroll, sorting, and a mobile-friendly mixed-media
  * lightbox backed by maintained gallery components. */
-export function Gallery({ branding }: GalleryProps) {
+export function Gallery({ branding, refreshRequest }: GalleryProps) {
   const [sort, setSort] = useState<GallerySort>('uploaded')
-  const { items, loading, error, hasMore, loadMore } = useGallery(sort, 'desc')
+  const { items, loading, error, hasMore, loadMore, refreshNewest } = useGallery(sort, 'desc')
   const [openIndex, setOpenIndex] = useState<number | null>(null)
+  const [processingUploads, setProcessingUploads] = useState(false)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
 
   const photos = useMemo<GalleryPhoto[]>(
@@ -60,9 +62,53 @@ export function Gallery({ branding }: GalleryProps) {
     if (openIndex !== null && hasMore && !loading && openIndex >= items.length - 5) loadMore()
   }, [hasMore, items.length, loadMore, loading, openIndex])
 
+  useEffect(() => {
+    if (refreshRequest.id === 0 || refreshRequest.expectedUploads === 0) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let cancelWait: (() => void) | undefined
+    const delays = [0, 750, 1500, 3000, 5000, 8000, 12000, 15000]
+
+    async function pollForProcessedUploads() {
+      let discovered = 0
+      setProcessingUploads(true)
+      for (const delay of delays) {
+        if (delay > 0) {
+          await new Promise<void>((resolve) => {
+            cancelWait = resolve
+            timer = setTimeout(resolve, delay)
+          })
+          cancelWait = undefined
+        }
+        if (cancelled) return
+        try {
+          discovered += await refreshNewest(refreshRequest.expectedUploads)
+          if (discovered >= refreshRequest.expectedUploads) break
+        } catch {
+          // A later attempt may succeed; the ordinary gallery error state is
+          // intentionally unaffected by this silent background refresh.
+        }
+      }
+      if (!cancelled) setProcessingUploads(false)
+    }
+
+    void pollForProcessedUploads()
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      cancelWait?.()
+    }
+  }, [refreshNewest, refreshRequest.expectedUploads, refreshRequest.id])
+
   return (
     <div className="gallery">
       <div className="gallery-controls">
+        {processingUploads && (
+          <span className="gallery-processing" role="status">
+            <span className="gallery-processing-spinner" aria-hidden="true" />
+            {branding.galleryLoadingText || <span className="sr-only">Processing uploads</span>}
+          </span>
+        )}
         <label
           className="sort-control"
           title={sort === 'uploaded' ? branding.sortUploadTimeText : branding.sortCaptureTimeText}

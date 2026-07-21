@@ -20,7 +20,7 @@ export function App() {
 function GuestApp() {
   const [guestName, setGuestName] = useGuestName()
   const [config, setConfig] = useState<PublicConfig | null>(null)
-  const [galleryKey, setGalleryKey] = useState(0)
+  const [galleryRefresh, setGalleryRefresh] = useState({ id: 0, expectedUploads: 0 })
 
   const loadConfig = useCallback(() => {
     fetchPublicConfig().then(setConfig).catch(() => setConfig(null))
@@ -30,10 +30,10 @@ function GuestApp() {
     loadConfig()
   }, [loadConfig])
 
-  const handleUploadComplete = useCallback(() => {
-    // Force the gallery to remount and fetch fresh data from page 1 so new
-    // uploads (once processed by the server) show up promptly.
-    setGalleryKey((k) => k + 1)
+  const handleUploadComplete = useCallback((successfulUploads: number) => {
+    if (successfulUploads > 0) {
+      setGalleryRefresh((current) => ({ id: current.id + 1, expectedUploads: successfulUploads }))
+    }
   }, [])
 
   const branding = config?.branding ?? DEFAULT_BRANDING
@@ -63,8 +63,8 @@ function GuestApp() {
           </section>
         )}
 
-        <section className="gallery-section" key={galleryKey}>
-          <Gallery branding={branding} />
+        <section className="gallery-section">
+          <Gallery branding={branding} refreshRequest={galleryRefresh} />
         </section>
       </div>
     </div>

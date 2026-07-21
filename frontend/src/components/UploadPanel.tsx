@@ -21,7 +21,7 @@ interface UploadPanelProps {
   guestName: string
   config: PublicConfig
   branding: BrandingConfig
-  onUploadComplete: () => void
+  onUploadComplete: (successfulUploads: number) => void
 }
 
 /**
@@ -84,8 +84,9 @@ export function UploadPanel({ guestName, config, branding, onUploadComplete }: U
       )
     })
 
-    instance.on('complete', () => {
-      onUploadCompleteRef.current()
+    instance.on('complete', (result) => {
+      const successfulUploads = result.successful?.length ?? 0
+      if (successfulUploads > 0) onUploadCompleteRef.current(successfulUploads)
     })
 
     return instance

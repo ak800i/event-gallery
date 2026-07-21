@@ -192,6 +192,36 @@ select {
   margin-bottom: 0.5rem;
 }
 
+.gallery-processing {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-right: auto;
+  color: var(--color-muted);
+  font-size: 0.82rem;
+}
+
+.gallery-processing-spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid color-mix(in srgb, var(--color-primary) 25%, transparent);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: gallery-processing-spin 800ms linear infinite;
+}
+
+@keyframes gallery-processing-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gallery-processing-spinner {
+    animation: none;
+  }
+}
+
 .sort-control {
   position: relative;
   width: 2.75rem;
