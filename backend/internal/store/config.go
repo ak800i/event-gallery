@@ -41,7 +41,14 @@ func (s *Store) DeleteConfig(ctx context.Context, key string) error {
 	return nil
 }
 
-// ConfigKeyUploadExpiresAt stores the RFC3339 timestamp after which new
-// uploads are refused. Viewing and downloading existing media is never
-// affected by this setting.
-const ConfigKeyUploadExpiresAt = "upload_expires_at"
+const (
+	// ConfigKeyUploadExpiresAt stores the RFC3339 timestamp after which new
+	// uploads are refused. Viewing and downloading existing media is never
+	// affected by this setting.
+	ConfigKeyUploadExpiresAt = "upload_expires_at"
+
+	// ConfigKeyBranding stores the admin-managed main-page text and color
+	// theme as one validated JSON document. A single value keeps updates atomic
+	// and allows the schema to grow without a database migration.
+	ConfigKeyBranding = "branding"
+)

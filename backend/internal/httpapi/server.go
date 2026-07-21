@@ -137,6 +137,9 @@ func (s *Server) Router() http.Handler {
 			adm.With(s.requireAdmin).Get("/audit-log", s.handleAuditLog)
 			adm.With(s.requireAdmin).Get("/config", s.handleAdminGetConfig)
 			adm.With(s.requireAdmin, s.requireCSRF).Put("/config", s.handleAdminUpdateConfig)
+			adm.With(s.requireAdmin).Get("/branding", s.handleAdminGetBranding)
+			adm.With(s.requireAdmin, s.requireCSRF).Put("/branding", s.handleAdminUpdateBranding)
+			adm.With(s.requireAdmin, s.requireCSRF).Delete("/branding", s.handleAdminResetBranding)
 		})
 	})
 

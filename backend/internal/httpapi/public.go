@@ -133,12 +133,18 @@ type publicConfigResponse struct {
 	AllowedImageMime  []string `json:"allowedImageMimeTypes"`
 	AllowedVideoMime  []string `json:"allowedVideoMimeTypes"`
 	GuestNameMaxLen   int      `json:"guestNameMaxLength"`
+	Branding          brandingConfig `json:"branding"`
 }
 
 func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 	closed, err := s.uploadsClosed(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load configuration")
+		return
+	}
+	branding, err := s.loadBranding(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load branding")
 		return
 	}
 	resp := publicConfigResponse{
@@ -148,6 +154,7 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		AllowedImageMime:  s.cfg.AllowedImageMIMEs,
 		AllowedVideoMime:  s.cfg.AllowedVideoMIMEs,
 		GuestNameMaxLen:   s.cfg.GuestNameMaxLength,
+		Branding:          branding,
 	}
 	if value, ok, err := s.store.GetConfig(r.Context(), store.ConfigKeyUploadExpiresAt); err == nil && ok && value != "" {
 		resp.UploadExpiresAt = &value
