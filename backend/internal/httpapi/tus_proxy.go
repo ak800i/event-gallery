@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"wedding-gallery/backend/internal/ratelimit"
-	"wedding-gallery/backend/internal/store"
+	"event-gallery/backend/internal/ratelimit"
+	"event-gallery/backend/internal/store"
 )
 
 // internalProxySecretHeader carries a shared secret from this backend to
@@ -30,7 +30,7 @@ const internalProxySecretHeader = "X-Internal-Proxy-Secret"
 // which trusts Cloudflare/CF-Connecting-IP -- see clientip.go) through to
 // tusd, which in turn forwards it into hook payloads so upload processing
 // can record an accurate uploader IP for the audit log.
-const clientIPHeader = "X-Wg-Client-Ip"
+const clientIPHeader = "X-Event-Gallery-Client-Ip"
 
 type tusReverseProxy struct {
 	proxy      *httputil.ReverseProxy

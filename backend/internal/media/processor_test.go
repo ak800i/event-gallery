@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/models"
 )
 
 func TestProcessor_ProcessImage(t *testing.T) {

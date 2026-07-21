@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { sha256OfFile } from '../utils/hash'
 
-// Known SHA-256 digest of the UTF-8 bytes "hello wedding gallery", verified
-// independently via Node's crypto module.
-const KNOWN_TEXT = 'hello wedding gallery'
-const KNOWN_SHA256 = 'a9c57ed3ede712770481b13667fd0b69be7d2eb6f09cffdfa3fc1889f363fca3'
+// Known SHA-256 digest of the UTF-8 bytes "hello event gallery", verified
+// independently via Python's hashlib module.
+const KNOWN_TEXT = 'hello event gallery'
+const KNOWN_SHA256 = '17a5acba103302bdaee171596e800da8e88dc1dfe7f4ea78abbf0e1d75a4cec7'
 
 describe('sha256OfFile', () => {
   it('matches a known reference digest', async () => {

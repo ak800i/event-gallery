@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"wedding-gallery/backend/internal/store"
+	"event-gallery/backend/internal/store"
 )
 
 const (

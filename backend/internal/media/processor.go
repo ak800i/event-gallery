@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/models"
 )
 
 // Processor turns a completed upload's temporary file into a permanent,

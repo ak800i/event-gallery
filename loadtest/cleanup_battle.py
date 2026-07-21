@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Move successful wg-battle-* media out of the public gallery into trash."""
+"""Move successful event-gallery battle media out of the public gallery."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import urllib.request
 def request(opener, url, method="GET", payload=None, headers=None):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("User-Agent", "wedding-gallery-tus-battle/1.0")
+    req.add_header("User-Agent", "event-gallery-tus-battle/1.0")
     req.add_header("Accept", "application/json")
     if payload is not None:
         req.add_header("Content-Type", "application/json")
@@ -29,7 +29,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default=os.getenv("BASE_URL"))
     parser.add_argument("--password", default=os.getenv("ADMIN_PASSWORD", ""))
-    parser.add_argument("--prefix", default="wg-battle-")
+    parser.add_argument("--prefix", default="event-gallery-battle-")
     parser.add_argument("--wait-seconds", type=int, default=10)
     args = parser.parse_args()
     if not args.base_url:

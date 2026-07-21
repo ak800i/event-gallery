@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/models"
 )
 
 func boolPtr(value bool) *bool { return &value }

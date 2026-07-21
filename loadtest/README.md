@@ -1,6 +1,6 @@
 # Production tus battle test
 
-Dependency-free Python 3 harness for the deployed wedding-gallery upload path.
+Dependency-free Python 3 harness for the deployed event-gallery upload path.
 It sends real tus `POST`, `PATCH`, `HEAD`, and cleanup `DELETE` requests through
 Cloudflare to the public hostname. Payloads are valid PNG files generated as a
 small real PNG followed by streamed padding and a unique marker, so successful
@@ -34,7 +34,7 @@ Default pass thresholds:
 ## Run one stage first
 
 ```sh
-cd /path/to/wedding-gallery
+cd /path/to/repository
 python loadtest/tus_battle.py \
   --stage smoke-resume \
   --count 1 \
@@ -48,7 +48,7 @@ python loadtest/tus_battle.py \
 ## Run the full staged battle
 
 ```sh
-cd /path/to/wedding-gallery
+cd /path/to/repository
 I_UNDERSTAND_PRODUCTION_LOAD=YES \
 BASE_URL=https://your-gallery.example \
 sh loadtest/run_staged.sh
@@ -63,7 +63,7 @@ throughput, patch latency percentiles, and failed filenames.
 
 In Portainer, check:
 
-- `wedding-gallery-app-1` and `wedding-gallery-tusd-1` remain healthy;
+- the `app` and `tusd` services remain healthy;
 - restart counts stay zero;
 - app/tusd logs contain no processing errors, panics, or 5xx responses;
 - app memory is interpreted using RSS versus filesystem cache (large hashing
@@ -77,7 +77,7 @@ a transport retry rather than the 429 itself; correlate retry count with app log
 
 ## Clean up
 
-Successful test files are named `wg-battle-*.png`. Move all published or
+Successful test files are named `event-gallery-battle-*.png`. Move all published or
 pending battle items to Admin Trash with:
 
 ```sh

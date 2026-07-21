@@ -15,7 +15,7 @@ exec tusd \
   -upload-dir "${TUS_UPLOAD_DIR:-/data/tusd-incoming}" \
   -max-size "${MAX_UPLOAD_BYTES:-5368709120}" \
   -hooks-http "${TUS_HOOKS_URL:-http://app:8080/api/internal/tus-hooks}" \
-  -hooks-http-forward-headers "X-Internal-Proxy-Secret,X-Wg-Client-Ip" \
+  -hooks-http-forward-headers "X-Internal-Proxy-Secret,X-Event-Gallery-Client-Ip" \
   -hooks-enabled-events "pre-create,post-finish" \
   -behind-proxy \
   -disable-cors \

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Config holds all runtime configuration for the wedding-gallery server.
+// Config holds all runtime configuration for the event-gallery server.
 type Config struct {
 	// ListenAddr is the address the HTTP server listens on, e.g. ":8080".
 	ListenAddr string
@@ -172,7 +172,7 @@ func Load() (*Config, error) {
 	}
 
 	var err error
-	// Wedding guests commonly share one venue Wi-Fi/NAT address. Keep the
+	// Event attendees commonly share one venue Wi-Fi/NAT address. Keep the
 	// per-IP defaults deliberately generous so a whole venue is not treated
 	// like one user and throttled to a handful of concurrent uploads.
 	if cfg.MaxUploadBytes, err = envInt64("MAX_UPLOAD_BYTES", 5*1024*1024*1024); err != nil {

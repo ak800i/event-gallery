@@ -12,7 +12,7 @@ import (
 	"io"
 	"os"
 
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/models"
 )
 
 // ErrUnsupportedType is returned when a file's sniffed content does not

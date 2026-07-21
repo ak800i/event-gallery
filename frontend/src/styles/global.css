@@ -422,7 +422,7 @@ select {
   height: 1px;
 }
 
-.wedding-lightbox {
+.event-lightbox {
   --yarl__color_backdrop: #111;
   --yarl__color_button: rgba(255, 255, 255, 0.9);
   --yarl__color_button_active: #fff;
@@ -430,12 +430,12 @@ select {
   --yarl__button_border: 1px solid rgba(255, 255, 255, 0.14);
 }
 
-.wedding-lightbox .yarl__toolbar {
+.event-lightbox .yarl__toolbar {
   top: max(0.5rem, env(safe-area-inset-top));
   right: max(0.5rem, env(safe-area-inset-right));
 }
 
-.wedding-lightbox .yarl__button:focus-visible {
+.event-lightbox .yarl__button:focus-visible {
   outline: 3px solid #fff;
   outline-offset: 3px;
   box-shadow: 0 0 0 5px rgba(0, 0, 0, 0.65);
@@ -443,8 +443,8 @@ select {
 
 /* YARL owns navigation behavior. Enlarging its semantic edge buttons gives
  * phone users generous left/right tap zones without overlaying video controls. */
-.wedding-lightbox .yarl__navigation_prev,
-.wedding-lightbox .yarl__navigation_next {
+.event-lightbox .yarl__navigation_prev,
+.event-lightbox .yarl__navigation_next {
   width: clamp(3.25rem, 11vw, 5.5rem);
   height: min(42vh, 22rem);
   margin: 0;
@@ -544,8 +544,8 @@ select {
     margin-inline: 0.75rem;
   }
 
-  .wedding-lightbox .yarl__navigation_prev,
-  .wedding-lightbox .yarl__navigation_next {
+  .event-lightbox .yarl__navigation_prev,
+  .event-lightbox .yarl__navigation_next {
     width: 3.75rem;
     height: 35vh;
     padding: 0.5rem;

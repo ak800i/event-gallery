@@ -23,8 +23,7 @@ describe('AdminBrandingEditor', () => {
     const user = userEvent.setup()
 
     const title = await screen.findByLabelText('Page title')
-    await user.clear(title)
-    await user.type(title, '<b>Sam & Alex</b>')
+    fireEvent.change(title, { target: { value: '<b>Sam & Alex</b>' } })
     fireEvent.change(screen.getByLabelText('Primary accent color picker'), { target: { value: '#12abef' } })
 
     expect(screen.getByLabelText('Live main-page preview')).toHaveTextContent('<b>Sam & Alex</b>')

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Entrypoint for the wedding-gallery app container. Applies the configured
+# Entrypoint for the event-gallery app container. Applies the configured
 # UMASK (022 by default) before starting the server, so any files/directories
 # the app creates on the bind-mounted
 # volumes inherit sane, predictable permissions.

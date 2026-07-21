@@ -58,7 +58,7 @@ insertion.
 
 ## Cleanup
 
-All 113 `wg-battle-*` items were moved to Admin Trash through the authenticated,
+All 113 battle-test items were moved to Admin Trash through the authenticated,
 CSRF-protected admin API. The public gallery was verified to contain zero active
 battle-test items.
 

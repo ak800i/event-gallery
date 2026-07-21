@@ -2,9 +2,9 @@
 FROM tusproject/tusd:v2.10.0
 
 USER root
-COPY deploy/tusd-entrypoint.sh /usr/local/bin/wedding-gallery-tusd
-RUN chmod 0555 /usr/local/bin/wedding-gallery-tusd
+COPY deploy/tusd-entrypoint.sh /usr/local/bin/event-gallery-tusd
+RUN chmod 0555 /usr/local/bin/event-gallery-tusd
 USER 1000:1000
 
 EXPOSE 1080
-ENTRYPOINT ["/usr/local/bin/wedding-gallery-tusd"]
+ENTRYPOINT ["/usr/local/bin/event-gallery-tusd"]

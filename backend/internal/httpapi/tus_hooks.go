@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"wedding-gallery/backend/internal/media"
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/media"
+	"event-gallery/backend/internal/models"
 )
 
 // The following types mirror the JSON schema tusd sends for HTTP hooks, as

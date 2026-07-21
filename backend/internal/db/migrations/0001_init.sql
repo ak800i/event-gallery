@@ -1,4 +1,4 @@
--- Initial schema for the wedding gallery application.
+-- Initial schema for the event gallery application.
 
 CREATE TABLE IF NOT EXISTS media_items (
     id TEXT PRIMARY KEY,

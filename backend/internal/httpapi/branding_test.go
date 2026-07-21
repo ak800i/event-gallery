@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"wedding-gallery/backend/internal/store"
+	"event-gallery/backend/internal/store"
 )
 
 func TestPublicConfig_IncludesDefaultBranding(t *testing.T) {

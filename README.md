@@ -1,9 +1,18 @@
-# Wedding Gallery
+# Event Gallery
 
-A private, self-hosted photo and video gallery for a single wedding. Guests
-open one mobile-friendly page, enter a display name, upload media, and browse
-the gallery without creating an account or installing an app. A
-password-protected admin area provides moderation and gallery settings.
+A private, self-hosted photo and video gallery for a single event. Guests open
+one mobile-friendly page, enter a display name, upload media, and browse the
+gallery without creating an account or installing an app. A password-protected
+admin area provides moderation, branding, and gallery settings.
+
+The default branding is wedding-oriented so a fresh deployment works
+immediately for that common use case. Administrators can replace all listed
+main-page text and colors for any event without rebuilding the application.
+
+Historical compatibility identifiers remain in the repository name, published
+GHCR image names, Compose project name, session cookies, and browser-storage
+keys. Changing them would break existing deployment references or sign out/reset
+existing browsers; they do not constrain event branding or behavior.
 
 ## Features
 
@@ -89,9 +98,9 @@ your Docker host.
 For example, create these directories on the host:
 
 ```text
-/srv/wedding-gallery/app
-/srv/wedding-gallery/media
-/srv/wedding-gallery/uploads
+/srv/event-gallery/app
+/srv/event-gallery/media
+/srv/event-gallery/uploads
 ```
 
 The first directory stores original media and generated thumbnails. The `app`
@@ -102,7 +111,7 @@ Ensure the configured numeric identity can read, write, and traverse all three
 directories. For the default `PUID=1000` and `PGID=1000`:
 
 ```sh
-sudo chown -R 1000:1000 /srv/wedding-gallery
+sudo chown -R 1000:1000 /srv/event-gallery
 ```
 
 ### 2. Create the Cloudflare Tunnel
@@ -127,9 +136,9 @@ configuration:
 # Use an immutable sha-<40-character-commit> or release tag from GHCR.
 APP_IMAGE_TAG=sha-REPLACE_WITH_FULL_COMMIT_SHA
 
-APP_DATA_PATH=/srv/wedding-gallery/app
-MEDIA_PATH=/srv/wedding-gallery/media
-TUS_UPLOAD_PATH=/srv/wedding-gallery/uploads
+APP_DATA_PATH=/srv/event-gallery/app
+MEDIA_PATH=/srv/event-gallery/media
+TUS_UPLOAD_PATH=/srv/event-gallery/uploads
 
 PUID=1000
 PGID=1000
@@ -203,7 +212,7 @@ network design.
 For a consistent backup:
 
 1. Stop the stack so SQLite and media writes are idle.
-2. Back up `/srv/wedding-gallery/app` and `/srv/wedding-gallery/media`
+2. Back up `/srv/event-gallery/app` and `/srv/event-gallery/media`
    together.
 3. Start the stack.
 

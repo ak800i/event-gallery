@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"wedding-gallery/backend/internal/models"
-	"wedding-gallery/backend/internal/store"
+	"event-gallery/backend/internal/models"
+	"event-gallery/backend/internal/store"
 )
 
 func TestModeration_DefaultOffAndApprovalFlow(t *testing.T) {

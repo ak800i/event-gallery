@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"wedding-gallery/backend/internal/media"
+	"event-gallery/backend/internal/media"
 )
 
 func writeTestJPEGFile(t *testing.T, path string, w, h int) {
@@ -126,7 +126,7 @@ func TestTusHook_PostFinish_ProcessesAndInsertsMedia(t *testing.T) {
 				ID:   "abc123",
 				Size: 12345,
 				MetaData: map[string]string{
-					"filename":  "wedding.jpg",
+					"filename":  "event.jpg",
 					"guestName": "Alice",
 					"sha256":    sha,
 				},
@@ -151,7 +151,7 @@ func TestTusHook_PostFinish_ProcessesAndInsertsMedia(t *testing.T) {
 		t.Fatalf("expected 1 item in gallery, got %d", len(galResp.Items))
 	}
 	item := galResp.Items[0]
-	if item.OriginalName != "wedding.jpg" || item.UploaderName != "Alice" {
+	if item.OriginalName != "event.jpg" || item.UploaderName != "Alice" {
 		t.Errorf("unexpected item: %+v", item)
 	}
 	if item.Width != 300 || item.Height != 200 {
@@ -181,7 +181,7 @@ func TestTusHook_PostFinish_RejectsChecksumMismatch(t *testing.T) {
 				ID:   "mismatch",
 				Size: 100,
 				MetaData: map[string]string{
-					"filename": "wedding.jpg",
+					"filename": "event.jpg",
 					"sha256":   "0000000000000000000000000000000000000000000000000000000000000",
 				},
 				Storage: tusHookStorage{Type: "filestore", Path: dataPath},

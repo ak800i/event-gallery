@@ -1,4 +1,4 @@
-module wedding-gallery/backend
+module event-gallery/backend
 
 go 1.25.0
 

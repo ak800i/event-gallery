@@ -1,5 +1,5 @@
 // Package db manages the SQLite connection and schema migrations for the
-// wedding gallery. SQLite is sufficient for this workload (a single
+// event gallery. SQLite is sufficient for this workload (a single
 // self-hosted gallery) and keeps the deployment footprint small: the whole
 // application state lives in one file on the docker-data volume.
 package db

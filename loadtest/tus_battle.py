@@ -101,7 +101,7 @@ class TusBattle:
             path += "?" + parsed.query
         request_headers = {
             "Host": self.host,
-            "User-Agent": "wedding-gallery-tus-battle/1.0",
+            "User-Agent": "event-gallery-tus-battle/1.0",
             "Accept": "application/json, */*",
             "Connection": "close",
             "Content-Length": str(body_length),
@@ -277,8 +277,8 @@ class TusBattle:
 
     async def upload_one(self, stage: str, index: int, size: int, force_resume: bool) -> UploadResult:
         token = f"{stage}-{index}-{uuid.uuid4().hex[:12]}"
-        filename = f"wg-battle-{token}.png"
-        marker = ("WG-BATTLE:" + token).encode("ascii")
+        filename = f"event-gallery-battle-{token}.png"
+        marker = ("EVENT-GALLERY-BATTLE:" + token).encode("ascii")
         result = UploadResult(name=filename)
         state_key = token
         try:

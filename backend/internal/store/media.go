@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/models"
 )
 
 const timeLayout = time.RFC3339Nano

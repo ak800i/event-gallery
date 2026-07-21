@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"wedding-gallery/backend/internal/db"
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/db"
+	"event-gallery/backend/internal/models"
 )
 
 func newTestStore(t *testing.T) *Store {

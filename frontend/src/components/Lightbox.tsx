@@ -50,7 +50,7 @@ function toSlide(item: MediaItem): GallerySlide {
 /**
  * Full-viewport mixed-media viewer backed by Yet Another React Lightbox.
  * The library owns swipe/drag, keyboard, focus, preloading, and video slide
- * behavior; this wrapper only supplies wedding-specific metadata/actions.
+ * behavior; this wrapper only supplies event-specific metadata/actions.
  */
 export function Lightbox({ items, index, branding, onClose, onIndexChange }: LightboxProps) {
   const slides = useMemo(() => items.map(toSlide), [items])
@@ -62,7 +62,7 @@ export function Lightbox({ items, index, branding, onClose, onIndexChange }: Lig
       index={index}
       slides={slides}
       plugins={[Video]}
-      className="wedding-lightbox"
+      className="event-lightbox"
       carousel={{ finite: true, padding: 0, spacing: '8%', preload: 1 }}
       controller={{ aria: true, closeOnBackdropClick: true }}
       video={{ controls: true, playsInline: true, preload: 'metadata' }}

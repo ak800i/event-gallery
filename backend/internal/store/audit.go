@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/models"
 )
 
 // RecordAudit appends an entry to the audit log. mediaID and filename may be

@@ -1,8 +1,8 @@
-# Wedding Gallery Architecture
+# Event Gallery Architecture
 
 ## 1. System summary
 
-Wedding Gallery is a single-event, self-hosted photo/video gallery. Guests use one public page to upload and browse media without accounts. A password-protected admin page manages optional upload approval, trash, upload expiry, audit history, text, and colors.
+Event Gallery is a single-event, self-hosted photo/video gallery. Guests use one public page to upload and browse media without accounts. A password-protected admin page manages optional upload approval, trash, upload expiry, audit history, text, and colors.
 
 The design optimizes for:
 
@@ -10,6 +10,9 @@ The design optimizes for:
 - simple single-host Docker operation and backup;
 - no public inbound host ports;
 - minimal infrastructure: one Go app, tusd, SQLite, and filesystem storage.
+
+The runtime is event-agnostic. Its shipped branding preset uses wedding wording,
+but admin-managed plain text and colors can represent any event.
 
 It deliberately does **not** provide multi-tenant accounts, horizontal scaling, high availability, permanent trash purge, or distributed processing.
 

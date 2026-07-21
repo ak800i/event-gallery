@@ -10,10 +10,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/time/rate"
 
-	"wedding-gallery/backend/internal/config"
-	"wedding-gallery/backend/internal/media"
-	"wedding-gallery/backend/internal/ratelimit"
-	"wedding-gallery/backend/internal/store"
+	"event-gallery/backend/internal/config"
+	"event-gallery/backend/internal/media"
+	"event-gallery/backend/internal/ratelimit"
+	"event-gallery/backend/internal/store"
 )
 
 // Server holds all shared dependencies for the HTTP API.

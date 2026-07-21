@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# Multi-stage build for the wedding-gallery application server. Produces a
+# Multi-stage build for the event-gallery application server. Produces a
 # single image that serves both the API and the built React frontend.
 # tusd runs as a separate container (see docker-compose.yml) and is never
 # reachable directly from outside this compose stack.

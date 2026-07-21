@@ -1,4 +1,4 @@
-// Command server runs the wedding-gallery backend: the public gallery API,
+// Command server runs the event-gallery backend: the public gallery API,
 // the admin API, and the internal reverse proxy + hook handler in front of
 // tusd. It also serves the built frontend as a single-page application.
 package main
@@ -18,12 +18,12 @@ import (
 	// TZ environment variable (e.g. Europe/Belgrade) is always honored.
 	_ "time/tzdata"
 
-	"wedding-gallery/backend/internal/config"
-	"wedding-gallery/backend/internal/db"
-	"wedding-gallery/backend/internal/httpapi"
-	"wedding-gallery/backend/internal/media"
-	"wedding-gallery/backend/internal/staticui"
-	"wedding-gallery/backend/internal/store"
+	"event-gallery/backend/internal/config"
+	"event-gallery/backend/internal/db"
+	"event-gallery/backend/internal/httpapi"
+	"event-gallery/backend/internal/media"
+	"event-gallery/backend/internal/staticui"
+	"event-gallery/backend/internal/store"
 )
 
 func main() {

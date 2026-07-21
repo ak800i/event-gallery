@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"wedding-gallery/backend/internal/config"
-	"wedding-gallery/backend/internal/db"
-	"wedding-gallery/backend/internal/media"
-	"wedding-gallery/backend/internal/store"
+	"event-gallery/backend/internal/config"
+	"event-gallery/backend/internal/db"
+	"event-gallery/backend/internal/media"
+	"event-gallery/backend/internal/store"
 )
 
 // testHarness bundles everything needed to exercise the HTTP API in tests.

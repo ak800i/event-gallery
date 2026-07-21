@@ -12,8 +12,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"wedding-gallery/backend/internal/models"
-	"wedding-gallery/backend/internal/store"
+	"event-gallery/backend/internal/models"
+	"event-gallery/backend/internal/store"
 )
 
 const deviceIDHeader = "X-Device-Id"

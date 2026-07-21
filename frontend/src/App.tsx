@@ -53,7 +53,7 @@ function GuestApp() {
   const branding = config?.branding ?? DEFAULT_BRANDING
 
   useEffect(() => {
-    document.title = branding.pageTitle || 'Wedding Gallery'
+    document.title = branding.pageTitle || 'Event Gallery'
   }, [branding.pageTitle])
 
   return (

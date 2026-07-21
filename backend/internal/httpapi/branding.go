@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"wedding-gallery/backend/internal/models"
-	"wedding-gallery/backend/internal/store"
+	"event-gallery/backend/internal/models"
+	"event-gallery/backend/internal/store"
 )
 
 // brandingConfig is the admin-editable presentation contract for the public

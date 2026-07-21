@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/models"
 )
 
 func insertTestMedia(t *testing.T, h *testHarness, id, sha string, uploadedAt time.Time) {

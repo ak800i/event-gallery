@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"wedding-gallery/backend/internal/models"
+	"event-gallery/backend/internal/models"
 )
 
 func writeJPEG(t *testing.T, path string, w, h int) {
@@ -118,7 +118,7 @@ func TestIsAllowed(t *testing.T) {
 func TestSHA256File(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "data.bin")
-	content := []byte("hello wedding gallery")
+	content := []byte("hello event gallery")
 	if err := os.WriteFile(path, content, 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}

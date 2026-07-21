@@ -7,7 +7,7 @@ const DEVICE_ID_KEY = 'wg_device_id'
  * to let the gallery report which items *this* device has already liked.
  *
  * This is NOT an authentication mechanism -- it's just enough to keep the
- * like feature honest for casual use at a wedding, not to resist a
+ * like feature honest for casual use at an event, not to resist a
  * determined adversary.
  */
 export function getDeviceId(): string {
