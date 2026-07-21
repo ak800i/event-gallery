@@ -51,8 +51,4 @@ const (
 	// theme as one validated JSON document. A single value keeps updates atomic
 	// and allows the schema to grow without a database migration.
 	ConfigKeyBranding = "branding"
-
-	// ConfigKeyVideoRotationBackfill marks completion of the one-time repair
-	// that applies video display-matrix rotation to stored dimensions.
-	ConfigKeyVideoRotationBackfill = "video_rotation_dimensions_v1"
 )
