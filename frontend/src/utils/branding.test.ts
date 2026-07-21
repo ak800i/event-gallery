@@ -9,7 +9,7 @@ describe('branding utilities', () => {
       '--color-primary': '#7a5c48',
       '--color-primary-dark': '#5c4433',
       '--color-text': '#2b2420',
-      '--color-muted': '#7a7268',
+      '--color-muted': '#786f66',
       '--color-border': '#e5ddd3',
       '--color-danger': '#b3432b',
     })

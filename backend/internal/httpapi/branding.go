@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -72,7 +73,7 @@ func defaultBrandingConfig() brandingConfig {
 		PrimaryColor:         "#7a5c48",
 		PrimaryDarkColor:     "#5c4433",
 		TextColor:            "#2b2420",
-		MutedColor:           "#7a7268",
+		MutedColor:           "#786f66",
 		BorderColor:          "#e5ddd3",
 		DangerColor:          "#b3432b",
 	}
@@ -116,29 +117,34 @@ func validateBranding(value brandingConfig) error {
 		name     string
 		value    string
 		maxRunes int
+		required bool
 	}{
-		{"pageTitle", value.PageTitle, 160},
-		{"pageSubtitle", value.PageSubtitle, 600},
-		{"postingAsText", value.PostingAsText, 120},
-		{"anonymousGuestText", value.AnonymousGuestText, 120},
-		{"changeNameText", value.ChangeNameText, 80},
-		{"guestNameLabel", value.GuestNameLabel, 240},
-		{"guestNamePlaceholder", value.GuestNamePlaceholder, 240},
-		{"saveNameText", value.SaveNameText, 80},
-		{"uploadButtonText", value.UploadButtonText, 160},
-		{"uploadHelperText", value.UploadHelperText, 400},
-		{"uploadsClosedText", value.UploadsClosedText, 400},
-		{"emptyGalleryText", value.EmptyGalleryText, 400},
-		{"galleryLoadingText", value.GalleryLoadingText, 160},
-		{"galleryErrorText", value.GalleryErrorText, 300},
-		{"galleryEndText", value.GalleryEndText, 240},
-		{"sortLabelText", value.SortLabelText, 120},
-		{"sortUploadTimeText", value.SortUploadTimeText, 120},
-		{"sortCaptureTimeText", value.SortCaptureTimeText, 120},
-		{"downloadOriginalText", value.DownloadOriginalText, 120},
+		{"pageTitle", value.PageTitle, 160, false},
+		{"pageSubtitle", value.PageSubtitle, 600, false},
+		{"postingAsText", value.PostingAsText, 120, false},
+		{"anonymousGuestText", value.AnonymousGuestText, 120, false},
+		{"changeNameText", value.ChangeNameText, 80, true},
+		{"guestNameLabel", value.GuestNameLabel, 240, false},
+		{"guestNamePlaceholder", value.GuestNamePlaceholder, 240, false},
+		{"saveNameText", value.SaveNameText, 80, true},
+		{"uploadButtonText", value.UploadButtonText, 160, true},
+		{"uploadHelperText", value.UploadHelperText, 400, false},
+		{"uploadsClosedText", value.UploadsClosedText, 400, false},
+		{"emptyGalleryText", value.EmptyGalleryText, 400, false},
+		{"galleryLoadingText", value.GalleryLoadingText, 160, false},
+		{"galleryErrorText", value.GalleryErrorText, 300, false},
+		{"galleryEndText", value.GalleryEndText, 240, false},
+		{"sortLabelText", value.SortLabelText, 120, true},
+		{"sortUploadTimeText", value.SortUploadTimeText, 120, true},
+		{"sortCaptureTimeText", value.SortCaptureTimeText, 120, true},
+		{"downloadOriginalText", value.DownloadOriginalText, 120, true},
 	}
 	for _, field := range textFields {
-		if utf8.RuneCountInString(field.value) > field.maxRunes {
+		length := utf8.RuneCountInString(field.value)
+		if field.required && length == 0 {
+			return fmt.Errorf("%s must not be empty", field.name)
+		}
+		if length > field.maxRunes {
 			return fmt.Errorf("%s must be at most %d characters", field.name, field.maxRunes)
 		}
 	}
@@ -176,11 +182,13 @@ func (s *Server) loadBranding(ctx context.Context) (brandingConfig, error) {
 	// Unmarshal into defaults so fields added by later releases retain their
 	// default when reading JSON written by an older release.
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
-		return brandingConfig{}, fmt.Errorf("decode branding configuration: %w", err)
+		slog.Warn("invalid stored branding; using defaults", "error", err)
+		return defaultBrandingConfig(), nil
 	}
 	value = normalizeBranding(value)
 	if err := validateBranding(value); err != nil {
-		return brandingConfig{}, fmt.Errorf("invalid stored branding configuration: %w", err)
+		slog.Warn("invalid stored branding; using defaults", "error", err)
+		return defaultBrandingConfig(), nil
 	}
 	return value, nil
 }
@@ -221,9 +229,14 @@ func (s *Server) handleAdminUpdateBranding(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	req = normalizeBranding(req)
+	if err := validateBranding(req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	value, err := s.saveBranding(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to save branding")
 		return
 	}
 	_ = s.store.RecordAudit(r.Context(), models.ActionConfig, "admin", "", "", "gallery branding updated")

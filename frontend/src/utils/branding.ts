@@ -30,7 +30,7 @@ export const DEFAULT_BRANDING: BrandingConfig = {
   primaryColor: '#7a5c48',
   primaryDarkColor: '#5c4433',
   textColor: '#2b2420',
-  mutedColor: '#7a7268',
+  mutedColor: '#786f66',
   borderColor: '#e5ddd3',
   dangerColor: '#b3432b',
 }

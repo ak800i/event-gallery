@@ -40,8 +40,8 @@ Open `/admin` and sign in with the password supplied through
   audit log;
 - set an upload expiry date. After expiry, browsing and downloads remain
   available, but new uploads are rejected;
-- customize every static guest-page text and choose the full page color
-  palette with a live preview and one-click reset to defaults. Custom text is
+- customize all listed main-page text and choose the full page color palette
+  with a live preview and one-click reset to defaults. Custom text is
   always rendered as plain text; arbitrary HTML and CSS are not accepted.
 
 Deleted originals are moved into a trash area beneath the media directory; they

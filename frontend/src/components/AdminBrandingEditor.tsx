@@ -11,6 +11,7 @@ interface TextFieldDefinition {
   label: string
   group: 'Header' | 'Guest identity' | 'Uploads' | 'Gallery'
   multiline?: boolean
+  required?: boolean
   hint?: string
 }
 
@@ -19,11 +20,11 @@ const textFields: TextFieldDefinition[] = [
   { key: 'pageSubtitle', label: 'Page subtitle', group: 'Header', multiline: true },
   { key: 'postingAsText', label: '“Posting as” text', group: 'Guest identity' },
   { key: 'anonymousGuestText', label: 'Anonymous guest text', group: 'Guest identity' },
-  { key: 'changeNameText', label: 'Change-name button', group: 'Guest identity' },
+  { key: 'changeNameText', label: 'Change-name button', group: 'Guest identity', required: true },
   { key: 'guestNameLabel', label: 'Name input label', group: 'Guest identity' },
   { key: 'guestNamePlaceholder', label: 'Name input placeholder', group: 'Guest identity' },
-  { key: 'saveNameText', label: 'Save-name button', group: 'Guest identity' },
-  { key: 'uploadButtonText', label: 'Upload button', group: 'Uploads' },
+  { key: 'saveNameText', label: 'Save-name button', group: 'Guest identity', required: true },
+  { key: 'uploadButtonText', label: 'Upload button', group: 'Uploads', required: true },
   {
     key: 'uploadHelperText',
     label: 'Upload helper',
@@ -36,10 +37,10 @@ const textFields: TextFieldDefinition[] = [
   { key: 'galleryLoadingText', label: 'Gallery loading message', group: 'Gallery' },
   { key: 'galleryErrorText', label: 'Gallery error message', group: 'Gallery' },
   { key: 'galleryEndText', label: 'End-of-gallery message', group: 'Gallery' },
-  { key: 'sortLabelText', label: 'Sort control label', group: 'Gallery' },
-  { key: 'sortUploadTimeText', label: 'Upload-time sort option', group: 'Gallery' },
-  { key: 'sortCaptureTimeText', label: 'Capture-time sort option', group: 'Gallery' },
-  { key: 'downloadOriginalText', label: 'Lightbox download text', group: 'Gallery' },
+  { key: 'sortLabelText', label: 'Sort control label', group: 'Gallery', required: true },
+  { key: 'sortUploadTimeText', label: 'Upload-time sort option', group: 'Gallery', required: true },
+  { key: 'sortCaptureTimeText', label: 'Capture-time sort option', group: 'Gallery', required: true },
+  { key: 'downloadOriginalText', label: 'Lightbox download text', group: 'Gallery', required: true },
 ]
 
 const colorFields: Array<{ key: BrandingKey; label: string }> = [
@@ -102,7 +103,7 @@ export function AdminBrandingEditor() {
     }
   }
 
-  if (error && !branding) return <p className="form-error">{error}</p>
+  if (error && !branding) return <p className="form-error" role="alert">{error}</p>
   if (!branding) return <p>Loading main-page customization...</p>
 
   const previewHelper = formatBrandingText(branding.uploadHelperText, { maxSize: '5 GB' })
@@ -112,24 +113,34 @@ export function AdminBrandingEditor() {
       <div className="admin-branding-heading">
         <div>
           <h2>Main page</h2>
-          <p>Customize all static guest-page text and choose any colors. Text is displayed literally—HTML and CSS are not interpreted.</p>
+          <p>Customize all listed main-page text and choose any colors. Text is displayed literally—HTML and CSS are not interpreted.</p>
         </div>
       </div>
 
       <form onSubmit={handleSave} className="admin-branding-layout">
         <div className="admin-branding-editor">
           {groups.map((group) => (
-            <fieldset key={group} className="admin-branding-fieldset">
+            <fieldset key={group} className="admin-branding-fieldset" disabled={saving}>
               <legend>{group}</legend>
               {textFields
                 .filter((field) => field.group === group)
                 .map((field) => (
                   <label key={field.key} className="admin-branding-text-field">
-                    <span>{field.label}</span>
+                    <span>{field.label}{field.required ? ' *' : ''}</span>
                     {field.multiline ? (
-                      <textarea value={branding[field.key]} onChange={(event) => update(field.key, event.target.value)} rows={3} />
+                      <textarea
+                        value={branding[field.key]}
+                        onChange={(event) => update(field.key, event.target.value)}
+                        rows={3}
+                        required={field.required}
+                      />
                     ) : (
-                      <input type="text" value={branding[field.key]} onChange={(event) => update(field.key, event.target.value)} />
+                      <input
+                        type="text"
+                        value={branding[field.key]}
+                        onChange={(event) => update(field.key, event.target.value)}
+                        required={field.required}
+                      />
                     )}
                     {field.hint && <small>{field.hint}</small>}
                   </label>
@@ -137,7 +148,7 @@ export function AdminBrandingEditor() {
             </fieldset>
           ))}
 
-          <fieldset className="admin-branding-fieldset">
+          <fieldset className="admin-branding-fieldset" disabled={saving}>
             <legend>Colors</legend>
             <div className="admin-color-grid">
               {colorFields.map((field) => (
@@ -149,6 +160,7 @@ export function AdminBrandingEditor() {
                       value={branding[field.key]}
                       onChange={(event) => update(field.key, event.target.value)}
                       aria-label={`${field.label} color picker`}
+                      required
                     />
                     <input
                       type="text"
@@ -157,6 +169,7 @@ export function AdminBrandingEditor() {
                       pattern="#[0-9a-fA-F]{6}"
                       maxLength={7}
                       aria-label={`${field.label} hex color`}
+                      required
                     />
                   </span>
                 </label>
@@ -175,8 +188,8 @@ export function AdminBrandingEditor() {
               Reset defaults
             </button>
           </div>
-          {message && <p className="form-message">{message}</p>}
-          {error && <p className="form-error">{error}</p>}
+          {message && <p className="form-message" role="status">{message}</p>}
+          {error && <p className="form-error" role="alert">{error}</p>}
         </div>
 
         <aside className="branding-preview" style={brandingThemeStyle(branding)} aria-label="Live main-page preview">

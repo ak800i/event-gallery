@@ -1,10 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
+
+	"wedding-gallery/backend/internal/store"
 )
 
 func TestPublicConfig_IncludesDefaultBranding(t *testing.T) {
@@ -83,6 +86,35 @@ func TestAdminBranding_RejectsInvalidColorWithoutOverwriting(t *testing.T) {
 	_ = json.Unmarshal(getRec.Body.Bytes(), &got)
 	if got != defaultBrandingConfig() {
 		t.Fatalf("invalid update should not be saved: %+v", got)
+	}
+}
+
+func TestPublicConfig_InvalidStoredBrandingFallsBackToDefaults(t *testing.T) {
+	h := newTestHarness(t)
+	if err := h.store.SetConfig(context.Background(), store.ConfigKeyBranding, `{not-json`); err != nil {
+		t.Fatalf("set corrupt branding: %v", err)
+	}
+	rec := doRequest(h, http.MethodGet, "/api/config/public", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected public config to fail open, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp publicConfigResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Branding != defaultBrandingConfig() {
+		t.Fatalf("expected default branding fallback, got %+v", resp.Branding)
+	}
+}
+
+func TestAdminBranding_RejectsEmptyCriticalControlText(t *testing.T) {
+	h := newTestHarness(t)
+	sess, csrfCookie, token := adminLogin(t, h, h.cfg.AdminPassword)
+	value := defaultBrandingConfig()
+	value.ChangeNameText = ""
+	body, _ := json.Marshal(value)
+	req := authedRequest(h, http.MethodPut, "/api/admin/branding", body, sess, csrfCookie, token)
+	rec := serveRequest(h, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for empty control text, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
