@@ -38,19 +38,19 @@ export function AdminDashboard({ onLoggedOut }: AdminDashboardProps) {
         </button>
       </header>
       <nav className="admin-tabs">
-        <button type="button" className={tab === 'active' ? 'active' : ''} onClick={() => setTab('active')}>
+        <button type="button" className={tab === 'active' ? 'active' : ''} onClick={() => setTab('active')} aria-current={tab === 'active' ? 'page' : undefined}>
           Published
         </button>
-        <button type="button" className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')}>
+        <button type="button" className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')} aria-current={tab === 'pending' ? 'page' : undefined}>
           Pending approval
         </button>
-        <button type="button" className={tab === 'trashed' ? 'active' : ''} onClick={() => setTab('trashed')}>
+        <button type="button" className={tab === 'trashed' ? 'active' : ''} onClick={() => setTab('trashed')} aria-current={tab === 'trashed' ? 'page' : undefined}>
           Trash
         </button>
-        <button type="button" className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>
+        <button type="button" className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')} aria-current={tab === 'audit' ? 'page' : undefined}>
           Audit log
         </button>
-        <button type="button" className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}>
+        <button type="button" className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')} aria-current={tab === 'settings' ? 'page' : undefined}>
           Settings
         </button>
       </nav>
@@ -70,6 +70,8 @@ export function AdminMediaList({ status }: { status: AdminMediaFilter }) {
   const [hasMore, setHasMore] = useState(true)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
+  const [mutating, setMutating] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   async function load(reset: boolean) {
     setLoading(true)
@@ -106,48 +108,56 @@ export function AdminMediaList({ status }: { status: AdminMediaFilter }) {
     setSelected(new Set())
   }
 
+  async function runMutation(action: (ids: string[]) => Promise<{ changed: string[] }>) {
+    if (selected.size === 0 || mutating) return
+    const requested = Array.from(selected)
+    setMutating(true)
+    setActionError(null)
+    try {
+      const response = await action(requested)
+      const changed = new Set(response.changed)
+      setItems((current) => current.filter((item) => !changed.has(item.id)))
+      setSelected((current) => new Set(Array.from(current).filter((id) => !changed.has(id))))
+    } catch {
+      setActionError('The media update failed. Please try again.')
+    } finally {
+      setMutating(false)
+    }
+  }
+
   async function handleApprove() {
-    if (selected.size === 0) return
-    await adminBulkApprove(Array.from(selected))
-    setItems((prev) => prev.filter((item) => !selected.has(item.id)))
-    clearSelection()
+    await runMutation(adminBulkApprove)
   }
 
   async function handleDelete() {
-    if (selected.size === 0) return
-    await adminBulkDelete(Array.from(selected))
-    setItems((prev) => prev.filter((i) => !selected.has(i.id)))
-    clearSelection()
+    await runMutation(adminBulkDelete)
   }
 
   async function handleRestore() {
-    if (selected.size === 0) return
-    await adminBulkRestore(Array.from(selected))
-    setItems((prev) => prev.filter((i) => !selected.has(i.id)))
-    clearSelection()
+    await runMutation(adminBulkRestore)
   }
 
   return (
     <div className="admin-media-list">
       <div className="admin-toolbar">
-        <button type="button" onClick={selectAll} disabled={items.length === 0}>
+        <button type="button" onClick={selectAll} disabled={items.length === 0 || mutating}>
           Select all
         </button>
-        <button type="button" onClick={clearSelection} disabled={selected.size === 0}>
+        <button type="button" onClick={clearSelection} disabled={selected.size === 0 || mutating}>
           Clear selection
         </button>
         <span className="admin-selection-count">{selected.size} selected</span>
         {status === 'pending' && (
-          <button type="button" onClick={handleApprove} disabled={selected.size === 0}>
+          <button type="button" onClick={handleApprove} disabled={selected.size === 0 || mutating}>
             Approve selected
           </button>
         )}
         {status !== 'trashed' ? (
-          <button type="button" className="danger" onClick={handleDelete} disabled={selected.size === 0}>
+          <button type="button" className="danger" onClick={handleDelete} disabled={selected.size === 0 || mutating}>
             Move to trash
           </button>
         ) : (
-          <button type="button" onClick={handleRestore} disabled={selected.size === 0}>
+          <button type="button" onClick={handleRestore} disabled={selected.size === 0 || mutating}>
             Restore
           </button>
         )}
@@ -156,7 +166,7 @@ export function AdminMediaList({ status }: { status: AdminMediaFilter }) {
       <div className="admin-media-grid">
         {items.map((item) => (
           <label key={item.id} className={`admin-media-tile${selected.has(item.id) ? ' selected' : ''}`}>
-            <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} />
+            <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} disabled={mutating} />
             {item.hasThumbnail ? (
               <img src={adminMediaThumbnailUrl(item.id)} alt="" loading="lazy" />
             ) : (
@@ -167,6 +177,7 @@ export function AdminMediaList({ status }: { status: AdminMediaFilter }) {
         ))}
       </div>
 
+      {actionError && <p className="form-error" role="alert">{actionError}</p>}
       {items.length === 0 && !loading && <p>No items.</p>}
       {hasMore && (
         <button type="button" onClick={() => load(false)} disabled={loading}>
