@@ -67,6 +67,29 @@ func TestProbeVideo(t *testing.T) {
 	}
 }
 
+func TestDisplayDimensions_AppliesRotationMetadata(t *testing.T) {
+	tests := []struct {
+		name       string
+		stream     ffprobeStream
+		wantWidth  int
+		wantHeight int
+	}{
+		{name: "unrotated", stream: ffprobeStream{Width: 1920, Height: 1080}, wantWidth: 1920, wantHeight: 1080},
+		{name: "side data minus 90", stream: ffprobeStream{Width: 1920, Height: 1080, SideDataList: []ffprobeSideData{{Rotation: -90}}}, wantWidth: 1080, wantHeight: 1920},
+		{name: "side data 270", stream: ffprobeStream{Width: 1920, Height: 1080, SideDataList: []ffprobeSideData{{Rotation: 270}}}, wantWidth: 1080, wantHeight: 1920},
+		{name: "rotate tag 90", stream: ffprobeStream{Width: 1920, Height: 1080, Tags: map[string]string{"rotate": "90"}}, wantWidth: 1080, wantHeight: 1920},
+		{name: "180 keeps dimensions", stream: ffprobeStream{Width: 1920, Height: 1080, SideDataList: []ffprobeSideData{{Rotation: 180}}}, wantWidth: 1920, wantHeight: 1080},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			width, height := displayDimensions(test.stream)
+			if width != test.wantWidth || height != test.wantHeight {
+				t.Fatalf("got %dx%d, want %dx%d", width, height, test.wantWidth, test.wantHeight)
+			}
+		})
+	}
+}
+
 func TestGenerateVideoThumbnail(t *testing.T) {
 	requireFFmpeg(t)
 	dir := t.TempDir()

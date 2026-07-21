@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os/exec"
 	"strconv"
 	"time"
@@ -23,11 +24,16 @@ type ffprobeFormat struct {
 	Tags     map[string]string `json:"tags"`
 }
 
+type ffprobeSideData struct {
+	Rotation float64 `json:"rotation"`
+}
+
 type ffprobeStream struct {
-	CodecType string            `json:"codec_type"`
-	Width     int               `json:"width"`
-	Height    int               `json:"height"`
-	Tags      map[string]string `json:"tags"`
+	CodecType   string            `json:"codec_type"`
+	Width       int               `json:"width"`
+	Height      int               `json:"height"`
+	Tags        map[string]string `json:"tags"`
+	SideDataList []ffprobeSideData `json:"side_data_list"`
 }
 
 type ffprobeOutput struct {
@@ -67,8 +73,7 @@ func ProbeVideo(ctx context.Context, path string) (*VideoInfo, error) {
 	}
 	for _, s := range out.Streams {
 		if s.CodecType == "video" && info.Width == 0 {
-			info.Width = s.Width
-			info.Height = s.Height
+			info.Width, info.Height = displayDimensions(s)
 		}
 	}
 	if creation, ok := out.Format.Tags["creation_time"]; ok {
@@ -78,6 +83,35 @@ func ProbeVideo(ctx context.Context, path string) (*VideoInfo, error) {
 		}
 	}
 	return info, nil
+}
+
+// displayDimensions applies the stream display matrix / rotate tag to the raw
+// encoded dimensions. Phones commonly encode portrait video as landscape
+// frames plus a +/-90 degree display rotation; the gallery must use display
+// dimensions or it allocates a wide tile for a portrait thumbnail.
+func displayDimensions(stream ffprobeStream) (int, int) {
+	rotation := 0.0
+	for _, sideData := range stream.SideDataList {
+		if math.Abs(sideData.Rotation) > 0.01 {
+			rotation = sideData.Rotation
+			break
+		}
+	}
+	if math.Abs(rotation) <= 0.01 {
+		if tagged, ok := stream.Tags["rotate"]; ok {
+			if parsed, err := strconv.ParseFloat(tagged, 64); err == nil {
+				rotation = parsed
+			}
+		}
+	}
+	normalized := math.Mod(rotation, 360)
+	if normalized < 0 {
+		normalized += 360
+	}
+	if math.Abs(normalized-90) < 0.5 || math.Abs(normalized-270) < 0.5 {
+		return stream.Height, stream.Width
+	}
+	return stream.Width, stream.Height
 }
 
 // GenerateVideoThumbnail extracts a representative JPEG frame from a video
