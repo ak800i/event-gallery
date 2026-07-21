@@ -178,6 +178,19 @@ select {
   text-align: center;
 }
 
+.uppy-Dashboard--modal .uppy-Dashboard-inner {
+  top: 50% !important;
+  right: auto !important;
+  bottom: auto !important;
+  left: 50% !important;
+  width: min(40rem, calc(100vw - 2rem)) !important;
+  height: min(26.25rem, calc(100vh - 5rem)) !important;
+  height: min(26.25rem, calc(100dvh - 5rem)) !important;
+  min-height: 0 !important;
+  border-radius: 12px !important;
+  transform: translate(-50%, -50%);
+}
+
 .uppy-Dashboard-close {
   width: 2.75rem !important;
   height: 2.75rem !important;

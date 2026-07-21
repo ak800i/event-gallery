@@ -146,6 +146,7 @@ export function UploadPanel({ guestName, config, branding, onUploadComplete }: U
         onRequestClose={() => setModalOpen(false)}
         closeAfterFinish
         closeModalOnClickOutside
+        singleFileFullScreen={false}
         proudlyDisplayPoweredByUppy={false}
         note={helperText}
       />
