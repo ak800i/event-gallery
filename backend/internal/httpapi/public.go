@@ -309,7 +309,7 @@ func (s *Server) handleLike(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if _, err := s.store.GetByID(r.Context(), id, deviceID); errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.store.GetVisibleByID(r.Context(), id, deviceID); errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "media not found")
 		return
 	} else if err != nil {
@@ -320,7 +320,7 @@ func (s *Server) handleLike(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to like media")
 		return
 	}
-	item, err := s.store.GetByID(r.Context(), id, deviceID)
+	item, err := s.store.GetVisibleByID(r.Context(), id, deviceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load media")
 		return
@@ -336,11 +336,18 @@ func (s *Server) handleUnlike(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
+	if _, err := s.store.GetVisibleByID(r.Context(), id, deviceID); errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "media not found")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load media")
+		return
+	}
 	if _, err := s.store.RemoveLike(r.Context(), id, deviceID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to unlike media")
 		return
 	}
-	item, err := s.store.GetByID(r.Context(), id, deviceID)
+	item, err := s.store.GetVisibleByID(r.Context(), id, deviceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "media not found")
 		return
