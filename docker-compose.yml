@@ -1,8 +1,8 @@
-name: wedding-gallery
+name: event-gallery
 
 services:
   app:
-    image: ghcr.io/nikolaxmarkovic/wedding-gallery:${APP_IMAGE_TAG:-latest}
+    image: ghcr.io/ak800i/event-gallery:${APP_IMAGE_TAG:-latest}
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     read_only: true
@@ -50,7 +50,7 @@ services:
       start_period: 15s
 
   tusd:
-    image: ghcr.io/nikolaxmarkovic/wedding-gallery-tusd:${APP_IMAGE_TAG:-latest}
+    image: ghcr.io/ak800i/event-gallery-tusd:${APP_IMAGE_TAG:-latest}
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     read_only: true

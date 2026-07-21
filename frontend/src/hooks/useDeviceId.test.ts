@@ -15,6 +15,6 @@ describe('getDeviceId', () => {
 
   it('persists the id across calls via localStorage', () => {
     const id = getDeviceId()
-    expect(localStorage.getItem('wg_device_id')).toBe(id)
+    expect(localStorage.getItem('eg_device_id')).toBe(id)
   })
 })

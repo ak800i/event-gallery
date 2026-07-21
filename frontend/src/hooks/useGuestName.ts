@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-const GUEST_NAME_KEY = 'wg_guest_name'
+const GUEST_NAME_KEY = 'eg_guest_name'
 
 /**
  * Persists the guest's chosen display name in localStorage so it's

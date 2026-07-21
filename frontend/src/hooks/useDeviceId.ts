@@ -1,4 +1,4 @@
-const DEVICE_ID_KEY = 'wg_device_id'
+const DEVICE_ID_KEY = 'eg_device_id'
 
 /**
  * Returns a stable, random per-device identifier persisted in

@@ -18,7 +18,7 @@ describe('useGuestName', () => {
       result.current[1]('Alex')
     })
     expect(result.current[0]).toBe('Alex')
-    expect(localStorage.getItem('wg_guest_name')).toBe('Alex')
+    expect(localStorage.getItem('eg_guest_name')).toBe('Alex')
   })
 
   it('readStoredGuestName reads the persisted value outside React', () => {

@@ -9,11 +9,6 @@ The default branding is wedding-oriented so a fresh deployment works
 immediately for that common use case. Administrators can replace all listed
 main-page text and colors for any event without rebuilding the application.
 
-Historical compatibility identifiers remain in the repository name, published
-GHCR image names, Compose project name, session cookies, and browser-storage
-keys. Changing them would break existing deployment references or sign out/reset
-existing browsers; they do not constrain event branding or behavior.
-
 ## Features
 
 ### Guest gallery

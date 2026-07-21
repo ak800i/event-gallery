@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	sessionCookieName = "wg_session"
-	csrfCookieName    = "wg_csrf"
+	sessionCookieName = "eg_session"
+	csrfCookieName    = "eg_csrf"
 	csrfHeaderName    = "X-CSRF-Token"
 )
 
