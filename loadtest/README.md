@@ -77,8 +77,8 @@ a transport retry rather than the 429 itself; correlate retry count with app log
 
 ## Clean up
 
-Successful test files are named `wg-battle-*.png`. Move all active battle items
-to Admin Trash with:
+Successful test files are named `wg-battle-*.png`. Move all published or
+pending battle items to Admin Trash with:
 
 ```sh
 BASE_URL=https://your-gallery.example \

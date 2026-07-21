@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, adminBulkDelete, adminLogin, adminUpdateBranding, checkUploadDuplicate, fetchGallery } from './client'
+import {
+  ApiError,
+  adminBulkApprove,
+  adminBulkDelete,
+  adminLogin,
+  adminUpdateBranding,
+  adminUpdateModeration,
+  checkUploadDuplicate,
+  fetchGallery,
+} from './client'
 import { DEFAULT_BRANDING } from '../utils/branding'
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
@@ -56,16 +65,22 @@ describe('api client', () => {
     const loginResponse = jsonResponse({ csrfToken: 'csrf-abc' })
     const deleteFetch = jsonResponse({ changed: ['id1'] })
     const brandingFetch = jsonResponse(DEFAULT_BRANDING)
+    const approvalFetch = jsonResponse({ changed: ['id2'] })
+    const moderationFetch = jsonResponse({ approvalRequired: true, autoApproved: 0 })
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(loginResponse)
       .mockResolvedValueOnce(deleteFetch)
       .mockResolvedValueOnce(brandingFetch)
+      .mockResolvedValueOnce(approvalFetch)
+      .mockResolvedValueOnce(moderationFetch)
     vi.stubGlobal('fetch', fetchMock)
 
     await adminLogin('password123')
     await adminBulkDelete(['id1'])
     await adminUpdateBranding(DEFAULT_BRANDING)
+    await adminBulkApprove(['id2'])
+    await adminUpdateModeration(true)
 
     const [, deleteInit] = fetchMock.mock.calls[1]
     expect((deleteInit.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
@@ -73,5 +88,9 @@ describe('api client', () => {
     expect(brandingURL).toBe('/api/admin/branding')
     expect(brandingInit.method).toBe('PUT')
     expect((brandingInit.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
+    expect(fetchMock.mock.calls[3][0]).toBe('/api/admin/media/bulk-approve')
+    expect((fetchMock.mock.calls[3][1].headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
+    expect(fetchMock.mock.calls[4][0]).toBe('/api/admin/moderation')
+    expect((fetchMock.mock.calls[4][1].headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
   })
 })

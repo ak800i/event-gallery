@@ -167,6 +167,17 @@ select {
   line-height: 1.35;
 }
 
+.upload-submission-message {
+  margin: 0.6rem 0 0;
+  padding: 0.65rem 0.8rem;
+  color: var(--color-primary-dark);
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, var(--color-border));
+  border-radius: 10px;
+  font-size: 0.86rem;
+  text-align: center;
+}
+
 .uppy-Dashboard-close {
   width: 2.75rem !important;
   height: 2.75rem !important;
@@ -681,11 +692,32 @@ select {
   gap: 2.5rem;
 }
 
-.upload-window-settings {
-  max-width: 480px;
+.upload-window-settings,
+.admin-moderation-settings {
+  max-width: 560px;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.admin-moderation-settings {
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.admin-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+}
+
+.admin-toggle-row input {
+  width: 1.15rem;
+  height: 1.15rem;
 }
 
 .admin-settings-actions,

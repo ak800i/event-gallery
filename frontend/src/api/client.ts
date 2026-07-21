@@ -1,10 +1,11 @@
 import type {
+  AdminMediaFilter,
   AuditLogResponse,
   BrandingConfig,
   GalleryResponse,
   GallerySort,
   LikeResponse,
-  MediaStatus,
+  ModerationConfigResponse,
   PublicConfig,
   SortOrder,
   UploadCheckResponse,
@@ -119,12 +120,20 @@ export async function adminLogout(): Promise<void> {
   cachedCsrfToken = null
 }
 
-export function adminListMedia(params: { status?: MediaStatus | ''; cursor?: string; limit?: number }): Promise<GalleryResponse> {
+export function adminListMedia(params: { status?: AdminMediaFilter | ''; cursor?: string; limit?: number }): Promise<GalleryResponse> {
   const q = new URLSearchParams()
   if (params.status) q.set('status', params.status)
   if (params.cursor) q.set('cursor', params.cursor)
   if (params.limit) q.set('limit', String(params.limit))
   return request(`/api/admin/media?${q.toString()}`)
+}
+
+export function adminBulkApprove(ids: string[]): Promise<{ changed: string[] }> {
+  return request('/api/admin/media/bulk-approve', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+    headers: csrfHeaders(),
+  })
 }
 
 export function adminBulkDelete(ids: string[]): Promise<{ changed: string[] }> {
@@ -143,6 +152,10 @@ export function adminBulkRestore(ids: string[]): Promise<{ changed: string[] }> 
   })
 }
 
+export function adminMediaThumbnailUrl(id: string): string {
+  return `/api/admin/media/${encodeURIComponent(id)}/thumbnail`
+}
+
 export function adminAuditLog(cursor?: string): Promise<AuditLogResponse> {
   const q = new URLSearchParams()
   if (cursor) q.set('cursor', cursor)
@@ -157,6 +170,18 @@ export function adminUpdateConfig(uploadExpiresAt: string | null): Promise<{ upl
   return request('/api/admin/config', {
     method: 'PUT',
     body: JSON.stringify({ uploadExpiresAt: uploadExpiresAt ?? '' }),
+    headers: csrfHeaders(),
+  })
+}
+
+export function adminGetModeration(): Promise<ModerationConfigResponse> {
+  return request('/api/admin/moderation')
+}
+
+export function adminUpdateModeration(approvalRequired: boolean): Promise<ModerationConfigResponse> {
+  return request('/api/admin/moderation', {
+    method: 'PUT',
+    body: JSON.stringify({ approvalRequired }),
     headers: csrfHeaders(),
   })
 }

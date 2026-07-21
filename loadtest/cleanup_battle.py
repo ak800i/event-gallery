@@ -44,16 +44,17 @@ def main():
     csrf = login["csrfToken"]
 
     ids = []
-    cursor = ""
-    while True:
-        query = {"status": "active", "limit": "100"}
-        if cursor:
-            query["cursor"] = cursor
-        page = request(opener, args.base_url.rstrip("/") + "/api/admin/media?" + urllib.parse.urlencode(query))
-        ids.extend(item["id"] for item in page.get("items", []) if item.get("originalFilename", "").startswith(args.prefix))
-        cursor = page.get("nextCursor", "")
-        if not cursor:
-            break
+    for status in ("active", "pending"):
+        cursor = ""
+        while True:
+            query = {"status": status, "limit": "100"}
+            if cursor:
+                query["cursor"] = cursor
+            page = request(opener, args.base_url.rstrip("/") + "/api/admin/media?" + urllib.parse.urlencode(query))
+            ids.extend(item["id"] for item in page.get("items", []) if item.get("originalFilename", "").startswith(args.prefix))
+            cursor = page.get("nextCursor", "")
+            if not cursor:
+                break
 
     for start in range(0, len(ids), 100):
         batch = ids[start : start + 100]

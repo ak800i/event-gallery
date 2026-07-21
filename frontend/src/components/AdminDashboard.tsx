@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react'
 import {
   adminAuditLog,
+  adminBulkApprove,
   adminBulkDelete,
   adminBulkRestore,
   adminGetConfig,
+  adminGetModeration,
   adminListMedia,
   adminLogout,
+  adminMediaThumbnailUrl,
   adminUpdateConfig,
-  mediaThumbnailUrl,
+  adminUpdateModeration,
 } from '../api/client'
-import type { AuditEntry, MediaItem, MediaStatus } from '../types'
+import type { AdminMediaFilter, AuditEntry, MediaItem } from '../types'
 import { AdminBrandingEditor } from './AdminBrandingEditor'
 
-type Tab = 'active' | 'trashed' | 'audit' | 'settings'
+type Tab = 'active' | 'pending' | 'trashed' | 'audit' | 'settings'
 
 interface AdminDashboardProps {
   onLoggedOut: () => void
@@ -36,7 +39,10 @@ export function AdminDashboard({ onLoggedOut }: AdminDashboardProps) {
       </header>
       <nav className="admin-tabs">
         <button type="button" className={tab === 'active' ? 'active' : ''} onClick={() => setTab('active')}>
-          All media
+          Published
+        </button>
+        <button type="button" className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')}>
+          Pending approval
         </button>
         <button type="button" className={tab === 'trashed' ? 'active' : ''} onClick={() => setTab('trashed')}>
           Trash
@@ -50,6 +56,7 @@ export function AdminDashboard({ onLoggedOut }: AdminDashboardProps) {
       </nav>
 
       {tab === 'active' && <AdminMediaList status="active" />}
+      {tab === 'pending' && <AdminMediaList status="pending" />}
       {tab === 'trashed' && <AdminMediaList status="trashed" />}
       {tab === 'audit' && <AdminAuditLog />}
       {tab === 'settings' && <AdminSettings />}
@@ -57,7 +64,7 @@ export function AdminDashboard({ onLoggedOut }: AdminDashboardProps) {
   )
 }
 
-function AdminMediaList({ status }: { status: MediaStatus }) {
+export function AdminMediaList({ status }: { status: AdminMediaFilter }) {
   const [items, setItems] = useState<MediaItem[]>([])
   const [cursor, setCursor] = useState<string | undefined>(undefined)
   const [hasMore, setHasMore] = useState(true)
@@ -99,6 +106,13 @@ function AdminMediaList({ status }: { status: MediaStatus }) {
     setSelected(new Set())
   }
 
+  async function handleApprove() {
+    if (selected.size === 0) return
+    await adminBulkApprove(Array.from(selected))
+    setItems((prev) => prev.filter((item) => !selected.has(item.id)))
+    clearSelection()
+  }
+
   async function handleDelete() {
     if (selected.size === 0) return
     await adminBulkDelete(Array.from(selected))
@@ -123,7 +137,12 @@ function AdminMediaList({ status }: { status: MediaStatus }) {
           Clear selection
         </button>
         <span className="admin-selection-count">{selected.size} selected</span>
-        {status === 'active' ? (
+        {status === 'pending' && (
+          <button type="button" onClick={handleApprove} disabled={selected.size === 0}>
+            Approve selected
+          </button>
+        )}
+        {status !== 'trashed' ? (
           <button type="button" className="danger" onClick={handleDelete} disabled={selected.size === 0}>
             Move to trash
           </button>
@@ -139,7 +158,7 @@ function AdminMediaList({ status }: { status: MediaStatus }) {
           <label key={item.id} className={`admin-media-tile${selected.has(item.id) ? ' selected' : ''}`}>
             <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} />
             {item.hasThumbnail ? (
-              <img src={mediaThumbnailUrl(item.id)} alt="" loading="lazy" />
+              <img src={adminMediaThumbnailUrl(item.id)} alt="" loading="lazy" />
             ) : (
               <div className="media-card-placeholder">{item.kind === 'video' ? '\u{1f3a5}' : '\u{1f5bc}\ufe0f'}</div>
             )}
@@ -214,6 +233,75 @@ function AdminAuditLog() {
   )
 }
 
+export function AdminModerationSettings() {
+  const [approvalRequired, setApprovalRequired] = useState(false)
+  const [savedValue, setSavedValue] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    adminGetModeration()
+      .then((config) => {
+        setApprovalRequired(config.approvalRequired)
+        setSavedValue(config.approvalRequired)
+      })
+      .catch(() => setError('Failed to load approval settings.'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  async function handleSave() {
+    if (savedValue && !approvalRequired) {
+      const confirmed = window.confirm('Disabling approval will immediately publish every pending upload. Continue?')
+      if (!confirmed) {
+        setApprovalRequired(true)
+        return
+      }
+    }
+    setSaving(true)
+    setMessage(null)
+    setError(null)
+    try {
+      const response = await adminUpdateModeration(approvalRequired)
+      setApprovalRequired(response.approvalRequired)
+      setSavedValue(response.approvalRequired)
+      setMessage(
+        response.approvalRequired
+          ? 'Approval queue enabled. New uploads will wait for review.'
+          : `Approval queue disabled. ${response.autoApproved} pending item(s) automatically approved.`,
+      )
+    } catch {
+      setError('Failed to update approval settings.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) return <p>Loading approval settings...</p>
+
+  return (
+    <section className="admin-moderation-settings">
+      <h2>Upload approval</h2>
+      <p>When enabled, new uploads stay hidden until approved in the Pending approval tab.</p>
+      <label className="admin-toggle-row">
+        <input
+          type="checkbox"
+          checked={approvalRequired}
+          onChange={(event) => setApprovalRequired(event.target.checked)}
+          disabled={saving}
+        />
+        Require admin approval before media appears publicly
+      </label>
+      <button type="button" onClick={handleSave} disabled={saving || approvalRequired === savedValue}>
+        {saving ? 'Saving...' : 'Save approval setting'}
+      </button>
+      {message && <p className="form-message" role="status">{message}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </section>
+  )
+}
+
 function AdminSettings() {
   const [uploadExpiresAt, setUploadExpiresAt] = useState<string>('')
   const [loading, setLoading] = useState(true)
@@ -279,6 +367,7 @@ function AdminSettings() {
         {message && <p className="form-message">{message}</p>}
       </section>
 
+      <AdminModerationSettings />
       <AdminBrandingEditor />
     </div>
   )

@@ -32,6 +32,12 @@ const textFields: TextFieldDefinition[] = [
     multiline: true,
     hint: 'Use {maxSize} where the current file limit should appear.',
   },
+  {
+    key: 'uploadAwaitingApprovalText',
+    label: 'Awaiting-approval confirmation',
+    group: 'Uploads',
+    multiline: true,
+  },
   { key: 'uploadsClosedText', label: 'Uploads-closed message', group: 'Uploads', multiline: true },
   { key: 'emptyGalleryText', label: 'Empty-gallery message', group: 'Gallery', multiline: true },
   { key: 'galleryLoadingText', label: 'Gallery loading message', group: 'Gallery' },

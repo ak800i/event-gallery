@@ -3,6 +3,7 @@
 
 export type MediaKind = 'image' | 'video'
 export type MediaStatus = 'active' | 'trashed'
+export type AdminMediaFilter = 'active' | 'pending' | 'trashed'
 
 export interface MediaItem {
   id: string
@@ -38,6 +39,7 @@ export interface BrandingConfig {
   saveNameText: string
   uploadButtonText: string
   uploadHelperText: string
+  uploadAwaitingApprovalText: string
   uploadsClosedText: string
   emptyGalleryText: string
   galleryLoadingText: string
@@ -59,6 +61,7 @@ export interface BrandingConfig {
 
 export interface PublicConfig {
   uploadsEnabled: boolean
+  approvalRequired: boolean
   uploadExpiresAt?: string
   maxUploadBytes: number
   uploadConcurrency: number
@@ -76,6 +79,11 @@ export interface UploadCheckResponse {
 export interface LikeResponse {
   likeCount: number
   likedByDevice: boolean
+}
+
+export interface ModerationConfigResponse {
+  approvalRequired: boolean
+  autoApproved: number
 }
 
 export interface AuditEntry {

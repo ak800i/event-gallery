@@ -8,6 +8,7 @@ import { UploadPanel } from './UploadPanel'
 
 const config: PublicConfig = {
   uploadsEnabled: true,
+  approvalRequired: false,
   maxUploadBytes: 5 * 1024 * 1024 * 1024,
   uploadConcurrency: 50,
   allowedImageMimeTypes: ['image/jpeg', 'image/png'],

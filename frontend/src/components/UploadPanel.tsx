@@ -21,7 +21,7 @@ interface UploadPanelProps {
   guestName: string
   config: PublicConfig
   branding: BrandingConfig
-  onUploadComplete: (successfulUploads: number) => void
+  onUploadComplete: (successfulUploads: number) => Promise<boolean>
 }
 
 /**
@@ -40,10 +40,15 @@ interface UploadPanelProps {
  */
 export function UploadPanel({ guestName, config, branding, onUploadComplete }: UploadPanelProps) {
   const [modalOpen, setModalOpen] = useState(false)
+  const [submissionMessage, setSubmissionMessage] = useState<string | null>(null)
   const onUploadCompleteRef = useRef(onUploadComplete)
+  const brandingRef = useRef(branding)
   useEffect(() => {
     onUploadCompleteRef.current = onUploadComplete
   }, [onUploadComplete])
+  useEffect(() => {
+    brandingRef.current = branding
+  }, [branding])
 
   const uppy = useMemo(() => {
     const instance = new Uppy({
@@ -86,7 +91,11 @@ export function UploadPanel({ guestName, config, branding, onUploadComplete }: U
 
     instance.on('complete', (result) => {
       const successfulUploads = result.successful?.length ?? 0
-      if (successfulUploads > 0) onUploadCompleteRef.current(successfulUploads)
+      if (successfulUploads > 0) {
+        void onUploadCompleteRef.current(successfulUploads).then((approvalRequired) => {
+          setSubmissionMessage(approvalRequired ? brandingRef.current.uploadAwaitingApprovalText : null)
+        })
+      }
     })
 
     return instance
@@ -115,7 +124,10 @@ export function UploadPanel({ guestName, config, branding, onUploadComplete }: U
       <button
         type="button"
         className="upload-trigger"
-        onClick={() => setModalOpen(true)}
+        onClick={() => {
+          setSubmissionMessage(null)
+          setModalOpen(true)
+        }}
         aria-label={branding.uploadButtonText || 'Add photos and videos'}
       >
         <span className="upload-trigger-icon" aria-hidden="true">
@@ -126,6 +138,7 @@ export function UploadPanel({ guestName, config, branding, onUploadComplete }: U
           {helperText && <span>{helperText}</span>}
         </span>
       </button>
+      {submissionMessage && <p className="upload-submission-message" role="status">{submissionMessage}</p>}
 
       <DashboardModal
         uppy={uppy}

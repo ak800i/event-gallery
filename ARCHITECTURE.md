@@ -2,7 +2,7 @@
 
 ## 1. System summary
 
-Wedding Gallery is a single-event, self-hosted photo/video gallery. Guests use one public page to upload and browse media without accounts. A password-protected admin page manages trash, upload expiry, audit history, text, and colors.
+Wedding Gallery is a single-event, self-hosted photo/video gallery. Guests use one public page to upload and browse media without accounts. A password-protected admin page manages optional upload approval, trash, upload expiry, audit history, text, and colors.
 
 The design optimizes for:
 
@@ -62,7 +62,7 @@ No host ports are published. `cloudflared` reaches the app on the `edge` network
 - `Gallery.tsx` / `useGallery.ts` own cursor pagination, sorting, infinite scroll, post-upload polling, and background item merging.
 - React Photo Album lays out thumbnails; YARL provides the image/video lightbox, swipe, keyboard navigation, and native video controls.
 - Guest name and a casual per-device like ID live in browser `localStorage`; neither is authentication.
-- `AdminApp`, `AdminDashboard`, and `AdminBrandingEditor` implement login, moderation, audit/config views, and plain-text/color customization.
+- `AdminApp`, `AdminDashboard`, and `AdminBrandingEditor` implement login, pending-upload approval, moderation, audit/config views, and plain-text/color customization.
 - `api/client.ts` is the same-origin JSON API boundary and attaches the device ID plus admin CSRF header when required.
 
 The production Vite build is embedded into the Go binary. Unknown non-API paths fall back to `index.html`, enabling direct `/admin` loads.
@@ -102,7 +102,7 @@ SQLite uses WAL, foreign keys, a 5-second busy timeout, and embedded ordered mig
 
 Core tables:
 
-- `media_items`: metadata, unique SHA-256, active/trashed status;
+- `media_items`: metadata, unique SHA-256, active/trashed status, and nullable approval timestamp;
 - `likes`: unique `(media_id, device_id)` likes;
 - `audit_log`: best-effort administrative/upload history;
 - `admin_sessions`: server-side session and CSRF tokens;
@@ -125,10 +125,11 @@ Core tables:
 3. Uppy creates a tus upload through `/api/tus/` and sends 8 MiB PATCH requests.
 4. The app applies per-IP request, concurrent-PATCH, and bandwidth policies, then proxies to tusd.
 5. tusd persists chunks and offsets, allowing HEAD-based resume after interruption.
-6. After transport completion, tusd calls the app's `post-finish` hook. Transport completion can precede gallery processing completion, so the SPA polls and merges processed items without remounting.
+6. After transport completion, tusd calls the app's `post-finish` hook. Transport completion can precede gallery processing completion.
 7. The app magic-sniffs content, enforces the allowlist, computes authoritative SHA-256, and moves/copies the original into media storage.
 8. Images receive EXIF orientation/capture-time handling and JPEG thumbnails. Videos receive ffprobe metadata (including display rotation) and ffmpeg thumbnails.
-9. The app rejects checksum mismatch/unsupported content, discards known duplicates, otherwise inserts an active `media_items` row and records audit data.
+9. The app rejects checksum mismatch/unsupported content and discards known duplicates. Otherwise, the same serialized SQLite insert auto-approves when moderation is off or leaves `approved_at` null when it is on.
+10. With moderation off, the SPA polls and merges processed items without remounting. With moderation on, guest polling/backoff is a no-op and the uploader shows an awaiting-approval confirmation.
 
 Client-side hashing is optional optimization; server sniffing, hashing, and SQLite's unique SHA constraint are authoritative.
 
@@ -137,9 +138,10 @@ Client-side hashing is optional optimization; server sniffing, hashing, and SQLi
 1. Password-only login is rate-limited and compared in constant time.
 2. A random server-side session is stored in SQLite.
 3. The browser receives a Secure, HttpOnly session cookie and a CSRF token; every mutating admin request must echo the token in `X-CSRF-Token`.
-4. Admin actions change media status, update upload expiry/branding, or read audit data.
+4. Admin actions bulk-approve pending media, change media status, update upload expiry/branding/moderation, or read audit data.
+5. Disabling moderation and approving every pending row is one SQLite transaction, so uploads cannot remain pending after the toggle completes.
 
-Trash is a **soft database status change**. Files remain under `originals`; there is currently no permanent purge API.
+Trash is a **soft database status change**. Files remain under `originals`; there is currently no permanent purge API. Pending and trashed media use authenticated admin thumbnail routes and return 404 from public media/like routes.
 
 ## 5. Reliability and protection
 
@@ -148,6 +150,7 @@ Trash is a **soft database status change**. Files remain under `originals`; ther
 - Content type is determined from magic bytes, not filename or client MIME.
 - SHA-256 is recomputed by the server; SQLite uniqueness closes concurrent duplicate races.
 - Upload expiry blocks only new upload creation; existing uploads, browsing, and downloads continue.
+- Approval is off by default. When enabled, new completed uploads are admin-only until approved; disabling it atomically publishes all pending media.
 - Per-IP token buckets, PATCH concurrency, and bandwidth controls are process-local and intentionally generous for guests sharing venue NAT.
 - Limiter/session cleanup runs in background goroutines; media processing itself runs inline in tus hooks, not in a queue.
 - App/tusd containers use read-only roots, dropped capabilities, `no-new-privileges`, non-root Compose identities, and writable bind mounts only where required.
@@ -199,12 +202,12 @@ A larger multi-event service would separate API, object storage, metadata databa
 ## 8. Known gaps
 
 - Media filesystem changes and SQLite inserts are not one transaction. A crash between moving a file and inserting its row can leave an orphan; there is no reconciler.
-- Public gallery listing excludes trashed rows, but direct media handlers currently use status-agnostic lookup. A caller who already knows an ID may still retrieve a trashed item.
 - Trash never purges files; abandoned tus uploads have no configured expiration policy.
 - App health does not verify media/upload mount writability, free space, ffmpeg, tusd reachability, or tunnel connectivity.
 - Audit writes are best effort and are not an authoritative transaction log.
 - Like/device identity is client-asserted and intended only for casual deduplication.
-- Post-upload appearance is polling-based; processing rejection/timeout has no dedicated status endpoint.
+- When approval is off, post-upload appearance is polling-based; processing rejection/timeout has no dedicated status endpoint.
+- Rolling back to a pre-approval binary while pending rows exist would expose them because old queries do not understand `approved_at`; rollback requires the matching pre-migration backup.
 - Branding defaults are duplicated in Go and TypeScript and must remain synchronized.
 
 ## 9. Source map

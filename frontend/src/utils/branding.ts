@@ -16,6 +16,7 @@ export const DEFAULT_BRANDING: BrandingConfig = {
   saveNameText: 'Save',
   uploadButtonText: 'Add photos & videos',
   uploadHelperText: 'Up to {maxSize} per file · uploads resume automatically',
+  uploadAwaitingApprovalText: 'Upload complete. Your media is waiting for admin approval.',
   uploadsClosedText: 'Uploads are closed for this gallery.',
   emptyGalleryText: 'No photos or videos yet -- be the first to upload!',
   galleryLoadingText: 'Loading...',

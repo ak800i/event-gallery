@@ -34,6 +34,8 @@ password-protected admin area provides moderation and gallery settings.
 Open `/admin` and sign in with the password supplied through
 `ADMIN_PASSWORD`. There is no username. An administrator can:
 
+- optionally require approval for new uploads before they appear publicly;
+- review and bulk-approve pending uploads;
 - select one or more files and move them to trash;
 - browse trashed files and restore them;
 - review uploads, deletes, restores, logins, and configuration changes in the
@@ -44,8 +46,8 @@ Open `/admin` and sign in with the password supplied through
   with a live preview and one-click reset to defaults. Custom text is
   always rendered as plain text; arbitrary HTML and CSS are not accepted.
 
-Deleted originals are moved into a trash area beneath the media directory; they
-are retained on disk and excluded from the public gallery.
+Trash is a reversible database status: originals remain in media storage, are
+excluded from public listing and direct public media routes, and can be restored.
 
 ## Architecture
 
@@ -59,8 +61,8 @@ The production stack contains three containers:
   hostname.
 
 No host ports are published. Cloudflare sends traffic to `http://app:8080`, and
-guests cannot reach `tusd` directly. SQLite data and generated thumbnails are
-stored separately from original media.
+guests cannot reach `tusd` directly. SQLite lives on the app-data mount;
+originals and generated thumbnails live together on the media mount.
 
 ## Deploy on Synology with Portainer
 
@@ -91,8 +93,8 @@ For example, create these directories on the NAS:
 /volume2/docker-data/wedding-gallery/uploads
 ```
 
-The first directory stores original media and its trash area. The `app`
-directory stores SQLite data and thumbnails. The `uploads` directory holds
+The first directory stores original media and generated thumbnails. The `app`
+directory stores SQLite data. The `uploads` directory holds
 incomplete tus uploads and does not normally need to be backed up.
 
 If using the example `PUID=1027` and `PGID=65536`, ensure that identity can

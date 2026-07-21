@@ -30,11 +30,25 @@ function GuestApp() {
     loadConfig()
   }, [loadConfig])
 
-  const handleUploadComplete = useCallback((successfulUploads: number) => {
-    if (successfulUploads > 0) {
-      setGalleryRefresh((current) => ({ id: current.id + 1, expectedUploads: successfulUploads }))
-    }
-  }, [])
+  const handleUploadComplete = useCallback(
+    async (successfulUploads: number) => {
+      let approvalRequired: boolean
+      try {
+        const latest = await fetchPublicConfig()
+        setConfig(latest)
+        approvalRequired = latest.approvalRequired
+      } catch {
+        // Fail closed: without a fresh moderation value, do not start guest
+        // polling that could reveal whether a pending item has appeared.
+        approvalRequired = true
+      }
+      if (!approvalRequired && successfulUploads > 0) {
+        setGalleryRefresh((current) => ({ id: current.id + 1, expectedUploads: successfulUploads }))
+      }
+      return approvalRequired
+    },
+    [],
+  )
 
   const branding = config?.branding ?? DEFAULT_BRANDING
 
