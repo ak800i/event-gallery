@@ -127,6 +127,7 @@ func (s *Server) handleGallery(w http.ResponseWriter, r *http.Request) {
 
 type publicConfigResponse struct {
 	UploadsEnabled    bool     `json:"uploadsEnabled"`
+	ApprovalRequired  bool     `json:"approvalRequired"`
 	UploadExpiresAt   *string  `json:"uploadExpiresAt,omitempty"`
 	MaxUploadBytes    int64    `json:"maxUploadBytes"`
 	UploadConcurrency int      `json:"uploadConcurrency"`
@@ -147,8 +148,14 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load branding")
 		return
 	}
+	approvalRequired, err := s.store.ApprovalRequired(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load moderation configuration")
+		return
+	}
 	resp := publicConfigResponse{
 		UploadsEnabled:    !closed,
+		ApprovalRequired:  approvalRequired,
 		MaxUploadBytes:    s.cfg.MaxUploadBytes,
 		UploadConcurrency: s.cfg.UploadConcurrencyPerIP,
 		AllowedImageMime:  s.cfg.AllowedImageMIMEs,
@@ -202,12 +209,16 @@ func (s *Server) handleUploadCheck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to check for duplicates")
 		return
 	}
-	writeJSON(w, http.StatusOK, uploadCheckResponse{Duplicate: true, MediaID: existing.ID})
+	resp := uploadCheckResponse{Duplicate: true}
+	if existing.Status == models.StatusActive && existing.ApprovedAt != nil {
+		resp.MediaID = existing.ID
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) lookupActiveMedia(w http.ResponseWriter, r *http.Request) (*models.MediaItem, bool) {
 	id := chi.URLParam(r, "id")
-	item, err := s.store.GetByID(r.Context(), id, deviceIDFromRequest(r))
+	item, err := s.store.GetVisibleByID(r.Context(), id, deviceIDFromRequest(r))
 	if errors.Is(err, sql.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "media not found")
 		return nil, false

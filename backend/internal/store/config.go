@@ -51,4 +51,8 @@ const (
 	// theme as one validated JSON document. A single value keeps updates atomic
 	// and allows the schema to grow without a database migration.
 	ConfigKeyBranding = "branding"
+
+	// ConfigKeyApprovalRequired is present with value "true" only while new
+	// uploads must wait for admin approval before public visibility.
+	ConfigKeyApprovalRequired = "approval_required"
 )

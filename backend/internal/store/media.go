@@ -46,12 +46,15 @@ func (s *Store) InsertMedia(ctx context.Context, m *models.MediaItem) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO media_items (
 			id, original_filename, stored_filename, kind, mime_type, size_bytes, sha256,
-			width, height, duration_seconds, has_thumbnail, captured_at, uploaded_at,
+			width, height, duration_seconds, has_thumbnail, captured_at, uploaded_at, approved_at,
 			uploader_name, uploader_ip, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			CASE WHEN COALESCE((SELECT value FROM app_config WHERE key = ?), 'false') = 'false' THEN ? ELSE NULL END,
+			?, ?, ?)`,
 		m.ID, m.OriginalFilename, m.StoredFilename, string(m.Kind), m.MimeType, m.SizeBytes, m.SHA256,
 		nullableInt(m.Width), nullableInt(m.Height), nullableFloat(m.DurationSeconds), boolToInt(m.HasThumbnail),
-		formatTimePtr(m.CapturedAt), formatTime(m.UploadedAt), m.UploaderName, m.UploaderIP, string(models.StatusActive),
+		formatTimePtr(m.CapturedAt), formatTime(m.UploadedAt), ConfigKeyApprovalRequired, formatTime(m.UploadedAt),
+		m.UploaderName, m.UploaderIP, string(models.StatusActive),
 	)
 	if err != nil {
 		return fmt.Errorf("insert media: %w", err)
@@ -94,6 +97,7 @@ type mediaRow struct {
 	HasThumbnail     int
 	CapturedAt       sql.NullString
 	UploadedAt       string
+	ApprovedAt       sql.NullString
 	UploaderName     string
 	UploaderIP       sql.NullString
 	Status           string
@@ -106,7 +110,7 @@ func scanMediaRow(row *sql.Rows) (mediaRow, error) {
 	var r mediaRow
 	err := row.Scan(
 		&r.ID, &r.OriginalFilename, &r.StoredFilename, &r.Kind, &r.MimeType, &r.SizeBytes, &r.SHA256,
-		&r.Width, &r.Height, &r.DurationSeconds, &r.HasThumbnail, &r.CapturedAt, &r.UploadedAt,
+		&r.Width, &r.Height, &r.DurationSeconds, &r.HasThumbnail, &r.CapturedAt, &r.UploadedAt, &r.ApprovedAt,
 		&r.UploaderName, &r.UploaderIP, &r.Status, &r.DeletedAt, &r.LikeCount, &r.Liked,
 	)
 	return r, err
@@ -118,6 +122,10 @@ func (r mediaRow) toModel() (models.MediaItem, error) {
 		return models.MediaItem{}, err
 	}
 	uploaded, err := parseTime(r.UploadedAt)
+	if err != nil {
+		return models.MediaItem{}, err
+	}
+	approved, err := parseNullTime(r.ApprovedAt)
 	if err != nil {
 		return models.MediaItem{}, err
 	}
@@ -139,6 +147,7 @@ func (r mediaRow) toModel() (models.MediaItem, error) {
 		HasThumbnail:     r.HasThumbnail != 0,
 		CapturedAt:       captured,
 		UploadedAt:       uploaded,
+		ApprovedAt:       approved,
 		UploaderName:     r.UploaderName,
 		UploaderIP:       r.UploaderIP.String,
 		Status:           models.MediaStatus(r.Status),
@@ -150,7 +159,7 @@ func (r mediaRow) toModel() (models.MediaItem, error) {
 
 const mediaSelectColumns = `
 	m.id, m.original_filename, m.stored_filename, m.kind, m.mime_type, m.size_bytes, m.sha256,
-	m.width, m.height, m.duration_seconds, m.has_thumbnail, m.captured_at, m.uploaded_at,
+	m.width, m.height, m.duration_seconds, m.has_thumbnail, m.captured_at, m.uploaded_at, m.approved_at,
 	m.uploader_name, m.uploader_ip, m.status, m.deleted_at,
 	COALESCE((SELECT COUNT(*) FROM likes l WHERE l.media_id = m.id), 0) AS like_count,
 	COALESCE((SELECT 1 FROM likes l2 WHERE l2.media_id = m.id AND l2.device_id = ?), 0) AS liked
@@ -169,6 +178,31 @@ func (s *Store) GetByID(ctx context.Context, id string, deviceID string) (*model
 	row, err := scanMediaRow(rows)
 	if err != nil {
 		return nil, fmt.Errorf("scan media: %w", err)
+	}
+	item, err := row.toModel()
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// GetVisibleByID fetches only publicly visible media. Keeping this filter in
+// the query prevents pending/trashed IDs from reaching thumbnails, originals,
+// downloads, or likes through direct URLs.
+func (s *Store) GetVisibleByID(ctx context.Context, id string, deviceID string) (*models.MediaItem, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+mediaSelectColumns+`
+		FROM media_items m
+		WHERE m.id = ? AND m.status = 'active' AND m.approved_at IS NOT NULL`, deviceID, id)
+	if err != nil {
+		return nil, fmt.Errorf("query visible media by id: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, sql.ErrNoRows
+	}
+	row, err := scanMediaRow(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan visible media: %w", err)
 	}
 	item, err := row.toModel()
 	if err != nil {
@@ -226,7 +260,7 @@ func (s *Store) ListGallery(ctx context.Context, p ListGalleryParams) ([]models.
 	}
 
 	query := strings.Builder{}
-	query.WriteString(`SELECT ` + mediaSelectColumns + `, ` + sortExpr + ` AS sort_key FROM media_items m WHERE m.status = 'active'`)
+	query.WriteString(`SELECT ` + mediaSelectColumns + `, ` + sortExpr + ` AS sort_key FROM media_items m WHERE m.status = 'active' AND m.approved_at IS NOT NULL`)
 	args := []any{p.DeviceID}
 
 	if p.Cursor != nil {
@@ -249,7 +283,7 @@ func (s *Store) ListGallery(ctx context.Context, p ListGalleryParams) ([]models.
 		var sortKey string
 		if err := rows.Scan(
 			&r.ID, &r.OriginalFilename, &r.StoredFilename, &r.Kind, &r.MimeType, &r.SizeBytes, &r.SHA256,
-			&r.Width, &r.Height, &r.DurationSeconds, &r.HasThumbnail, &r.CapturedAt, &r.UploadedAt,
+			&r.Width, &r.Height, &r.DurationSeconds, &r.HasThumbnail, &r.CapturedAt, &r.UploadedAt, &r.ApprovedAt,
 			&r.UploaderName, &r.UploaderIP, &r.Status, &r.DeletedAt, &r.LikeCount, &r.Liked, &sortKey,
 		); err != nil {
 			return nil, "", fmt.Errorf("scan gallery row: %w", err)
@@ -277,9 +311,10 @@ func (s *Store) ListGallery(ctx context.Context, p ListGalleryParams) ([]models.
 
 // AdminListParams configures a page of the admin item listing.
 type AdminListParams struct {
-	Status models.MediaStatus // "" means all statuses
-	Cursor *Cursor
-	Limit  int
+	Status   models.MediaStatus // "" means all statuses
+	Approved *bool              // nil means either; false is the pending queue
+	Cursor   *Cursor
+	Limit    int
 }
 
 // ListAdmin returns items for the admin dashboard ordered by upload time
@@ -292,6 +327,13 @@ func (s *Store) ListAdmin(ctx context.Context, p AdminListParams) ([]models.Medi
 	if p.Status != "" {
 		query.WriteString(` AND m.status = ?`)
 		args = append(args, string(p.Status))
+	}
+	if p.Approved != nil {
+		if *p.Approved {
+			query.WriteString(` AND m.approved_at IS NOT NULL`)
+		} else {
+			query.WriteString(` AND m.approved_at IS NULL`)
+		}
 	}
 	if p.Cursor != nil {
 		query.WriteString(` AND (m.uploaded_at < ? OR (m.uploaded_at = ? AND m.id < ?))`)

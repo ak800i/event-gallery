@@ -2,9 +2,14 @@ package httpapi
 
 import (
 	"crypto/subtle"
+	"database/sql"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"wedding-gallery/backend/internal/models"
 	"wedding-gallery/backend/internal/store"
@@ -72,9 +77,19 @@ func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 // dashboard, optionally filtered by status (active/trashed); omitting the
 // filter returns every item regardless of status.
 func (s *Server) handleAdminListMedia(w http.ResponseWriter, r *http.Request) {
-	statusParam := models.MediaStatus(r.URL.Query().Get("status"))
-	if statusParam != models.StatusActive && statusParam != models.StatusTrashed {
-		statusParam = ""
+	var statusParam models.MediaStatus
+	var approved *bool
+	switch r.URL.Query().Get("status") {
+	case "active":
+		statusParam = models.StatusActive
+		value := true
+		approved = &value
+	case "pending":
+		statusParam = models.StatusActive
+		value := false
+		approved = &value
+	case "trashed":
+		statusParam = models.StatusTrashed
 	}
 	cursor, err := store.DecodeCursor(r.URL.Query().Get("cursor"))
 	if err != nil {
@@ -84,7 +99,7 @@ func (s *Server) handleAdminListMedia(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r, 50, 200)
 
 	items, nextCursor, err := s.store.ListAdmin(r.Context(), store.AdminListParams{
-		Status: statusParam, Cursor: cursor, Limit: limit,
+		Status: statusParam, Approved: approved, Cursor: cursor, Limit: limit,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list media")
@@ -146,6 +161,93 @@ func (s *Server) handleBulkDelete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleBulkRestore(w http.ResponseWriter, r *http.Request) {
 	s.bulkChangeStatus(w, r, models.StatusActive, models.ActionRestore)
+}
+
+func (s *Server) handleBulkApprove(w http.ResponseWriter, r *http.Request) {
+	var req bulkIDsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "no ids provided")
+		return
+	}
+	if len(req.IDs) > 500 {
+		writeError(w, http.StatusBadRequest, "too many ids in a single request (max 500)")
+		return
+	}
+
+	filenames := make(map[string]string, len(req.IDs))
+	for _, id := range req.IDs {
+		if item, err := s.store.GetByID(r.Context(), id, ""); err == nil {
+			filenames[id] = item.OriginalFilename
+		}
+	}
+	changed, err := s.store.ApproveBulk(r.Context(), req.IDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to approve media")
+		return
+	}
+	for _, id := range changed {
+		_ = s.store.RecordAudit(r.Context(), models.ActionApprove, "admin", id, filenames[id], "")
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"changed": changed})
+}
+
+func (s *Server) handleAdminThumbnail(w http.ResponseWriter, r *http.Request) {
+	item, err := s.store.GetByID(r.Context(), chi.URLParam(r, "id"), "")
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "media not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load media")
+		return
+	}
+	if !item.HasThumbnail {
+		writeError(w, http.StatusNotFound, "no thumbnail available")
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	http.ServeFile(w, r, s.processor.ThumbnailPath(item.ID))
+}
+
+type moderationConfigResponse struct {
+	ApprovalRequired bool  `json:"approvalRequired"`
+	AutoApproved     int64 `json:"autoApproved"`
+}
+
+type moderationConfigUpdateRequest struct {
+	ApprovalRequired bool `json:"approvalRequired"`
+}
+
+func (s *Server) handleAdminGetModeration(w http.ResponseWriter, r *http.Request) {
+	required, err := s.store.ApprovalRequired(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load moderation configuration")
+		return
+	}
+	writeJSON(w, http.StatusOK, moderationConfigResponse{ApprovalRequired: required})
+}
+
+func (s *Server) handleAdminUpdateModeration(w http.ResponseWriter, r *http.Request) {
+	var req moderationConfigUpdateRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	autoApproved, err := s.store.SetApprovalRequired(r.Context(), req.ApprovalRequired)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update moderation configuration")
+		return
+	}
+	details := "approval queue enabled"
+	if !req.ApprovalRequired {
+		details = fmt.Sprintf("approval queue disabled; %d media automatically approved", autoApproved)
+	}
+	_ = s.store.RecordAudit(r.Context(), models.ActionConfig, "admin", "", "", details)
+	writeJSON(w, http.StatusOK, moderationConfigResponse{ApprovalRequired: req.ApprovalRequired, AutoApproved: autoApproved})
 }
 
 type auditEntryDTO struct {

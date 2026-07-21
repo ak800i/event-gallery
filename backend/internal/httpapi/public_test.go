@@ -62,6 +62,9 @@ func TestHandlePublicConfig(t *testing.T) {
 	if !resp.UploadsEnabled {
 		t.Error("expected uploads enabled by default")
 	}
+	if resp.ApprovalRequired {
+		t.Error("expected approval queue disabled by default")
+	}
 	if resp.MaxUploadBytes != h.cfg.MaxUploadBytes {
 		t.Errorf("expected max upload bytes to match config")
 	}

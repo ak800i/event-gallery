@@ -28,6 +28,7 @@ type brandingConfig struct {
 	SaveNameText           string `json:"saveNameText"`
 	UploadButtonText       string `json:"uploadButtonText"`
 	UploadHelperText       string `json:"uploadHelperText"`
+	UploadAwaitingApprovalText string `json:"uploadAwaitingApprovalText"`
 	UploadsClosedText      string `json:"uploadsClosedText"`
 	EmptyGalleryText       string `json:"emptyGalleryText"`
 	GalleryLoadingText     string `json:"galleryLoadingText"`
@@ -59,6 +60,7 @@ func defaultBrandingConfig() brandingConfig {
 		SaveNameText:         "Save",
 		UploadButtonText:     "Add photos & videos",
 		UploadHelperText:     "Up to {maxSize} per file · uploads resume automatically",
+		UploadAwaitingApprovalText: "Upload complete. Your media is waiting for admin approval.",
 		UploadsClosedText:    "Uploads are closed for this gallery.",
 		EmptyGalleryText:     "No photos or videos yet -- be the first to upload!",
 		GalleryLoadingText:   "Loading...",
@@ -92,6 +94,7 @@ func normalizeBranding(value brandingConfig) brandingConfig {
 	value.SaveNameText = strings.TrimSpace(value.SaveNameText)
 	value.UploadButtonText = strings.TrimSpace(value.UploadButtonText)
 	value.UploadHelperText = strings.TrimSpace(value.UploadHelperText)
+	value.UploadAwaitingApprovalText = strings.TrimSpace(value.UploadAwaitingApprovalText)
 	value.UploadsClosedText = strings.TrimSpace(value.UploadsClosedText)
 	value.EmptyGalleryText = strings.TrimSpace(value.EmptyGalleryText)
 	value.GalleryLoadingText = strings.TrimSpace(value.GalleryLoadingText)
@@ -129,6 +132,7 @@ func validateBranding(value brandingConfig) error {
 		{"saveNameText", value.SaveNameText, 80, true},
 		{"uploadButtonText", value.UploadButtonText, 160, true},
 		{"uploadHelperText", value.UploadHelperText, 400, false},
+		{"uploadAwaitingApprovalText", value.UploadAwaitingApprovalText, 400, false},
 		{"uploadsClosedText", value.UploadsClosedText, 400, false},
 		{"emptyGalleryText", value.EmptyGalleryText, 400, false},
 		{"galleryLoadingText", value.GalleryLoadingText, 160, false},

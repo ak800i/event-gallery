@@ -35,6 +35,7 @@ type MediaItem struct {
 	HasThumbnail     bool
 	CapturedAt       *time.Time
 	UploadedAt       time.Time
+	ApprovedAt       *time.Time
 	UploaderName     string
 	UploaderIP       string
 	Status           MediaStatus
@@ -50,6 +51,7 @@ const (
 	ActionUpload      AuditAction = "upload"
 	ActionDelete      AuditAction = "delete"
 	ActionRestore     AuditAction = "restore"
+	ActionApprove     AuditAction = "approve"
 	ActionLogin       AuditAction = "login"
 	ActionLoginFailed AuditAction = "login_failed"
 	ActionConfig      AuditAction = "config"
