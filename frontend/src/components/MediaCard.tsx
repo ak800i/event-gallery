@@ -6,13 +6,14 @@ import { LikeButton } from './LikeButton'
 
 interface MediaCardProps {
   item: MediaItem
+  anonymousGuestText: string
   onOpen: () => void
   style?: CSSProperties
 }
 
 /** One image-forward tile in the responsive gallery. Secondary metadata and
  * actions sit on a quiet gradient overlay, similar to modern photo timelines. */
-export function MediaCard({ item, onOpen, style }: MediaCardProps) {
+export function MediaCard({ item, anonymousGuestText, onOpen, style }: MediaCardProps) {
   return (
     <div className="media-card react-photo-album--photo" style={style}>
       <button type="button" className="media-card-thumb" onClick={onOpen} aria-label={`Open ${item.originalFilename}`}>
@@ -30,8 +31,8 @@ export function MediaCard({ item, onOpen, style }: MediaCardProps) {
         )}
       </button>
       <div className="media-card-meta">
-        <span className="uploader-name" title={item.uploaderName || 'Anonymous guest'}>
-          {item.uploaderName || 'Anonymous guest'}
+        <span className="uploader-name" title={item.uploaderName || anonymousGuestText}>
+          {item.uploaderName || anonymousGuestText}
         </span>
         <div className="media-card-actions">
           <LikeButton

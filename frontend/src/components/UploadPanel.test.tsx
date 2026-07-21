@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { PublicConfig } from '../types'
+import { DEFAULT_BRANDING } from '../utils/branding'
 import { UploadPanel } from './UploadPanel'
 
 const config: PublicConfig = {
@@ -12,11 +13,12 @@ const config: PublicConfig = {
   allowedImageMimeTypes: ['image/jpeg', 'image/png'],
   allowedVideoMimeTypes: ['video/mp4'],
   guestNameMaxLength: 60,
+  branding: DEFAULT_BRANDING,
 }
 
 describe('UploadPanel', () => {
   it('keeps the uploader compact until requested and opens a webcam-free Uppy modal', async () => {
-    render(<UploadPanel guestName="Alex" config={config} onUploadComplete={vi.fn()} />)
+    render(<UploadPanel guestName="Alex" config={config} branding={DEFAULT_BRANDING} onUploadComplete={vi.fn()} />)
 
     const trigger = screen.getByRole('button', { name: /add photos & videos/i })
     expect(trigger).toHaveTextContent(/uploads resume automatically/i)
@@ -36,7 +38,12 @@ describe('UploadPanel', () => {
   })
 
   it('shows a compact closed state when uploads are disabled', () => {
-    render(<UploadPanel guestName="Alex" config={{ ...config, uploadsEnabled: false }} onUploadComplete={vi.fn()} />)
+    render(<UploadPanel
+        guestName="Alex"
+        config={{ ...config, uploadsEnabled: false }}
+        branding={DEFAULT_BRANDING}
+        onUploadComplete={vi.fn()}
+      />)
     expect(screen.getByText(/uploads are closed/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /add photos/i })).not.toBeInTheDocument()
   })

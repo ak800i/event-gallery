@@ -2,7 +2,8 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Gallery } from './Gallery'
 import * as apiClient from '../api/client'
-import type { MediaItem } from '../types'
+import type { BrandingConfig, MediaItem } from '../types'
+import { DEFAULT_BRANDING } from '../utils/branding'
 
 vi.mock('../api/client', async () => {
   const actual = await vi.importActual<typeof apiClient>('../api/client')
@@ -58,15 +59,19 @@ function makeItem(overrides: Partial<MediaItem> = {}): MediaItem {
   }
 }
 
+function renderGallery(branding: BrandingConfig = DEFAULT_BRANDING) {
+  return render(<Gallery branding={branding} />)
+}
+
 describe('Gallery', () => {
   beforeEach(() => {
     vi.mocked(apiClient.fetchGallery).mockReset()
   })
 
-  it('shows an empty state when there are no items', async () => {
+  it('shows the configured empty state when there are no items', async () => {
     vi.mocked(apiClient.fetchGallery).mockResolvedValue({ items: [], nextCursor: '' })
-    render(<Gallery />)
-    await waitFor(() => expect(screen.getByText(/be the first to upload/i)).toBeInTheDocument())
+    renderGallery({ ...DEFAULT_BRANDING, emptyGalleryText: 'Bring on the memories!' })
+    await waitFor(() => expect(screen.getByText('Bring on the memories!')).toBeInTheDocument())
   })
 
   it('renders returned items', async () => {
@@ -74,22 +79,22 @@ describe('Gallery', () => {
       items: [makeItem({ id: 'id1' }), makeItem({ id: 'id2', originalFilename: 'clip.mp4', kind: 'video' })],
       nextCursor: '',
     })
-    render(<Gallery />)
+    renderGallery()
     await waitFor(() => expect(screen.getAllByRole('button', { name: /open/i })).toHaveLength(2))
     const download = screen.getAllByRole('link', { name: /download original/i })[0]
     expect(download.querySelector('svg')).toBeInTheDocument()
     expect(download).not.toHaveTextContent('⬇️')
   })
 
-  it('shows an error message when the fetch fails', async () => {
+  it('shows the configured error message when the fetch fails', async () => {
     vi.mocked(apiClient.fetchGallery).mockRejectedValue(new Error('network down'))
-    render(<Gallery />)
-    await waitFor(() => expect(screen.getByText(/failed to load the gallery/i)).toBeInTheDocument())
+    renderGallery({ ...DEFAULT_BRANDING, galleryErrorText: 'Please try again later.' })
+    await waitFor(() => expect(screen.getByText('Please try again later.')).toBeInTheDocument())
   })
 
   it('reloads with new sort order when the sort control changes', async () => {
     vi.mocked(apiClient.fetchGallery).mockResolvedValue({ items: [makeItem()], nextCursor: '' })
-    render(<Gallery />)
+    renderGallery()
     await waitFor(() => expect(apiClient.fetchGallery).toHaveBeenCalled())
 
     const select = screen.getByLabelText(/sort by/i)
@@ -103,7 +108,7 @@ describe('Gallery', () => {
 
   it('opens the lightbox when a media card is clicked', async () => {
     vi.mocked(apiClient.fetchGallery).mockResolvedValue({ items: [makeItem()], nextCursor: '' })
-    render(<Gallery />)
+    renderGallery()
     const openButton = await screen.findByRole('button', { name: /open/i })
 
     const { default: userEvent } = await import('@testing-library/user-event')
@@ -117,7 +122,7 @@ describe('Gallery', () => {
       items: [makeItem({ id: 'id1' }), makeItem({ id: 'id2', originalFilename: 'second.jpg' })],
       nextCursor: '',
     })
-    render(<Gallery />)
+    renderGallery()
 
     const { default: userEvent } = await import('@testing-library/user-event')
     const user = userEvent.setup()

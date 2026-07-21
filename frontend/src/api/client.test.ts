@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, adminBulkDelete, adminLogin, checkUploadDuplicate, fetchGallery } from './client'
+import { ApiError, adminBulkDelete, adminLogin, adminUpdateBranding, checkUploadDuplicate, fetchGallery } from './client'
+import { DEFAULT_BRANDING } from '../utils/branding'
 
 function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(body), {
@@ -54,13 +55,23 @@ describe('api client', () => {
   it('adminLogin caches the csrf token for subsequent mutating admin calls', async () => {
     const loginResponse = jsonResponse({ csrfToken: 'csrf-abc' })
     const deleteFetch = jsonResponse({ changed: ['id1'] })
-    const fetchMock = vi.fn().mockResolvedValueOnce(loginResponse).mockResolvedValueOnce(deleteFetch)
+    const brandingFetch = jsonResponse(DEFAULT_BRANDING)
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(loginResponse)
+      .mockResolvedValueOnce(deleteFetch)
+      .mockResolvedValueOnce(brandingFetch)
     vi.stubGlobal('fetch', fetchMock)
 
     await adminLogin('password123')
     await adminBulkDelete(['id1'])
+    await adminUpdateBranding(DEFAULT_BRANDING)
 
     const [, deleteInit] = fetchMock.mock.calls[1]
     expect((deleteInit.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
+    const [brandingURL, brandingInit] = fetchMock.mock.calls[2]
+    expect(brandingURL).toBe('/api/admin/branding')
+    expect(brandingInit.method).toBe('PUT')
+    expect((brandingInit.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
   })
 })

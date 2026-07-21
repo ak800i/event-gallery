@@ -8,8 +8,9 @@ import '@uppy/core/css/style.min.css'
 import '@uppy/dashboard/css/style.min.css'
 
 import { sha256OfFile } from '../utils/hash'
+import { formatBrandingText } from '../utils/branding'
 import { checkUploadDuplicate } from '../api/client'
-import type { PublicConfig } from '../types'
+import type { BrandingConfig, PublicConfig } from '../types'
 
 // tus request (chunk) size. 8 MiB keeps each PATCH safely under common
 // reverse-proxy body limits (e.g. Cloudflare's 100 MB cap) while still
@@ -19,6 +20,7 @@ const TUS_CHUNK_SIZE = 8 * 1024 * 1024
 interface UploadPanelProps {
   guestName: string
   config: PublicConfig
+  branding: BrandingConfig
   onUploadComplete: () => void
 }
 
@@ -36,7 +38,7 @@ interface UploadPanelProps {
  * level per-chunk checksum is used; the whole-file hash above is still
  * re-verified server-side before the file is stored.
  */
-export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanelProps) {
+export function UploadPanel({ guestName, config, branding, onUploadComplete }: UploadPanelProps) {
   const [modalOpen, setModalOpen] = useState(false)
   const onUploadCompleteRef = useRef(onUploadComplete)
   useEffect(() => {
@@ -100,21 +102,27 @@ export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanel
   }, [uppy])
 
   if (!config.uploadsEnabled) {
-    return <p className="upload-closed">Uploads are closed for this gallery.</p>
+    return <p className="upload-closed">{branding.uploadsClosedText}</p>
   }
 
   const maxSizeGiB = config.maxUploadBytes / (1024 * 1024 * 1024)
   const maxSizeLabel = maxSizeGiB >= 1 ? `${Number(maxSizeGiB.toFixed(1))} GB` : `${Math.floor(config.maxUploadBytes / (1024 * 1024))} MB`
+  const helperText = formatBrandingText(branding.uploadHelperText, { maxSize: maxSizeLabel })
 
   return (
     <>
-      <button type="button" className="upload-trigger" onClick={() => setModalOpen(true)}>
+      <button
+        type="button"
+        className="upload-trigger"
+        onClick={() => setModalOpen(true)}
+        aria-label={branding.uploadButtonText || 'Add photos and videos'}
+      >
         <span className="upload-trigger-icon" aria-hidden="true">
           <CloudUpload size={22} strokeWidth={1.8} />
         </span>
         <span className="upload-trigger-copy">
-          <strong>Add photos & videos</strong>
-          <span>Up to {maxSizeLabel} per file · uploads resume automatically</span>
+          {branding.uploadButtonText && <strong>{branding.uploadButtonText}</strong>}
+          {helperText && <span>{helperText}</span>}
         </span>
       </button>
 
@@ -125,7 +133,7 @@ export function UploadPanel({ guestName, config, onUploadComplete }: UploadPanel
         closeAfterFinish
         closeModalOnClickOutside
         proudlyDisplayPoweredByUppy={false}
-        note={`Photos & videos up to ${maxSizeLabel} per file`}
+        note={helperText}
       />
     </>
   )

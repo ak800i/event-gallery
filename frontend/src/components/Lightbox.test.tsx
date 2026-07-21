@@ -2,6 +2,7 @@ import { render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { MediaItem } from '../types'
+import { DEFAULT_BRANDING } from '../utils/branding'
 import { Lightbox } from './Lightbox'
 
 const lightboxSpy = vi.hoisted(() => vi.fn())
@@ -49,6 +50,7 @@ describe('Lightbox media mapping', () => {
           item({ id: 'video-id', originalFilename: 'clip.mp4', kind: 'video', mimeType: 'video/mp4' }),
         ]}
         index={0}
+        branding={DEFAULT_BRANDING}
         onClose={vi.fn()}
         onIndexChange={vi.fn()}
       />,

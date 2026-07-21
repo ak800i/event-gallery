@@ -27,6 +27,36 @@ export interface GalleryResponse {
   nextCursor?: string
 }
 
+export interface BrandingConfig {
+  pageTitle: string
+  pageSubtitle: string
+  postingAsText: string
+  anonymousGuestText: string
+  changeNameText: string
+  guestNameLabel: string
+  guestNamePlaceholder: string
+  saveNameText: string
+  uploadButtonText: string
+  uploadHelperText: string
+  uploadsClosedText: string
+  emptyGalleryText: string
+  galleryLoadingText: string
+  galleryErrorText: string
+  galleryEndText: string
+  sortLabelText: string
+  sortUploadTimeText: string
+  sortCaptureTimeText: string
+  downloadOriginalText: string
+  backgroundColor: string
+  surfaceColor: string
+  primaryColor: string
+  primaryDarkColor: string
+  textColor: string
+  mutedColor: string
+  borderColor: string
+  dangerColor: string
+}
+
 export interface PublicConfig {
   uploadsEnabled: boolean
   uploadExpiresAt?: string
@@ -35,6 +65,7 @@ export interface PublicConfig {
   allowedImageMimeTypes: string[]
   allowedVideoMimeTypes: string[]
   guestNameMaxLength: number
+  branding: BrandingConfig
 }
 
 export interface UploadCheckResponse {

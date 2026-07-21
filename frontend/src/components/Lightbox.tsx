@@ -6,12 +6,13 @@ import { Download } from 'lucide-react'
 import 'yet-another-react-lightbox/styles.css'
 
 import { mediaDownloadUrl, mediaFileUrl, mediaThumbnailUrl } from '../api/client'
-import type { MediaItem } from '../types'
+import type { BrandingConfig, MediaItem } from '../types'
 import { LikeButton } from './LikeButton'
 
 interface LightboxProps {
   items: MediaItem[]
   index: number
+  branding: BrandingConfig
   onClose: () => void
   onIndexChange: (index: number) => void
 }
@@ -51,7 +52,7 @@ function toSlide(item: MediaItem): GallerySlide {
  * The library owns swipe/drag, keyboard, focus, preloading, and video slide
  * behavior; this wrapper only supplies wedding-specific metadata/actions.
  */
-export function Lightbox({ items, index, onClose, onIndexChange }: LightboxProps) {
+export function Lightbox({ items, index, branding, onClose, onIndexChange }: LightboxProps) {
   const slides = useMemo(() => items.map(toSlide), [items])
 
   return (
@@ -71,7 +72,7 @@ export function Lightbox({ items, index, onClose, onIndexChange }: LightboxProps
           const item = (slide as GallerySlide).mediaItem
           return (
             <div className={`lightbox-footer${item.kind === 'video' ? ' lightbox-footer-video' : ''}`}>
-              <span className="lightbox-uploader">{item.uploaderName || 'Anonymous guest'}</span>
+              <span className="lightbox-uploader">{item.uploaderName || branding.anonymousGuestText}</span>
               <div className="lightbox-actions">
                 <LikeButton
                   mediaId={item.id}
@@ -83,10 +84,10 @@ export function Lightbox({ items, index, onClose, onIndexChange }: LightboxProps
                   href={mediaDownloadUrl(item.id)}
                   download
                   className="lightbox-download"
-                  aria-label={`Download original ${item.originalFilename}`}
+                  aria-label={`${branding.downloadOriginalText || 'Download original'} ${item.originalFilename}`}
                 >
                   <Download size={20} strokeWidth={1.8} aria-hidden="true" />
-                  <span>Original</span>
+                  {branding.downloadOriginalText && <span>{branding.downloadOriginalText}</span>}
                 </a>
               </div>
             </div>

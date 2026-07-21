@@ -1,5 +1,6 @@
 import type {
   AuditLogResponse,
+  BrandingConfig,
   GalleryResponse,
   GallerySort,
   LikeResponse,
@@ -156,6 +157,25 @@ export function adminUpdateConfig(uploadExpiresAt: string | null): Promise<{ upl
   return request('/api/admin/config', {
     method: 'PUT',
     body: JSON.stringify({ uploadExpiresAt: uploadExpiresAt ?? '' }),
+    headers: csrfHeaders(),
+  })
+}
+
+export function adminGetBranding(): Promise<BrandingConfig> {
+  return request('/api/admin/branding')
+}
+
+export function adminUpdateBranding(branding: BrandingConfig): Promise<BrandingConfig> {
+  return request('/api/admin/branding', {
+    method: 'PUT',
+    body: JSON.stringify(branding),
+    headers: csrfHeaders(),
+  })
+}
+
+export function adminResetBranding(): Promise<BrandingConfig> {
+  return request('/api/admin/branding', {
+    method: 'DELETE',
     headers: csrfHeaders(),
   })
 }

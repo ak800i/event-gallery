@@ -5,7 +5,7 @@ import 'react-photo-album/rows.css'
 
 import { useGallery } from '../hooks/useGallery'
 import { mediaThumbnailUrl } from '../api/client'
-import type { GallerySort, MediaItem } from '../types'
+import type { BrandingConfig, GallerySort, MediaItem } from '../types'
 import { MediaCard } from './MediaCard'
 
 const GalleryLightbox = lazy(() => import('./Lightbox').then(({ Lightbox }) => ({ default: Lightbox })))
@@ -14,10 +14,14 @@ interface GalleryPhoto extends Photo {
   item: MediaItem
 }
 
+interface GalleryProps {
+  branding: BrandingConfig
+}
+
 /** The main public gallery: a responsive, image-first timeline with
  * cursor-based infinite scroll, sorting, and a mobile-friendly mixed-media
  * lightbox backed by maintained gallery components. */
-export function Gallery() {
+export function Gallery({ branding }: GalleryProps) {
   const [sort, setSort] = useState<GallerySort>('uploaded')
   const { items, loading, error, hasMore, loadMore } = useGallery(sort, 'desc')
   const [openIndex, setOpenIndex] = useState<number | null>(null)
@@ -59,18 +63,27 @@ export function Gallery() {
   return (
     <div className="gallery">
       <div className="gallery-controls">
-        <label className="sort-control" title={sort === 'uploaded' ? 'Sorted by upload time' : 'Sorted by capture time'}>
+        <label
+          className="sort-control"
+          title={sort === 'uploaded' ? branding.sortUploadTimeText : branding.sortCaptureTimeText}
+        >
           <ArrowUpDown size={20} strokeWidth={1.8} aria-hidden="true" />
-          <span className="sr-only">Sort by</span>
-          <select value={sort} onChange={(e) => setSort(e.target.value as GallerySort)} aria-label="Sort by">
-            <option value="uploaded">Upload time</option>
-            <option value="captured">Capture time</option>
+          <span className="sr-only">{branding.sortLabelText}</span>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as GallerySort)}
+            aria-label={branding.sortLabelText || 'Sort by'}
+          >
+            <option value="uploaded">{branding.sortUploadTimeText}</option>
+            <option value="captured">{branding.sortCaptureTimeText}</option>
           </select>
         </label>
       </div>
 
-      {items.length === 0 && !loading && !error && <p className="gallery-empty">No photos or videos yet -- be the first to upload!</p>}
-      {error && <p className="gallery-error">{error}</p>}
+      {items.length === 0 && !loading && !error && branding.emptyGalleryText && (
+        <p className="gallery-empty">{branding.emptyGalleryText}</p>
+      )}
+      {error && branding.galleryErrorText && <p className="gallery-error">{branding.galleryErrorText}</p>}
 
       {photos.length > 0 && (
         <RowsPhotoAlbum
@@ -85,6 +98,7 @@ export function Gallery() {
               <MediaCard
                 key={photo.key}
                 item={photo.item}
+                anonymousGuestText={branding.anonymousGuestText}
                 onOpen={() => setOpenIndex(index)}
                 style={
                   {
@@ -99,13 +113,19 @@ export function Gallery() {
         />
       )}
 
-      {loading && <p className="gallery-loading">Loading...</p>}
+      {loading && branding.galleryLoadingText && <p className="gallery-loading">{branding.galleryLoadingText}</p>}
       <div ref={sentinelRef} className="gallery-sentinel" aria-hidden="true" />
-      {!hasMore && items.length > 0 && <p className="gallery-end">You've reached the end.</p>}
+      {!hasMore && items.length > 0 && branding.galleryEndText && <p className="gallery-end">{branding.galleryEndText}</p>}
 
       {openIndex !== null && items.length > 0 && (
         <Suspense fallback={null}>
-          <GalleryLightbox items={items} index={openIndex} onClose={() => setOpenIndex(null)} onIndexChange={setOpenIndex} />
+          <GalleryLightbox
+            items={items}
+            index={openIndex}
+            branding={branding}
+            onClose={() => setOpenIndex(null)}
+            onIndexChange={setOpenIndex}
+          />
         </Suspense>
       )}
     </div>

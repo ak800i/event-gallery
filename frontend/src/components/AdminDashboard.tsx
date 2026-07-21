@@ -10,6 +10,7 @@ import {
   mediaThumbnailUrl,
 } from '../api/client'
 import type { AuditEntry, MediaItem, MediaStatus } from '../types'
+import { AdminBrandingEditor } from './AdminBrandingEditor'
 
 type Tab = 'active' | 'trashed' | 'audit' | 'settings'
 
@@ -254,27 +255,31 @@ function AdminSettings() {
 
   return (
     <div className="admin-settings">
-      <h2>Upload window</h2>
-      <p>
-        After this date/time, new uploads are refused, but the gallery remains fully viewable and downloadable for
-        guests indefinitely.
-      </p>
-      <label htmlFor="upload-expiry">Uploads close at</label>
-      <input
-        id="upload-expiry"
-        type="datetime-local"
-        value={uploadExpiresAt}
-        onChange={(e) => setUploadExpiresAt(e.target.value)}
-      />
-      <div className="admin-settings-actions">
-        <button type="button" onClick={handleSave} disabled={saving}>
-          Save
-        </button>
-        <button type="button" onClick={handleClear} disabled={saving}>
-          Clear (never close)
-        </button>
-      </div>
-      {message && <p className="form-message">{message}</p>}
+      <section className="upload-window-settings">
+        <h2>Upload window</h2>
+        <p>
+          After this date/time, new uploads are refused, but the gallery remains fully viewable and downloadable for
+          guests indefinitely.
+        </p>
+        <label htmlFor="upload-expiry">Uploads close at</label>
+        <input
+          id="upload-expiry"
+          type="datetime-local"
+          value={uploadExpiresAt}
+          onChange={(e) => setUploadExpiresAt(e.target.value)}
+        />
+        <div className="admin-settings-actions">
+          <button type="button" onClick={handleSave} disabled={saving}>
+            Save
+          </button>
+          <button type="button" onClick={handleClear} disabled={saving}>
+            Clear (never close)
+          </button>
+        </div>
+        {message && <p className="form-message">{message}</p>}
+      </section>
+
+      <AdminBrandingEditor />
     </div>
   )
 }

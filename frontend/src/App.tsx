@@ -6,6 +6,7 @@ import { GuestNameEditor } from './components/GuestNameEditor'
 import { UploadPanel } from './components/UploadPanel'
 import { Gallery } from './components/Gallery'
 import { AdminApp } from './components/AdminApp'
+import { brandingThemeStyle, DEFAULT_BRANDING } from './utils/branding'
 
 /** Top-level app shell. Uses the URL path to decide between the public
  * gallery ("/") and the admin area ("/admin"), without pulling in a full
@@ -35,24 +36,37 @@ function GuestApp() {
     setGalleryKey((k) => k + 1)
   }, [])
 
+  const branding = config?.branding ?? DEFAULT_BRANDING
+
+  useEffect(() => {
+    document.title = branding.pageTitle || 'Wedding Gallery'
+  }, [branding.pageTitle])
+
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>Our Wedding Gallery</h1>
-        <p className="app-subtitle">Share your photos and videos from the day -- thank you for celebrating with us!</p>
-      </header>
+    <div className="guest-page" style={brandingThemeStyle(branding)}>
+      <div className="app">
+        <header className="app-header">
+          {branding.pageTitle && <h1>{branding.pageTitle}</h1>}
+          {branding.pageSubtitle && <p className="app-subtitle">{branding.pageSubtitle}</p>}
+        </header>
 
-      <GuestNameEditor guestName={guestName} onSave={setGuestName} maxLength={config?.guestNameMaxLength ?? 60} />
+        <GuestNameEditor
+          guestName={guestName}
+          onSave={setGuestName}
+          maxLength={config?.guestNameMaxLength ?? 60}
+          branding={branding}
+        />
 
-      {config && (
-        <section className="upload-section">
-          <UploadPanel guestName={guestName} config={config} onUploadComplete={handleUploadComplete} />
+        {config && (
+          <section className="upload-section">
+            <UploadPanel guestName={guestName} config={config} branding={branding} onUploadComplete={handleUploadComplete} />
+          </section>
+        )}
+
+        <section className="gallery-section" key={galleryKey}>
+          <Gallery branding={branding} />
         </section>
-      )}
-
-      <section className="gallery-section" key={galleryKey}>
-        <Gallery />
-      </section>
+      </div>
     </div>
   )
 }
