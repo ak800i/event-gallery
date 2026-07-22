@@ -14,7 +14,7 @@ The design optimizes for:
 The runtime is event-agnostic. Its shipped branding preset uses wedding wording,
 but admin-managed plain text and colors can represent any event.
 
-It deliberately does **not** provide multi-tenant accounts, horizontal scaling, high availability, permanent trash purge, or distributed processing.
+It deliberately does **not** provide multi-tenant accounts, horizontal scaling, high availability, or distributed media processing.
 
 ## 2. High-level design
 
@@ -101,6 +101,7 @@ SQLite uses WAL, foreign keys, a 5-second busy timeout, and embedded ordered mig
 | `/data/app` | `gallery.db`, WAL, SHM |
 | `/data/media/originals` | canonical uploaded originals |
 | `/data/media/thumbnails` | generated JPEG thumbnails |
+| `/data/media/.purging` | recoverable staging for permanent trash deletion |
 | `/data/tusd-incoming` | partial/completed tus files and `.info` sidecars before ingestion |
 
 Core tables:
@@ -144,7 +145,7 @@ Client-side hashing is optional optimization; server sniffing, hashing, and SQLi
 4. Admin actions bulk-approve pending media, change media status, update upload expiry/branding/moderation, or read audit data.
 5. Disabling moderation and approving every pending row is one SQLite transaction, so uploads cannot remain pending after the toggle completes.
 
-Trash is a **soft database status change**. Files remain under `originals`; there is currently no permanent purge API. Pending and trashed media use authenticated admin thumbnail routes and return 404 from public media/like routes.
+Trash starts as a **soft database status change**. Pending and trashed media use authenticated admin thumbnail routes and return 404 from public media/like routes. Admin purge or the retention janitor atomically stages files under `.purging`, deletes the trashed row plus audit entry, then removes staged files; startup reconciliation restores or finalizes interrupted purges.
 
 ## 5. Reliability and protection
 
@@ -155,7 +156,8 @@ Trash is a **soft database status change**. Files remain under `originals`; ther
 - Upload expiry blocks only new upload creation; existing uploads, browsing, and downloads continue.
 - Approval is off by default. When enabled, new completed uploads are admin-only until approved; disabling it atomically publishes all pending media.
 - Per-IP token buckets, PATCH concurrency, and bandwidth controls are process-local and intentionally generous for guests sharing venue NAT.
-- Limiter/session cleanup runs in background goroutines; media processing itself runs inline in tus hooks, not in a queue.
+- Limiter/session cleanup and one bounded storage janitor run in background goroutines; media processing itself runs inline in tus hooks, not in a queue.
+- The storage janitor purges expired trash and terminates stale incomplete uploads through tusd's internal DELETE endpoint. Retention can be disabled with zero-valued settings.
 - App/tusd containers use read-only roots, dropped capabilities, `no-new-privileges`, non-root Compose identities, and writable bind mounts only where required.
 
 ## 6. Deployment and operations
@@ -196,7 +198,7 @@ This is a KISS single-node design.
 - SQLite, local mounts, and in-memory limiters assume one app replica;
 - no HA, object store, external queue, distributed locks, or worker autoscaling;
 - concurrent completions can amplify hashing, copying, image decode, and ffmpeg work;
-- abandoned tus partials and soft trash require capacity monitoring;
+- retention cleanup is periodic/bounded, so disk capacity still requires monitoring between passes;
 - whole-file browser hashing saves duplicate bandwidth but costs phone CPU/battery;
 - original images/videos are served directly, so lightbox bandwidth can be high.
 
@@ -205,7 +207,8 @@ A larger multi-event service would separate API, object storage, metadata databa
 ## 8. Known gaps
 
 - Media filesystem changes and SQLite inserts are not one transaction. A crash between moving a file and inserting its row can leave an orphan; there is no reconciler.
-- Trash never purges files; abandoned tus uploads have no configured expiration policy.
+- Malformed or one-sided tus artifacts are retained for manual inspection rather than unlinked unsafely.
+- Purge recovery depends on valid manifests in the media `.purging` directory; corrupt stages are logged and left untouched.
 - App health does not verify media/upload mount writability, free space, ffmpeg, tusd reachability, or tunnel connectivity.
 - Audit writes are best effort and are not an authoritative transaction log.
 - Like/device identity is client-asserted and intended only for casual deduplication.

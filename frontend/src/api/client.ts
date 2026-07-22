@@ -152,6 +152,14 @@ export function adminBulkRestore(ids: string[]): Promise<{ changed: string[] }> 
   })
 }
 
+export function adminBulkPurge(ids: string[]): Promise<{ changed: string[] }> {
+  return request('/api/admin/media/bulk-purge', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+    headers: csrfHeaders(),
+  })
+}
+
 export function adminMediaThumbnailUrl(id: string): string {
   return `/api/admin/media/${encodeURIComponent(id)}/thumbnail`
 }

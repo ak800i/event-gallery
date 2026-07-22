@@ -41,7 +41,7 @@ Open `/admin` and sign in with the password supplied through
 - optionally require approval for new uploads before they appear publicly;
 - review and bulk-approve pending uploads;
 - select one or more files and move them to trash;
-- browse trashed files and restore them;
+- browse, restore, or permanently delete trashed files;
 - review uploads, deletes, restores, logins, and configuration changes in the
   audit log;
 - set an upload expiry date. After expiry, browsing and downloads remain
@@ -50,8 +50,9 @@ Open `/admin` and sign in with the password supplied through
   with a live preview and one-click reset to defaults. Custom text is
   always rendered as plain text; arbitrary HTML and CSS are not accepted.
 
-Trash is a reversible database status: originals remain in media storage, are
-excluded from public listing and direct public media routes, and can be restored.
+Trash is initially reversible: items are excluded from public routes and can be
+restored. Trashed media is permanently purged after the configured retention
+period (30 days by default), or immediately through the admin Trash tab.
 
 ## Architecture
 
@@ -148,6 +149,11 @@ CLOUDFLARE_TUNNEL_TOKEN=REPLACE_WITH_THE_TUNNEL_TOKEN
 # 5 GiB; accommodates long high-resolution phone videos.
 MAX_UPLOAD_BYTES=5368709120
 
+# Automatic storage lifecycle. Set either retention to 0 to disable it.
+TRASH_RETENTION_DAYS=30
+TUS_INCOMPLETE_RETENTION_HOURS=48
+STORAGE_CLEANUP_INTERVAL_MINUTES=60
+
 # Change this if it overlaps another Docker or LAN subnet.
 EDGE_SUBNET=172.30.0.0/24
 ```
@@ -197,10 +203,14 @@ The most useful optional application settings are:
 | `THUMBNAIL_MAX_DIMENSION` | `800` | Longest thumbnail edge in pixels |
 | `ALLOWED_IMAGE_MIME_TYPES` | common image formats | Comma-separated image MIME types |
 | `ALLOWED_VIDEO_MIME_TYPES` | MP4, QuickTime, WebM | Comma-separated video MIME types |
+| `TRASH_RETENTION_DAYS` | `30` | Permanently purge trash older than this; `0` disables automatic purge |
+| `TUS_INCOMPLETE_RETENTION_HOURS` | `48` | Expire idle incomplete uploads through tusd; `0` disables cleanup |
+| `STORAGE_CLEANUP_INTERVAL_MINUTES` | `60` | Trash/tus cleanup interval |
 
 The stack enables secure cookies and configures trusted proxy addresses
 automatically. Only change those internal settings if you also change the
-network design.
+network design. An upload that remains idle beyond the tus retention period is
+terminated and must restart rather than resume.
 
 ## Backups, upgrades, and restoration
 

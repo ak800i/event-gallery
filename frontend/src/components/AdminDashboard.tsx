@@ -3,6 +3,7 @@ import {
   adminAuditLog,
   adminBulkApprove,
   adminBulkDelete,
+  adminBulkPurge,
   adminBulkRestore,
   adminGetConfig,
   adminGetModeration,
@@ -137,6 +138,12 @@ export function AdminMediaList({ status }: { status: AdminMediaFilter }) {
     await runMutation(adminBulkRestore)
   }
 
+  async function handlePurge() {
+    if (selected.size === 0) return
+    if (!window.confirm(`Permanently delete ${selected.size} selected item(s)? This cannot be undone.`)) return
+    await runMutation(adminBulkPurge)
+  }
+
   return (
     <div className="admin-media-list">
       <div className="admin-toolbar">
@@ -157,9 +164,14 @@ export function AdminMediaList({ status }: { status: AdminMediaFilter }) {
             Move to trash
           </button>
         ) : (
-          <button type="button" onClick={handleRestore} disabled={selected.size === 0 || mutating}>
-            Restore
-          </button>
+          <>
+            <button type="button" onClick={handleRestore} disabled={selected.size === 0 || mutating}>
+              Restore
+            </button>
+            <button type="button" className="danger" onClick={handlePurge} disabled={selected.size === 0 || mutating}>
+              Delete permanently
+            </button>
+          </>
         )}
       </div>
 

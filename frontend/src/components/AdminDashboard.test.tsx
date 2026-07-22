@@ -12,6 +12,7 @@ vi.mock('../api/client', async () => {
     adminListMedia: vi.fn(),
     adminBulkApprove: vi.fn(),
     adminBulkDelete: vi.fn(),
+    adminBulkPurge: vi.fn(),
     adminBulkRestore: vi.fn(),
     adminGetModeration: vi.fn(),
     adminUpdateModeration: vi.fn(),
@@ -37,6 +38,7 @@ describe('Admin approval queue', () => {
   beforeEach(() => {
     vi.mocked(apiClient.adminListMedia).mockReset().mockResolvedValue({ items: [pending], nextCursor: '' })
     vi.mocked(apiClient.adminBulkApprove).mockReset().mockResolvedValue({ changed: ['pending-id'] })
+    vi.mocked(apiClient.adminBulkPurge).mockReset().mockResolvedValue({ changed: ['pending-id'] })
     vi.mocked(apiClient.adminGetModeration).mockReset()
     vi.mocked(apiClient.adminUpdateModeration).mockReset()
   })
@@ -52,6 +54,18 @@ describe('Admin approval queue', () => {
     await user.click(screen.getByRole('button', { name: /approve selected/i }))
     expect(apiClient.adminBulkApprove).toHaveBeenCalledWith(['pending-id'])
     await waitFor(() => expect(screen.queryByText('pending.jpg')).not.toBeInTheDocument())
+  })
+
+  it('requires confirmation before permanent deletion', async () => {
+    vi.mocked(apiClient.adminListMedia).mockResolvedValue({ items: [{ ...pending, status: 'trashed' }], nextCursor: '' })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<AdminMediaList status="trashed" />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('checkbox'))
+    await user.click(screen.getByRole('button', { name: /delete permanently/i }))
+    expect(confirm).toHaveBeenCalled()
+    expect(apiClient.adminBulkPurge).toHaveBeenCalledWith(['pending-id'])
+    confirm.mockRestore()
   })
 
   it('confirms disabling and reports automatic approvals', async () => {

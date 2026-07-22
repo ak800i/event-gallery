@@ -86,11 +86,10 @@ ADMIN_PASSWORD='your-admin-password' \
 python loadtest/cleanup_battle.py
 ```
 
-This uses the normal authenticated admin and CSRF flow. It is a **soft delete**:
-test items disappear from the public gallery but their originals remain on disk.
-The application currently has no permanent-purge API. Permanently deleting the
-test originals and database rows requires a separately approved maintenance
-procedure/feature; do not edit the live SQLite database while the stack is running.
+This uses the normal authenticated admin and CSRF flow. It first performs a
+**soft delete**: test items disappear publicly, then the normal trash-retention
+janitor purges them. To reclaim space immediately, select them in Admin Trash
+and use **Delete permanently**. Do not edit live SQLite or media files directly.
 
 ## Individual controls
 

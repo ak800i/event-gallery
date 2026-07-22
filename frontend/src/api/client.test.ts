@@ -3,6 +3,7 @@ import {
   ApiError,
   adminBulkApprove,
   adminBulkDelete,
+  adminBulkPurge,
   adminLogin,
   adminUpdateBranding,
   adminUpdateModeration,
@@ -66,6 +67,7 @@ describe('api client', () => {
     const deleteFetch = jsonResponse({ changed: ['id1'] })
     const brandingFetch = jsonResponse(DEFAULT_BRANDING)
     const approvalFetch = jsonResponse({ changed: ['id2'] })
+    const purgeFetch = jsonResponse({ changed: ['id3'] })
     const moderationFetch = jsonResponse({ approvalRequired: true, autoApproved: 0 })
     const fetchMock = vi
       .fn()
@@ -73,6 +75,7 @@ describe('api client', () => {
       .mockResolvedValueOnce(deleteFetch)
       .mockResolvedValueOnce(brandingFetch)
       .mockResolvedValueOnce(approvalFetch)
+      .mockResolvedValueOnce(purgeFetch)
       .mockResolvedValueOnce(moderationFetch)
     vi.stubGlobal('fetch', fetchMock)
 
@@ -80,6 +83,7 @@ describe('api client', () => {
     await adminBulkDelete(['id1'])
     await adminUpdateBranding(DEFAULT_BRANDING)
     await adminBulkApprove(['id2'])
+    await adminBulkPurge(['id3'])
     await adminUpdateModeration(true)
 
     const [, deleteInit] = fetchMock.mock.calls[1]
@@ -90,7 +94,9 @@ describe('api client', () => {
     expect((brandingInit.headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
     expect(fetchMock.mock.calls[3][0]).toBe('/api/admin/media/bulk-approve')
     expect((fetchMock.mock.calls[3][1].headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
-    expect(fetchMock.mock.calls[4][0]).toBe('/api/admin/moderation')
+    expect(fetchMock.mock.calls[4][0]).toBe('/api/admin/media/bulk-purge')
     expect((fetchMock.mock.calls[4][1].headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
+    expect(fetchMock.mock.calls[5][0]).toBe('/api/admin/moderation')
+    expect((fetchMock.mock.calls[5][1].headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-abc')
   })
 })
