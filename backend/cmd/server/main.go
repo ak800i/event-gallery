@@ -69,7 +69,10 @@ func run() error {
 
 	stop := make(chan struct{})
 	srv.StartCleanupLoops(stop)
-	defer close(stop)
+	defer func() {
+		close(stop)
+		srv.WaitForCleanup()
+	}()
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,

@@ -5,6 +5,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -28,6 +29,8 @@ type Server struct {
 	uploadBandwidth   *ratelimit.KeyedLimiter
 
 	tusProxy *tusReverseProxy
+
+	cleanupWG sync.WaitGroup
 
 	// spaHandler serves the built frontend, if configured. It is used as
 	// the fallback for any request that doesn't match an API route, so the
@@ -101,7 +104,15 @@ func (s *Server) StartCleanupLoops(stop <-chan struct{}) {
 			}
 		}
 	}()
+
+	s.cleanupWG.Add(1)
+	go func() {
+		defer s.cleanupWG.Done()
+		s.runStorageCleanup(stop)
+	}()
 }
+
+func (s *Server) WaitForCleanup() { s.cleanupWG.Wait() }
 
 // Router builds the complete HTTP handler tree.
 func (s *Server) Router() http.Handler {
@@ -136,6 +147,7 @@ func (s *Server) Router() http.Handler {
 			adm.With(s.requireAdmin, s.requireCSRF).Post("/media/bulk-approve", s.handleBulkApprove)
 			adm.With(s.requireAdmin, s.requireCSRF).Post("/media/bulk-delete", s.handleBulkDelete)
 			adm.With(s.requireAdmin, s.requireCSRF).Post("/media/bulk-restore", s.handleBulkRestore)
+			adm.With(s.requireAdmin, s.requireCSRF).Post("/media/bulk-purge", s.handleBulkPurge)
 			adm.With(s.requireAdmin).Get("/audit-log", s.handleAuditLog)
 			adm.With(s.requireAdmin).Get("/config", s.handleAdminGetConfig)
 			adm.With(s.requireAdmin, s.requireCSRF).Put("/config", s.handleAdminUpdateConfig)

@@ -52,6 +52,7 @@ const (
 	ActionDelete      AuditAction = "delete"
 	ActionRestore     AuditAction = "restore"
 	ActionApprove     AuditAction = "approve"
+	ActionPurge       AuditAction = "purge"
 	ActionLogin       AuditAction = "login"
 	ActionLoginFailed AuditAction = "login_failed"
 	ActionConfig      AuditAction = "config"

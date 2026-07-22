@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -39,6 +40,11 @@ func newTestHarness(t *testing.T) *testHarness {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 
+	tusDir := filepath.Join(dir, "tus")
+	if err := os.MkdirAll(tusDir, 0o750); err != nil {
+		t.Fatalf("create tus dir: %v", err)
+	}
+
 	cfg := &config.Config{
 		ListenAddr:                      ":0",
 		AdminPassword:                   "supersecretadminpassword",
@@ -46,6 +52,7 @@ func newTestHarness(t *testing.T) *testHarness {
 		MediaDir:                        filepath.Join(dir, "media"),
 		TusInternalURL:                  "http://127.0.0.1:1", // overridden per-test where needed
 		TusHookSecret:                   "test-hook-secret",
+		TusUploadDir:                    tusDir,
 		MaxUploadBytes:                  50 * 1024 * 1024,
 		PublicRateLimitPerMinute:        6000,
 		PublicRateLimitBurst:            1000,
@@ -55,6 +62,9 @@ func newTestHarness(t *testing.T) *testHarness {
 		CookieSecure:                    false,
 		SessionTTL:                      time.Hour,
 		ThumbnailMaxDimension:           200,
+		TrashRetention:                  30 * 24 * time.Hour,
+		TusIncompleteRetention:          48 * time.Hour,
+		StorageCleanupInterval:          time.Hour,
 		AllowedImageMIMEs:               []string{"image/jpeg", "image/png"},
 		AllowedVideoMIMEs:               []string{"video/mp4"},
 	}

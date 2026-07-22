@@ -2,18 +2,20 @@ package config
 
 import (
 	"testing"
+	"time"
 )
 
 func clearEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
 		"LISTEN_ADDR", "ADMIN_PASSWORD", "SESSION_SECRET", "DATA_DIR", "MEDIA_DIR",
-		"TUS_INTERNAL_URL", "TUS_HOOK_SECRET", "MAX_UPLOAD_BYTES",
+		"TUS_INTERNAL_URL", "TUS_HOOK_SECRET", "TUS_UPLOAD_DIR", "MAX_UPLOAD_BYTES",
 		"PUBLIC_RATE_LIMIT_PER_MINUTE", "PUBLIC_RATE_LIMIT_BURST",
 		"UPLOAD_CONCURRENCY_PER_IP", "UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC",
 		"COOKIE_SECURE", "ADMIN_SESSION_TTL_MINUTES", "THUMBNAIL_MAX_DIMENSION",
 		"ALLOWED_IMAGE_MIME_TYPES", "ALLOWED_VIDEO_MIME_TYPES", "GUEST_NAME_MAX_LENGTH", "TZ",
-		"TRUSTED_PROXY_CIDRS",
+		"TRUSTED_PROXY_CIDRS", "TRASH_RETENTION_DAYS", "TUS_INCOMPLETE_RETENTION_HOURS",
+		"STORAGE_CLEANUP_INTERVAL_MINUTES",
 	}
 	for _, k := range keys {
 		t.Setenv(k, "")
@@ -68,6 +70,15 @@ func TestLoad_Defaults(t *testing.T) {
 	if !cfg.CookieSecure {
 		t.Errorf("expected CookieSecure to default true")
 	}
+	if cfg.TrashRetention != 30*24*time.Hour {
+		t.Errorf("expected 30-day trash retention, got %s", cfg.TrashRetention)
+	}
+	if cfg.TusIncompleteRetention != 48*time.Hour {
+		t.Errorf("expected 48-hour tus retention, got %s", cfg.TusIncompleteRetention)
+	}
+	if cfg.StorageCleanupInterval != time.Hour {
+		t.Errorf("expected hourly cleanup, got %s", cfg.StorageCleanupInterval)
+	}
 }
 
 func TestLoad_CustomOverrides(t *testing.T) {
@@ -98,6 +109,33 @@ func TestLoad_CustomOverrides(t *testing.T) {
 	}
 	if len(cfg.TrustedProxyCIDRs) != 2 {
 		t.Errorf("expected two trusted proxy CIDRs, got %v", cfg.TrustedProxyCIDRs)
+	}
+}
+
+func TestLoad_CleanupOverridesAndDisable(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+	t.Setenv("TUS_UPLOAD_DIR", "/tmp/custom-tus")
+	t.Setenv("TRASH_RETENTION_DAYS", "0")
+	t.Setenv("TUS_INCOMPLETE_RETENTION_HOURS", "0")
+	t.Setenv("STORAGE_CLEANUP_INTERVAL_MINUTES", "15")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TrashRetention != 0 || cfg.TusIncompleteRetention != 0 || cfg.StorageCleanupInterval != 15*time.Minute || cfg.TusUploadDir != "/tmp/custom-tus" {
+		t.Fatalf("unexpected cleanup config: %+v", cfg)
+	}
+}
+
+func TestLoad_RejectsNegativeRetention(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+	t.Setenv("TRASH_RETENTION_DAYS", "-1")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected negative retention error")
 	}
 }
 

@@ -40,6 +40,10 @@ type Config struct {
 	// invoked by anyone else even if network isolation is ever misconfigured.
 	TusHookSecret string
 
+	// TusUploadDir is the shared filestore used to inspect incomplete upload
+	// sidecars before asking tusd to terminate stale uploads.
+	TusUploadDir string
+
 	// TrustedProxyCIDRs identifies reverse proxies whose client-address
 	// headers may be trusted. Requests from all other peers use RemoteAddr.
 	TrustedProxyCIDRs []netip.Prefix
@@ -77,6 +81,17 @@ type Config struct {
 	// ThumbnailMaxDimension is the longest edge, in pixels, of generated
 	// thumbnails.
 	ThumbnailMaxDimension int
+
+	// TrashRetention controls automatic permanent deletion of trashed media;
+	// zero disables automatic purge while keeping the admin purge action.
+	TrashRetention time.Duration
+
+	// TusIncompleteRetention controls how long an idle partial tus upload is
+	// retained; zero disables incomplete-upload cleanup.
+	TusIncompleteRetention time.Duration
+
+	// StorageCleanupInterval controls trash/tus janitor frequency.
+	StorageCleanupInterval time.Duration
 
 	// Timezone is informational; TZ should also be set as an OS env var so
 	// the Go runtime and any shelled-out tools (ffmpeg) agree on local time.
@@ -167,6 +182,7 @@ func Load() (*Config, error) {
 		MediaDir:           envString("MEDIA_DIR", "/data/media"),
 		TusInternalURL:     envString("TUS_INTERNAL_URL", "http://tusd:1080"),
 		TusHookSecret:      os.Getenv("TUS_HOOK_SECRET"),
+		TusUploadDir:       envString("TUS_UPLOAD_DIR", "/data/tusd-incoming"),
 		GuestNameMaxLength: 60,
 		Timezone:           envString("TZ", "UTC"),
 	}
@@ -206,6 +222,21 @@ func Load() (*Config, error) {
 	if cfg.TrustedProxyCIDRs, err = envPrefixes("TRUSTED_PROXY_CIDRS"); err != nil {
 		return nil, err
 	}
+	trashRetentionDays, err := envInt("TRASH_RETENTION_DAYS", 30)
+	if err != nil {
+		return nil, err
+	}
+	cfg.TrashRetention = time.Duration(trashRetentionDays) * 24 * time.Hour
+	tusRetentionHours, err := envInt("TUS_INCOMPLETE_RETENTION_HOURS", 48)
+	if err != nil {
+		return nil, err
+	}
+	cfg.TusIncompleteRetention = time.Duration(tusRetentionHours) * time.Hour
+	cleanupIntervalMinutes, err := envInt("STORAGE_CLEANUP_INTERVAL_MINUTES", 60)
+	if err != nil {
+		return nil, err
+	}
+	cfg.StorageCleanupInterval = time.Duration(cleanupIntervalMinutes) * time.Minute
 
 	cfg.AllowedImageMIMEs = envList("ALLOWED_IMAGE_MIME_TYPES", []string{
 		"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif",
@@ -247,6 +278,18 @@ func (c *Config) Validate() error {
 	}
 	if c.UploadConcurrencyPerIP <= 0 {
 		return fmt.Errorf("UPLOAD_CONCURRENCY_PER_IP must be positive")
+	}
+	if c.TrashRetention < 0 {
+		return fmt.Errorf("TRASH_RETENTION_DAYS must not be negative")
+	}
+	if c.TusIncompleteRetention < 0 {
+		return fmt.Errorf("TUS_INCOMPLETE_RETENTION_HOURS must not be negative")
+	}
+	if c.StorageCleanupInterval <= 0 {
+		return fmt.Errorf("STORAGE_CLEANUP_INTERVAL_MINUTES must be positive")
+	}
+	if strings.TrimSpace(c.TusUploadDir) == "" {
+		return fmt.Errorf("TUS_UPLOAD_DIR must not be empty")
 	}
 	if len(c.AllowedImageMIMEs) == 0 && len(c.AllowedVideoMIMEs) == 0 {
 		return fmt.Errorf("at least one allowed image or video MIME type must be configured")

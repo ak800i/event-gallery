@@ -163,6 +163,32 @@ func (s *Server) handleBulkRestore(w http.ResponseWriter, r *http.Request) {
 	s.bulkChangeStatus(w, r, models.StatusActive, models.ActionRestore)
 }
 
+func (s *Server) handleBulkPurge(w http.ResponseWriter, r *http.Request) {
+	var req bulkIDsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "no ids provided")
+		return
+	}
+	if len(req.IDs) > 500 {
+		writeError(w, http.StatusBadRequest, "too many ids in a single request (max 500)")
+		return
+	}
+	changed, err := s.purgeMedia(r.Context(), req.IDs, "admin")
+	if errors.Is(err, errMediaNotTrashed) {
+		writeError(w, http.StatusBadRequest, "only trashed media can be permanently deleted")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to permanently delete media")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"changed": changed})
+}
+
 func (s *Server) handleBulkApprove(w http.ResponseWriter, r *http.Request) {
 	var req bulkIDsRequest
 	if err := decodeJSON(r, &req); err != nil {
