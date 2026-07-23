@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { CloudUpload, RotateCcw, Save } from 'lucide-react'
+import { ArrowUpDown, CloudUpload, RotateCcw, Save } from 'lucide-react'
 import { adminGetBranding, adminResetBranding, adminUpdateBranding } from '../api/client'
 import type { BrandingConfig } from '../types'
 import { brandingThemeStyle, formatBrandingText } from '../utils/branding'
@@ -211,6 +211,20 @@ export function AdminBrandingEditor() {
                 {branding.uploadButtonText && <strong>{branding.uploadButtonText}</strong>}
                 {previewHelper && <small>{previewHelper}</small>}
               </div>
+            </div>
+            <div className="branding-preview-controls">
+              <span
+                className="sort-control"
+                title={branding.sortLabelText || 'Sort by'}
+                aria-hidden="true"
+              >
+                <ArrowUpDown size={20} strokeWidth={1.8} />
+              </span>
+              {branding.saveNameText && (
+                <button type="button" className="btn-primary" tabIndex={-1}>
+                  {branding.saveNameText}
+                </button>
+              )}
             </div>
             <div className="branding-preview-gallery">
               <span />
