@@ -57,7 +57,7 @@ export function GuestNameEditor({ guestName, onSave, maxLength, branding }: Gues
           onChange={(e) => setDraft(e.target.value)}
           autoFocus
         />
-        <button type="submit" aria-label={branding.saveNameText || 'Save name'}>
+        <button type="submit" className="btn-primary" aria-label={branding.saveNameText || 'Save name'}>
           {branding.saveNameText}
         </button>
       </div>

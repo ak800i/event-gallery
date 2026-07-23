@@ -96,6 +96,41 @@ select {
   gap: 0.5rem;
 }
 
+.btn-primary {
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.5rem 1.1rem;
+  font-weight: 600;
+  color: var(--color-surface);
+  background: var(--color-primary);
+  box-shadow: 0 1px 2px rgba(43, 36, 32, 0.12);
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-primary-dark);
+  box-shadow: 0 3px 8px rgba(43, 36, 32, 0.18);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(43, 36, 32, 0.12);
+}
+
+.btn-primary:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .link-button {
   background: none;
   border: none;
