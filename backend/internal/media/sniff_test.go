@@ -55,6 +55,61 @@ func writeGIF(t *testing.T, path string, w, h int) {
 	}
 }
 
+// writeFtyp writes a minimal ISO-BMFF file whose ftyp box declares the given
+// major brand followed by the given compatible brands. Enough for Sniff.
+func writeFtyp(t *testing.T, path, major string, compatible ...string) {
+	t.Helper()
+	if len(major) != 4 {
+		t.Fatalf("major brand must be 4 bytes, got %q", major)
+	}
+	body := []byte(major)
+	body = append(body, 0x00, 0x00, 0x00, 0x00) // minor version
+	for _, c := range compatible {
+		if len(c) != 4 {
+			t.Fatalf("compatible brand must be 4 bytes, got %q", c)
+		}
+		body = append(body, []byte(c)...)
+	}
+	boxLen := 8 + len(body)
+	buf := make([]byte, 0, boxLen+8)
+	buf = append(buf, byte(boxLen>>24), byte(boxLen>>16), byte(boxLen>>8), byte(boxLen))
+	buf = append(buf, []byte("ftyp")...)
+	buf = append(buf, body...)
+	// Pad so Sniff's 64-byte read always succeeds.
+	for len(buf) < 64 {
+		buf = append(buf, 0x00)
+	}
+	if err := os.WriteFile(path, buf, 0o644); err != nil {
+		t.Fatalf("write ftyp: %v", err)
+	}
+}
+
+func TestSniff_AVIF(t *testing.T) {
+	dir := t.TempDir()
+
+	avifPath := filepath.Join(dir, "photo.avif")
+	writeFtyp(t, avifPath, "avif", "mif1", "miaf")
+	if mt, kind, err := Sniff(avifPath); err != nil || mt != "image/avif" || kind != models.KindImage {
+		t.Errorf("avif sniff: mt=%s kind=%s err=%v", mt, kind, err)
+	}
+
+	avisPath := filepath.Join(dir, "seq.avif")
+	writeFtyp(t, avisPath, "avis", "avif", "mif1")
+	if mt, _, err := Sniff(avisPath); err != nil || mt != "image/avif" {
+		t.Errorf("avis sniff: mt=%s err=%v", mt, err)
+	}
+}
+
+func TestSniff_AVIFBeforeHEIF(t *testing.T) {
+	dir := t.TempDir()
+	// AVIF with mif1 in compatible brands must NOT be seen as image/heif.
+	p := filepath.Join(dir, "amb.avif")
+	writeFtyp(t, p, "avif", "mif1")
+	if mt, _, err := Sniff(p); err != nil || mt != "image/avif" {
+		t.Fatalf("expected image/avif (ordering), got mt=%s err=%v", mt, err)
+	}
+}
+
 func TestSniff_KnownFormats(t *testing.T) {
 	dir := t.TempDir()
 
