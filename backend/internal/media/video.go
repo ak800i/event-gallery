@@ -29,10 +29,10 @@ type ffprobeSideData struct {
 }
 
 type ffprobeStream struct {
-	CodecType   string            `json:"codec_type"`
-	Width       int               `json:"width"`
-	Height      int               `json:"height"`
-	Tags        map[string]string `json:"tags"`
+	CodecType    string            `json:"codec_type"`
+	Width        int               `json:"width"`
+	Height       int               `json:"height"`
+	Tags         map[string]string `json:"tags"`
 	SideDataList []ffprobeSideData `json:"side_data_list"`
 }
 
@@ -41,10 +41,9 @@ type ffprobeOutput struct {
 	Streams []ffprobeStream `json:"streams"`
 }
 
-// ProbeVideo shells out to ffprobe to extract duration, dimensions, and
-// (when present) the recording creation time embedded in the container's
-// metadata.
-func ProbeVideo(ctx context.Context, path string) (*VideoInfo, error) {
+// runFFprobe runs ffprobe (JSON, format+streams) on path under a 30s timeout
+// and returns the decoded output. Shared by video and image probing.
+func runFFprobe(ctx context.Context, path string) (*ffprobeOutput, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -65,6 +64,17 @@ func ProbeVideo(ctx context.Context, path string) (*VideoInfo, error) {
 	var out ffprobeOutput
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		return nil, fmt.Errorf("parse ffprobe output: %w", err)
+	}
+	return &out, nil
+}
+
+// ProbeVideo shells out to ffprobe to extract duration, dimensions, and
+// (when present) the recording creation time embedded in the container's
+// metadata.
+func ProbeVideo(ctx context.Context, path string) (*VideoInfo, error) {
+	out, err := runFFprobe(ctx, path)
+	if err != nil {
+		return nil, err
 	}
 
 	info := &VideoInfo{}
