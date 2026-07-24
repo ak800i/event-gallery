@@ -239,7 +239,7 @@ func Load() (*Config, error) {
 	cfg.StorageCleanupInterval = time.Duration(cleanupIntervalMinutes) * time.Minute
 
 	cfg.AllowedImageMIMEs = envList("ALLOWED_IMAGE_MIME_TYPES", []string{
-		"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif",
+		"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif", "image/avif",
 	})
 	cfg.AllowedVideoMIMEs = envList("ALLOWED_VIDEO_MIME_TYPES", []string{
 		"video/mp4", "video/quicktime", "video/webm",

@@ -81,6 +81,26 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 }
 
+func TestLoad_AllowsAVIFByDefault(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, m := range cfg.AllowedImageMIMEs {
+		if m == "image/avif" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected image/avif in default allowlist, got %v", cfg.AllowedImageMIMEs)
+	}
+}
+
 func TestLoad_CustomOverrides(t *testing.T) {
 	clearEnv(t)
 	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
