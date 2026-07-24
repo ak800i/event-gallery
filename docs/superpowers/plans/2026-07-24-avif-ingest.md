@@ -284,7 +284,6 @@ import (
 	"testing"
 	"time"
 )
-
 func TestOrientImageDimensions(t *testing.T) {
 	cases := []struct {
 		name                           string
@@ -314,7 +313,10 @@ func TestOrientImageDimensions(t *testing.T) {
 
 // generateTestAVIF tries to produce a still AVIF via ffmpeg. If the local
 // ffmpeg has no AV1 encoder, the test is skipped (decode-only environments,
-// e.g. some CI, still exercise everything else). Returns the coded w,h.
+// e.g. some CI, still exercise everything else). The output muxer is forced
+// with `-f avif` so it does not depend on the destination file extension
+// (callers may write to a temp path like incoming.tmp). Reuses the existing
+// package-level itoa helper from video_test.go.
 func generateTestAVIF(t *testing.T, path string, w, h int) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -324,14 +326,13 @@ func generateTestAVIF(t *testing.T, path string, w, h int) {
 		"-i", "testsrc=size="+itoa(w)+"x"+itoa(h)+":duration=1:rate=1",
 		"-frames:v", "1",
 		"-c:v", "libaom-av1", "-still-picture", "1",
+		"-f", "avif",
 		path,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("cannot encode test AVIF with this ffmpeg build: %v\n%s", err, out)
 	}
 }
-
-func itoa(n int) string { return strconv.Itoa(n) }
 
 func TestProbeImageAndThumbnail_AVIF(t *testing.T) {
 	requireFFmpeg(t)
@@ -365,7 +366,7 @@ func TestProbeImageAndThumbnail_AVIF(t *testing.T) {
 }
 ```
 
-Add `"strconv"` to the import block.
+This file reuses the existing package-level `itoa` and `requireFFmpeg` helpers from `video_test.go`; do not redeclare them, and do not add a `strconv` import (nothing in this file uses it directly).
 
 - [ ] **Step 2: Run test to verify it fails**
 
