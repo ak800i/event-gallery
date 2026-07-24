@@ -179,9 +179,13 @@ effort. Both calls run under the existing 30s context timeout.
   skip when ffmpeg is unavailable, or use a real fixture, so CI without ffmpeg
   is unaffected):
   - An AVIF fixture yields `HasThumbnail = true` and non-zero dimensions.
-  - A rotated AVIF (or HEIC) fixture yields dimensions whose orientation
-    matches the generated thumbnail (guards the display-orientation
-    consistency requirement).
+  - A rotated AVIF (or HEIC) fixture with a *known* intended display
+    orientation (e.g. a portrait photo) asserts that BOTH the stored
+    dimensions AND the rendered JPEG thumbnail are in that intended
+    orientation (portrait). Asserting only that stored dims match the
+    thumbnail is insufficient — a sideways thumbnail with matching sideways
+    dims would pass while still being wrong. Ground-truth orientation is the
+    assertion.
   - Capture time is populated from the probe for a fixture whose container
     carries a creation time.
 
