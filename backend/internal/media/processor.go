@@ -143,7 +143,7 @@ func (p *Processor) Process(ctx context.Context, tempPath, originalFilename stri
 
 	switch kind {
 	case models.KindImage:
-		p.processImage(finalPath, id, result)
+		p.processImage(ctx, finalPath, id, result)
 	case models.KindVideo:
 		p.processVideo(ctx, finalPath, id, result)
 	}
@@ -151,22 +151,48 @@ func (p *Processor) Process(ctx context.Context, tempPath, originalFilename stri
 	return result, nil
 }
 
-func (p *Processor) processImage(finalPath, id string, result *Result) {
-	width, height, err := GenerateImageThumbnail(finalPath, p.ThumbnailPath(id), p.ThumbnailMaxDimension)
-	if err != nil {
-		// Some formats (notably HEIC/HEIF from iPhones) have no pure-Go
-		// decoder available. We still keep the original file; the gallery
-		// falls back to a generic preview for these.
-		if w, h, dimErr := ImageDimensions(finalPath); dimErr == nil {
-			result.Width, result.Height = w, h
-		}
-	} else {
+func (p *Processor) processImage(ctx context.Context, finalPath, id string, result *Result) {
+	thumbPath := p.ThumbnailPath(id)
+
+	// Fast path: pure-Go decode (jpeg/png/gif/webp).
+	if width, height, err := GenerateImageThumbnail(finalPath, thumbPath, p.ThumbnailMaxDimension); err == nil {
 		result.Width, result.Height = width, height
 		result.HasThumbnail = true
+		if capturedAt, err := ImageCapturedAt(finalPath); err == nil && capturedAt != nil {
+			result.CapturedAt = capturedAt
+		}
+		return
 	}
 
-	if capturedAt, err := ImageCapturedAt(finalPath); err == nil && capturedAt != nil {
-		result.CapturedAt = capturedAt
+	// Fallback: formats the pure-Go pipeline can't decode (AVIF/HEIC/HEIF, or
+	// otherwise-undecodable images) go through ffmpeg/ffprobe. Non-fatal:
+	// on any failure the item is still ingested, just without a thumbnail.
+	probe, probeErr := ProbeImage(ctx, finalPath)
+
+	if err := GenerateImageThumbnailFFmpeg(ctx, finalPath, thumbPath, p.ThumbnailMaxDimension); err == nil {
+		result.HasThumbnail = true
+		thumbW, thumbH, dimErr := ImageDimensions(thumbPath)
+		switch {
+		case probeErr == nil && dimErr == nil:
+			result.Width, result.Height = orientImageDimensions(probe.CodedWidth, probe.CodedHeight, thumbW, thumbH)
+		case dimErr == nil:
+			result.Width, result.Height = thumbW, thumbH
+		case probeErr == nil:
+			result.Width, result.Height = probe.CodedWidth, probe.CodedHeight
+		}
+	} else if probeErr == nil {
+		// No thumbnail available; keep best-effort coded dimensions.
+		result.Width, result.Height = probe.CodedWidth, probe.CodedHeight
+	}
+
+	// Capture time: prefer goexif (works for JPEG/TIFF EXIF), fall back to the
+	// probe's container creation_time for ISOBMFF formats goexif can't parse.
+	if result.CapturedAt == nil {
+		if capturedAt, err := ImageCapturedAt(finalPath); err == nil && capturedAt != nil {
+			result.CapturedAt = capturedAt
+		} else if probeErr == nil && probe.CapturedAt != nil {
+			result.CapturedAt = probe.CapturedAt
+		}
 	}
 }
 

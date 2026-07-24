@@ -53,6 +53,35 @@ func TestProcessor_ProcessImage(t *testing.T) {
 	}
 }
 
+func TestProcessor_ProcessAVIF(t *testing.T) {
+	requireFFmpeg(t)
+	dir := t.TempDir()
+	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/avif"}, nil)
+
+	tempPath := filepath.Join(dir, "incoming.tmp")
+	generateTestAVIF(t, tempPath, 60, 40) // landscape; skips if no AV1 encoder
+
+	result, err := proc.Process(context.Background(), tempPath, "guest.avif")
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if result.MimeType != "image/avif" {
+		t.Errorf("expected image/avif, got %s", result.MimeType)
+	}
+	if !result.HasThumbnail {
+		t.Error("expected an ffmpeg-generated thumbnail for AVIF")
+	}
+	if result.Width <= 0 || result.Height <= 0 {
+		t.Errorf("expected non-zero dimensions, got %dx%d", result.Width, result.Height)
+	}
+	if !(result.Width > result.Height) {
+		t.Errorf("expected landscape stored dims, got %dx%d", result.Width, result.Height)
+	}
+	if _, err := os.Stat(proc.ThumbnailPath(result.ID)); err != nil {
+		t.Errorf("expected thumbnail file on disk: %v", err)
+	}
+}
+
 func TestProcessor_RejectsDisallowedType(t *testing.T) {
 	dir := t.TempDir()
 	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/png"}, nil)
