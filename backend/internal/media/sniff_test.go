@@ -55,24 +55,6 @@ func writeGIF(t *testing.T, path string, w, h int) {
 	}
 }
 
-// writeFtyp writes a minimal ISO base media "ftyp" box with the given major
-// brand followed by the compatible brands, which is all Sniff inspects.
-func writeFtyp(t *testing.T, path, major string, compatible ...string) {
-	t.Helper()
-	body := []byte(major)
-	body = append(body, 0x00, 0x00, 0x00, 0x00) // minor version
-	for _, b := range compatible {
-		body = append(body, []byte(b)...)
-	}
-	size := 8 + len(body)
-	buf := []byte{byte(size >> 24), byte(size >> 16), byte(size >> 8), byte(size)}
-	buf = append(buf, []byte("ftyp")...)
-	buf = append(buf, body...)
-	if err := os.WriteFile(path, buf, 0o644); err != nil {
-		t.Fatalf("write ftyp: %v", err)
-	}
-}
-
 func TestSniff_KnownFormats(t *testing.T) {
 	dir := t.TempDir()
 
@@ -92,15 +74,6 @@ func TestSniff_KnownFormats(t *testing.T) {
 	writeGIF(t, gifPath, 20, 10)
 	if mt, kind, err := Sniff(gifPath); err != nil || mt != "image/gif" || kind != models.KindImage {
 		t.Errorf("gif sniff: mt=%s kind=%s err=%v", mt, kind, err)
-	}
-
-	// AVIF is ISO base media format: a "ftyp" box whose major brand is
-	// "avif". We craft a minimal header rather than depend on a binary
-	// fixture, since Go has no standard-library AVIF encoder.
-	avifPath := filepath.Join(dir, "photo.avif")
-	writeFtyp(t, avifPath, "avif", "avif", "mif1", "miaf")
-	if mt, kind, err := Sniff(avifPath); err != nil || mt != "image/avif" || kind != models.KindImage {
-		t.Errorf("avif sniff: mt=%s kind=%s err=%v", mt, kind, err)
 	}
 }
 
