@@ -66,10 +66,15 @@ ffmpeg via a generic fallback rather than special-casing AVIF by MIME type.
 Scope of the fallback (explicit): the fallback triggers on *any* pure-Go
 decode failure, not only AVIF/HEIC/HEIF. In practice this means a malformed
 JPEG/PNG/GIF/WebP that passes magic-byte sniffing but fails pure-Go decoding
-will now also be handed to ffmpeg. This is intentional and acceptable: ffmpeg
-already processes untrusted media (video), uploads are concurrency-limited
-per-IP, and the fallback can only ever add a thumbnail that the pure-Go path
-couldn't produce.
+will now also be handed to ffmpeg. This is intentional and acceptable, and it
+introduces no new resource-exposure class: media processing already runs
+inline in the tusd `post-finish` hook (`Server.handlePostFinishHook` →
+`processor.Process`), and that path already shells out to ffmpeg/ffprobe for
+*every* video upload. Note this hook path is NOT bounded by the per-IP
+`uploadConcurrency` semaphore — that only guards guest-facing tus `PATCH`
+transport in the proxy — so the fallback inherits the same (already-accepted)
+inline-processing tradeoff as video, not a stricter one. The fallback can only
+ever add a thumbnail the pure-Go path couldn't produce.
 
 Graceful degradation: the generic fallback upgrades whatever the pinned
 ffmpeg can actually decode and leaves everything else at today's behavior
@@ -79,22 +84,36 @@ the pinned ffmpeg decoding them* — to be confirmed by the validation step,
 not assumed here.
 
 Probing — reuse, don't reinvent: the existing ffprobe-based media probe
-(`ProbeVideo`) already returns *display-oriented* dimensions (it corrects
-rotation via `displayDimensions`) and extracts container `creation_time`. The
-image fallback MUST reuse this same probe rather than a naive dimensions-only
-read, for two reasons:
+(`ProbeVideo`) already extracts container `creation_time` and carries the
+rotation-correction machinery (`displayDimensions`). The image fallback
+reuses this probe rather than a naive dimensions-only read, for two reasons:
 
-- Orientation consistency: the pure-Go path stores display-oriented
-  dimensions (post `imaging.AutoOrientation`), and ffmpeg auto-rotates the
-  thumbnail it renders. A raw (un-rotated) width/height would disagree with
-  the rendered thumbnail and reproduce the wrong-aspect-tile bug that
-  `displayDimensions` exists to prevent. Fallback dimensions must reflect
-  display orientation consistent with the generated thumbnail.
-- Capture time: `ImageCapturedAt` uses goexif, which cannot parse ISOBMFF
-  (AVIF/HEIC/HEIF), so those files get no `CapturedAt` today. Since the
-  fallback already invokes ffprobe, extract best-effort capture time from the
-  same probe (same mechanism as the video path). This is best-effort: if the
-  container carries no usable time, `CapturedAt` stays nil.
+- Orientation consistency (requirement, mechanism to be validated): the
+  pure-Go path stores display-oriented dimensions (post
+  `imaging.AutoOrientation`), and ffmpeg auto-rotates the thumbnail it
+  renders. Stored `Width`/`Height` MUST therefore reflect display orientation
+  consistent with the generated thumbnail, or we reproduce the wrong-aspect-
+  tile bug `displayDimensions` was written to prevent. Caveat that the plan
+  must resolve: `displayDimensions` reads only *video* display-matrix
+  rotation (`side_data_list[].rotation` / the `rotate` tag). Still-image
+  orientation in AVIF/HEIC lives in ISOBMFF `irot`/`imir` (or embedded EXIF),
+  which the pinned ffprobe may NOT surface through those fields. So reuse
+  alone does not *guarantee* consistency. The validation step must confirm,
+  for a rotated still, that ffprobe reports rotation via the fields
+  `displayDimensions` reads. If it does not, the implementation must obtain
+  display-oriented dimensions another way that is consistent with what ffmpeg
+  renders (e.g. read the dimensions of the ffmpeg-decoded/auto-rotated frame,
+  or read EXIF orientation) — so the guarantee holds by construction, not by
+  assumption. The rotated-fixture test (see Testing) enforces this either way.
+- Capture time (best-effort, usually absent for these formats):
+  `ImageCapturedAt` uses goexif, which cannot parse ISOBMFF (AVIF/HEIC/HEIF),
+  so those files get no `CapturedAt` today. Since the fallback already
+  invokes ffprobe, populate `CapturedAt` from the probe's container
+  `creation_time` when present. Be realistic about yield: phone AVIF/HEIC
+  typically store capture time in embedded EXIF, not the container-level
+  `creation_time` tag `ProbeVideo` reads, so for the common case this stays
+  nil. It is a cheap, harmless win for the files that do carry it, not parity
+  with the video path.
 
 Generalize the probe so it reads as a media probe rather than a video-only
 one (e.g. rename/extend `ProbeVideo`, or share its internal parse); the image
@@ -142,7 +161,12 @@ effort. Both calls run under the existing 30s context timeout.
   HEIC sample to determine whether the HEIC/HEIF bonus actually materializes
   in this build. Record the result; if HEIC does not decode, that is not a
   failure of this change (graceful degradation covers it) but the spec's
-  HEIC framing should be marked confirmed-absent.
+  HEIC framing should be marked confirmed-absent. Also validate orientation:
+  for a rotated AVIF/HEIC still, check whether `ffprobe` reports the rotation
+  through the fields `displayDimensions` reads (`side_data_list[].rotation`
+  or the `rotate` tag). If it does not, the plan must adopt the alternative
+  dimension source described in section 4 so stored dims stay consistent with
+  the auto-rotated thumbnail.
 - Sniff:
   - Synthetic `ftyp` fixtures assert `avif` and `avis` major brands →
     `image/avif`.
@@ -169,8 +193,9 @@ effort. Both calls run under the existing 30s context timeout.
   decode those formats. Rejected in favor of the generic fallback, which
   degrades gracefully for formats ffmpeg cannot decode.
 - **Naive `ImageDimensionsFFprobe` (raw dimensions only)**: rejected because
-  raw container dimensions ignore rotation and would disagree with the
-  auto-rotated thumbnail; the fallback reuses the existing rotation-correcting
-  media probe instead.
+  raw container dimensions ignore orientation and can disagree with the
+  auto-rotated thumbnail. The fallback instead reuses the rotation-aware media
+  probe and, where ffprobe does not surface a still's rotation, falls back to
+  a dimension source consistent with what ffmpeg renders (see section 4).
 - **Go AVIF decoder library**: requires CGO (libaom/dav1d), violating
   `CGO_ENABLED=0`. Rejected.
