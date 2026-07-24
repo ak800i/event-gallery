@@ -54,20 +54,25 @@ Trash is initially reversible: items are excluded from public routes and can be
 restored. Trashed media is permanently purged after the configured retention
 period (30 days by default), or immediately through the admin Trash tab.
 
-## Architecture
+## Quick start guide (written by a human ;) )
+If you are using Portainer create a stack with the `Repository` option pointed to this repo `https://github.com/ak800i/event-gallery`, and set the environment variables mentioned below.  
+If you are using a different docker host use the contents of `docker-compose.yml`.
 
-The production stack contains three containers:
+This app needs a few environment variables in order to work.  
+If you don't know how to set them, or how to inline them into docker-compose.yml, ask an AI. (it's very easy).  
+The only environment variables that are necessary are:
 
-- **app**: the Go API, React frontend, SQLite database access, media processing,
-  authorization, and upload proxy;
-- **tusd**: resumable upload transport, available only to `app` on an isolated
-  Docker network;
-- **cloudflared**: outbound Cloudflare Tunnel connection to the public
-  hostname.
+```dotenv
+APP_DATA_PATH=/srv/event-gallery/app
+MEDIA_PATH=/srv/event-gallery/media
+TUS_UPLOAD_PATH=/srv/event-gallery/uploads
 
-No host ports are published. Cloudflare sends traffic to `http://app:8080`, and
-guests cannot reach `tusd` directly. SQLite lives on the app-data mount;
-originals and generated thumbnails live together on the media mount.
+ADMIN_PASSWORD=REPLACE_WITH_A_STRONG_PASSWORD
+TUS_HOOK_SECRET=REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS
+CLOUDFLARE_TUNNEL_TOKEN=REPLACE_WITH_THE_TUNNEL_TOKEN
+```
+
+# The non-quick start guide
 
 ## Deploy on a Docker host
 
@@ -129,32 +134,33 @@ In Portainer, create a stack from this Git repository and select
 configuration:
 
 ```dotenv
-# Use an immutable sha-<40-character-commit> or release tag from GHCR.
+# Optional: use an immutable sha-<40-character-commit> or release tag from GHCR.
 APP_IMAGE_TAG=sha-REPLACE_WITH_FULL_COMMIT_SHA
 
 APP_DATA_PATH=/srv/event-gallery/app
 MEDIA_PATH=/srv/event-gallery/media
 TUS_UPLOAD_PATH=/srv/event-gallery/uploads
 
+# Optional
 PUID=1000
 PGID=1000
 TZ=UTC
 UMASK=022
 
-# Set independent secret values. Do not commit them to this repository.
+# Set independent secret values.
 ADMIN_PASSWORD=REPLACE_WITH_A_STRONG_PASSWORD
 TUS_HOOK_SECRET=REPLACE_WITH_AT_LEAST_32_RANDOM_CHARACTERS
 CLOUDFLARE_TUNNEL_TOKEN=REPLACE_WITH_THE_TUNNEL_TOKEN
 
-# 5 GiB; accommodates long high-resolution phone videos.
+# Optional: 5 GiB; accommodates long high-resolution phone videos.
 MAX_UPLOAD_BYTES=5368709120
 
-# Automatic storage lifecycle. Set either retention to 0 to disable it.
+# Optional: Automatic storage lifecycle. Set either retention to 0 to disable it.
 TRASH_RETENTION_DAYS=30
 TUS_INCOMPLETE_RETENTION_HOURS=48
 STORAGE_CLEANUP_INTERVAL_MINUTES=60
 
-# Change this if it overlaps another Docker or LAN subnet.
+# Optional: Change this if it overlaps another Docker or LAN subnet.
 EDGE_SUBNET=172.30.0.0/24
 ```
 
@@ -187,6 +193,21 @@ Use Docker/Compose or Portainer container logs to diagnose startup failures.
 Common causes are
 missing secrets, incorrect directory ownership, an overlapping `EDGE_SUBNET`,
 or a Tunnel hostname that does not target `http://app:8080`.
+
+## Architecture
+
+The production stack contains three containers:
+
+- **app**: the Go API, React frontend, SQLite database access, media processing,
+  authorization, and upload proxy;
+- **tusd**: resumable upload transport, available only to `app` on an isolated
+  Docker network;
+- **cloudflared**: outbound Cloudflare Tunnel connection to the public
+  hostname.
+
+No host ports are published. Cloudflare sends traffic to `http://app:8080`, and
+guests cannot reach `tusd` directly. SQLite lives on the app-data mount;
+originals and generated thumbnails live together on the media mount.
 
 ## Configuration
 
