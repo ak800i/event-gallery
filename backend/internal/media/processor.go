@@ -70,6 +70,7 @@ var mimeToExt = map[string]string{
 	"image/webp":      ".webp",
 	"image/heic":      ".heic",
 	"image/heif":      ".heif",
+	"image/avif":      ".avif",
 	"video/mp4":       ".mp4",
 	"video/quicktime": ".mov",
 	"video/webm":      ".webm",

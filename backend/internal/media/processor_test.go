@@ -9,6 +9,12 @@ import (
 	"event-gallery/backend/internal/models"
 )
 
+func TestMimeToExt_AVIF(t *testing.T) {
+	if got := mimeToExt["image/avif"]; got != ".avif" {
+		t.Errorf("expected .avif for image/avif, got %q", got)
+	}
+}
+
 func TestProcessor_ProcessImage(t *testing.T) {
 	dir := t.TempDir()
 	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/jpeg"}, []string{"video/mp4"})
