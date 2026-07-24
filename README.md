@@ -9,6 +9,8 @@ The default branding is wedding-oriented so a fresh deployment works
 immediately for that common use case. Administrators can replace all listed
 main-page text and colors for any event without rebuilding the application.
 
+![Event Gallery main page](screenshots/event-gallery-main-page.png)
+
 ## Features
 
 ### Guest gallery
@@ -56,7 +58,7 @@ period (30 days by default), or immediately through the admin Trash tab.
 
 ## Quick start guide (written by a human ;) )
 If you are using Portainer create a stack with the `Repository` option pointed to this repo `https://github.com/ak800i/event-gallery`, and set the environment variables mentioned below.  
-If you are using a different docker host use the contents of `docker-compose.yml`.
+If you are using a different docker host use the contents of [docker-compose.yml](docker-compose.yml).
 
 This app needs a few environment variables in order to work.  
 If you don't know how to set them, or how to inline them into docker-compose.yml, ask an AI. (it's very easy).  
@@ -76,7 +78,7 @@ CLOUDFLARE_TUNNEL_TOKEN=REPLACE_WITH_THE_TUNNEL_TOKEN
 
 ## Deploy on a Docker host
 
-The supplied `docker-compose.yml` runs on a standard Linux Docker host. It is
+The supplied [docker-compose.yml](docker-compose.yml) runs on a standard Linux Docker host. It is
 ready for a Portainer Git stack and can also be used with ordinary Docker
 Compose. It pulls multi-architecture images from GHCR and restarts containers
 automatically after a host reboot.
@@ -130,7 +132,7 @@ host port for `app` or `tusd`.
 ### 3. Configure the Portainer stack
 
 In Portainer, create a stack from this Git repository and select
-`docker-compose.yml`. Add the following environment variables in the stack
+[docker-compose.yml](docker-compose.yml). Add the following environment variables in the stack
 configuration:
 
 ```dotenv
