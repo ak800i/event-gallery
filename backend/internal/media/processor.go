@@ -70,6 +70,7 @@ var mimeToExt = map[string]string{
 	"image/webp":      ".webp",
 	"image/heic":      ".heic",
 	"image/heif":      ".heif",
+	"image/avif":      ".avif",
 	"video/mp4":       ".mp4",
 	"video/quicktime": ".mov",
 	"video/webm":      ".webm",
@@ -142,7 +143,7 @@ func (p *Processor) Process(ctx context.Context, tempPath, originalFilename stri
 
 	switch kind {
 	case models.KindImage:
-		p.processImage(finalPath, id, result)
+		p.processImage(ctx, finalPath, id, result)
 	case models.KindVideo:
 		p.processVideo(ctx, finalPath, id, result)
 	}
@@ -150,13 +151,18 @@ func (p *Processor) Process(ctx context.Context, tempPath, originalFilename stri
 	return result, nil
 }
 
-func (p *Processor) processImage(finalPath, id string, result *Result) {
+func (p *Processor) processImage(ctx context.Context, finalPath, id string, result *Result) {
 	width, height, err := GenerateImageThumbnail(finalPath, p.ThumbnailPath(id), p.ThumbnailMaxDimension)
 	if err != nil {
-		// Some formats (notably HEIC/HEIF from iPhones) have no pure-Go
-		// decoder available. We still keep the original file; the gallery
-		// falls back to a generic preview for these.
-		if w, h, dimErr := ImageDimensions(finalPath); dimErr == nil {
+		// Some formats have no pure-Go decoder. AVIF (and HEIC/HEIF) can
+		// still be thumbnailed via ffmpeg, which is already available for
+		// video handling.
+		if w, h, ffErr := GenerateImageThumbnailFFmpeg(ctx, finalPath, p.ThumbnailPath(id), p.ThumbnailMaxDimension); ffErr == nil {
+			result.Width, result.Height = w, h
+			result.HasThumbnail = true
+		} else if w, h, dimErr := ImageDimensions(finalPath); dimErr == nil {
+			// Last resort: keep the original and record its dimensions so the
+			// gallery can lay out a placeholder tile.
 			result.Width, result.Height = w, h
 		}
 	} else {

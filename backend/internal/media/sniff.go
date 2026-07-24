@@ -79,6 +79,9 @@ var signatures = []sniffSignature{
 	{mime: "image/heif", kind: models.KindImage, match: func(b []byte) bool {
 		return isFtypBrand(b, "mif1", "msf1")
 	}},
+	{mime: "image/avif", kind: models.KindImage, match: func(b []byte) bool {
+		return isFtypBrand(b, "avif", "avis")
+	}},
 	{mime: "video/mp4", kind: models.KindVideo, match: func(b []byte) bool {
 		return isFtypBrand(b, "isom", "iso2", "mp41", "mp42", "avc1", "M4V ", "dash")
 	}},

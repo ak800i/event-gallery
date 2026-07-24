@@ -148,3 +148,73 @@ func GenerateVideoThumbnail(ctx context.Context, srcPath, dstPath string, maxDim
 	}
 	return nil
 }
+
+// GenerateImageThumbnailFFmpeg produces a JPEG thumbnail for still-image
+// formats that have no pure-Go decoder (notably AVIF) by shelling out to
+// ffmpeg, which is already a runtime dependency for video handling. ffmpeg
+// applies any stored display rotation automatically. It returns the original
+// image's display dimensions, orientation-corrected against the generated
+// thumbnail so the gallery lays out the tile with the right aspect ratio.
+func GenerateImageThumbnailFFmpeg(ctx context.Context, srcPath, dstPath string, maxDimension int) (width, height int, err error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	origW, origH, err := probeImageDimensions(ctx, srcPath)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	scaleFilter := fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease", maxDimension, maxDimension)
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-y",
+		"-i", srcPath,
+		"-frames:v", "1",
+		"-vf", scaleFilter,
+		"-q:v", "3",
+		dstPath,
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return 0, 0, fmt.Errorf("ffmpeg image thumbnail failed: %w (stderr: %s)", err, stderr.String())
+	}
+
+	// ffmpeg autorotates the thumbnail but ffprobe reports the encoded
+	// (pre-rotation) dimensions. If the thumbnail's orientation disagrees
+	// with the probed dimensions, a display rotation swapped the axes.
+	if thumbW, thumbH, dimErr := ImageDimensions(dstPath); dimErr == nil {
+		if (origW > origH) != (thumbW > thumbH) {
+			origW, origH = origH, origW
+		}
+	}
+	return origW, origH, nil
+}
+
+// probeImageDimensions reads the pixel dimensions of the first video/image
+// stream via ffprobe, used for formats the pure-Go decoders cannot open.
+func probeImageDimensions(ctx context.Context, path string) (int, int, error) {
+	cmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=width,height",
+		"-print_format", "json",
+		path,
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return 0, 0, fmt.Errorf("ffprobe image failed: %w (stderr: %s)", err, stderr.String())
+	}
+
+	var out ffprobeOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		return 0, 0, fmt.Errorf("parse ffprobe output: %w", err)
+	}
+	for _, s := range out.Streams {
+		if s.Width > 0 && s.Height > 0 {
+			return s.Width, s.Height, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("ffprobe reported no image dimensions")
+}
