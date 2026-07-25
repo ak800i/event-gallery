@@ -171,14 +171,15 @@ func (p *Processor) processImage(ctx context.Context, finalPath, id string, resu
 
 	if err := GenerateImageThumbnailFFmpeg(ctx, finalPath, thumbPath, p.ThumbnailMaxDimension); err == nil {
 		result.HasThumbnail = true
-		thumbW, thumbH, dimErr := ImageDimensions(thumbPath)
-		switch {
-		case probeErr == nil && dimErr == nil:
-			result.Width, result.Height = orientImageDimensions(probe.CodedWidth, probe.CodedHeight, thumbW, thumbH)
-		case dimErr == nil:
-			result.Width, result.Height = thumbW, thumbH
-		case probeErr == nil:
-			result.Width, result.Height = probe.CodedWidth, probe.CodedHeight
+		// Original display dimensions come only from the probe. If the probe
+		// failed, leave Width/Height unset rather than persisting the scaled
+		// thumbnail size as if it were the original.
+		if probeErr == nil {
+			if thumbW, thumbH, dimErr := ImageDimensions(thumbPath); dimErr == nil {
+				result.Width, result.Height = orientImageDimensions(probe.CodedWidth, probe.CodedHeight, thumbW, thumbH)
+			} else {
+				result.Width, result.Height = probe.CodedWidth, probe.CodedHeight
+			}
 		}
 	} else if probeErr == nil {
 		// No thumbnail available; keep best-effort coded dimensions.

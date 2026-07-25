@@ -94,7 +94,7 @@ func TestSniff_AVIF(t *testing.T) {
 	}
 
 	avisPath := filepath.Join(dir, "seq.avif")
-	writeFtyp(t, avisPath, "avis", "avif", "mif1")
+	writeFtyp(t, avisPath, "avis", "mif1")
 	if mt, _, err := Sniff(avisPath); err != nil || mt != "image/avif" {
 		t.Errorf("avis sniff: mt=%s err=%v", mt, err)
 	}

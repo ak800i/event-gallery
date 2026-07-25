@@ -82,6 +82,45 @@ func TestProcessor_ProcessAVIF(t *testing.T) {
 	}
 }
 
+func TestProcessor_ProcessAVIF_RealFixture(t *testing.T) {
+	requireFFmpeg(t)
+	const fixture = "testdata/sample_portrait.avif"
+	if _, err := os.Stat(fixture); err != nil {
+		t.Skip("sample_portrait.avif fixture not present")
+	}
+	dir := t.TempDir()
+	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/avif"}, nil)
+
+	tempPath := filepath.Join(dir, "incoming.tmp")
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
+		t.Fatalf("write temp: %v", err)
+	}
+
+	result, err := proc.Process(context.Background(), tempPath, "guest.avif")
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if result.MimeType != "image/avif" {
+		t.Errorf("expected image/avif, got %s", result.MimeType)
+	}
+	if !result.HasThumbnail {
+		t.Error("expected a thumbnail for the real AVIF fixture")
+	}
+	if !(result.Height > result.Width) {
+		t.Errorf("expected portrait stored dims (ground truth), got %dx%d", result.Width, result.Height)
+	}
+	if _, err := os.Stat(proc.OriginalPath(result.StoredFilename)); err != nil {
+		t.Errorf("expected original file: %v", err)
+	}
+	if _, err := os.Stat(proc.ThumbnailPath(result.ID)); err != nil {
+		t.Errorf("expected thumbnail file: %v", err)
+	}
+}
+
 func TestProcessor_RejectsDisallowedType(t *testing.T) {
 	dir := t.TempDir()
 	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/png"}, nil)
