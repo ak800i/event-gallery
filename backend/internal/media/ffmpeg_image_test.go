@@ -89,3 +89,35 @@ func TestProbeImageAndThumbnail_AVIF(t *testing.T) {
 		t.Errorf("expected landscape thumbnail, got %dx%d", tw, th)
 	}
 }
+
+func TestProcessAVIF_RealPortraitFixture(t *testing.T) {
+	requireFFmpeg(t)
+	const fixture = "testdata/sample_portrait.avif"
+	if _, err := os.Stat(fixture); err != nil {
+		t.Skip("sample_portrait.avif fixture not present")
+	}
+	// The fixture is a real AVIF whose display orientation is portrait.
+	dir := t.TempDir()
+	dst := filepath.Join(dir, "thumb.jpg")
+	ctx := context.Background()
+
+	if err := GenerateImageThumbnailFFmpeg(ctx, fixture, dst, 100); err != nil {
+		t.Fatalf("thumbnail: %v", err)
+	}
+	tw, th, err := ImageDimensions(dst)
+	if err != nil {
+		t.Fatalf("thumb dims: %v", err)
+	}
+	if !(th > tw) {
+		t.Errorf("expected portrait thumbnail (ground truth), got %dx%d", tw, th)
+	}
+
+	probe, err := ProbeImage(ctx, fixture)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	w, h := orientImageDimensions(probe.CodedWidth, probe.CodedHeight, tw, th)
+	if !(h > w) {
+		t.Errorf("expected portrait stored dims (ground truth), got %dx%d", w, h)
+	}
+}

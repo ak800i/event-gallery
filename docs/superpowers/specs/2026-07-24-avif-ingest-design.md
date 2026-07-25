@@ -167,6 +167,9 @@ effort. Both calls run under the existing 30s context timeout.
   or the `rotate` tag). If it does not, the plan must adopt the alternative
   dimension source described in section 4 so stored dims stay consistent with
   the auto-rotated thumbnail.
+  Task 6 v2 validation result: AVIF decode CONFIRMED in the pinned
+  `ffmpeg=6.1.2-r2` with a real sample (`DECODE_OK`; ffprobe `av1 418x626`).
+  HEIC/HEIF decode NOT tested (no HEIC sample available); graceful degradation applies. No irot-rotated fixture was available, so the rotation-swap path is covered by deterministic `TestOrientImageDimensions` while `TestProcessAVIF_RealPortraitFixture` confirms real-AVIF portrait handling end-to-end.
 - Sniff:
   - Synthetic `ftyp` fixtures assert `avif` and `avis` major brands →
     `image/avif`.
