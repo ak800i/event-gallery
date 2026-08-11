@@ -1,0 +1,768 @@
+# Durable Media Ingest and HEIC Preview Design
+
+## Background
+
+The load test lost 17 completed uploads. The cause is in
+`handlePostFinishHook`: tusd's non-blocking `post-finish` runs the entire
+ingest synchronously on a context derived from the final PATCH request. tusd
+cancels that context roughly ten seconds after the request completes. Under
+load, magic sniffing, hashing, the cross-volume copy, and derivative
+generation exceed that window, so the SQLite insert fails with
+`context canceled`. The current error path then removes the already-moved
+media file, and a deferred cleanup removes the tus sidecar. The only complete
+copy of the guest's photo is deleted because a *server-side* deadline expired.
+
+Nine HEIC files were byte-intact with matching client hashes but were not
+decodable by Chromium. They were stored and served as originals with no
+browser-compatible derivative.
+
+Two facts follow, and they drive the whole design:
+
+- Transport completion is not publication. A tus 204 currently means bytes
+  arrived, not that the file is durably owned by the application.
+- A completed source must never be deleted because of a transient failure.
+  Only a committed database result may authorize deletion.
+
+## Goals
+
+- Make an upload durable before tus reports success to the browser.
+- Process uploads in a bounded worker pool with persistent retries, on a
+  lifetime context that no request can cancel.
+- Never delete the only complete copy on context, database, or filesystem
+  errors.
+- Generate browser-viewable JPEG previews for HEIC/HEIF while preserving the
+  original bytes, and never reject HEIC for being unconvertible. Admission
+  stays governed by the configured MIME allow-list, which includes HEIC and
+  HEIF by default.
+- Log ffprobe/ffmpeg failures with actionable attributes.
+- Extend the load test to assert database publication and gallery visibility,
+  not just transport.
+
+## Non-Goals
+
+- No external queue, object store, or additional service.
+- No backfill of previews for existing HEIC rows.
+- No multi-instance deployment. One app container and one tusd container per
+  stack remains a documented constraint enforced by Compose.
+- No admin UI for queue inspection.
+
+## Invariants
+
+1. A tus upload reported successful to the browser is durably recorded in
+   SQLite with its source fsynced.
+2. A source file is deleted only after a media row for that content is
+   committed, or after durable discard intent from client rejection or
+   cancellation.
+3. A prepared original is created by copy, file fsync, rename, and parent
+   directory fsync before it may be treated as a recoverable copy.
+4. Transient failures retry indefinitely with capped backoff. Only
+   deterministic client failures are terminal.
+5. Absence of a file is never sufficient evidence to delete a database row or
+   another copy. Positive verification is required.
+6. HEIC originals are preserved byte-for-byte; previews and thumbnails are
+   derivatives whose failure never blocks publication.
+
+## Architecture
+
+### SQLite queue
+
+Add migration `0004_durable_upload_jobs_and_previews.sql`. It adds
+`media_items.has_preview` and one queue table.
+
+```sql
+ALTER TABLE media_items ADD COLUMN has_preview INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE upload_jobs (
+    upload_id TEXT PRIMARY KEY,
+    media_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'uploading', 'pending', 'processing', 'cleanup',
+            'complete', 'discarding', 'discarded'
+        )
+    ),
+    original_filename TEXT NOT NULL,
+    stored_filename TEXT,
+    mime_type TEXT,
+    expected_size INTEGER NOT NULL CHECK (expected_size > 0),
+    declared_sha256 TEXT NOT NULL DEFAULT '',
+    authoritative_sha256 TEXT,
+    guest_name TEXT NOT NULL DEFAULT '',
+    uploader_ip TEXT NOT NULL DEFAULT '',
+    source_completed_at INTEGER,
+    prepared_at INTEGER,
+    cancellation_requested_at INTEGER,
+    result_media_id TEXT,
+    terminal_reason TEXT NOT NULL DEFAULT '',
+    lease_token TEXT,
+    lease_until INTEGER,
+    next_attempt_at INTEGER NOT NULL,
+    processing_failures INTEGER NOT NULL DEFAULT 0,
+    conversion_failures INTEGER NOT NULL DEFAULT 0,
+    cleanup_failures INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    terminal_at INTEGER,
+    CHECK ((lease_token IS NULL) = (lease_until IS NULL))
+);
+
+CREATE INDEX idx_upload_jobs_due
+  ON upload_jobs(status, next_attempt_at);
+
+CREATE INDEX idx_upload_jobs_lease
+  ON upload_jobs(status, lease_until);
+
+CREATE INDEX idx_upload_jobs_terminal
+  ON upload_jobs(terminal_at)
+  WHERE status IN ('complete', 'discarded');
+```
+
+Every `INTEGER` time in this migration is signed UTC Unix microseconds. The
+store takes one `nowMicros` per transaction, adds durations with checked
+64-bit arithmetic, and compares numerically. Existing `media_items` timestamp
+encoding is unchanged.
+
+`upload_id` is the tus upload ID generated by the app in `pre-create` and
+returned through `ChangeFileInfo.ID`; it is never reused. `media_id` is
+preallocated in the same transaction so artifact paths are deterministic
+before any file is written.
+
+The database DSN adds `synchronous=FULL` alongside the existing WAL mode, and
+all state transitions use immediate transactions. Without FULL, a power loss
+can lose the very commit that authorized deleting a source.
+
+Terminal `complete` and `discarded` rows are deleted in bounded batches once
+`terminal_at` is older than `UPLOAD_JOB_RETENTION_DAYS`, which keeps status
+polling and idempotency working across a browser's realistic lifetime.
+
+### Ingest manager
+
+Create `backend/internal/ingest`. Its manager owns validation and enqueueing,
+a non-blocking wake channel plus periodic polling, a fixed worker pool,
+transactional claims with lease expiry, retry scheduling, the pre-finish
+durability executor, sidecar reconciliation, and graceful shutdown. The HTTP
+server receives it as a dependency; public media routes keep using the media
+processor directly for artifact paths.
+
+Workers run on the manager's lifetime context. No hook or request context ever
+reaches processing.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `MEDIA_PROCESSING_WORKERS` | `2` | Concurrent ingest jobs |
+| `MEDIA_PROCESSING_TIMEOUT_MINUTES` | `60` | Deadline for one processing attempt |
+| `UPLOAD_DURABILITY_WAIT_SECONDS` | `75` | Pre-finish response budget |
+| `UPLOAD_DURABILITY_WORKERS` | `2` | Concurrent source fsync operations |
+| `UPLOAD_RETRY_MAX_BACKOFF_MINUTES` | `15` | Cap on persisted retry delay |
+| `INGEST_RECONCILE_INTERVAL_SECONDS` | `15` | Sidecar and lease recovery cadence |
+| `INGEST_MIN_FREE_BYTES` | `2 * MAX_UPLOAD_BYTES` | Free-space floor before accepting a create |
+| `UPLOAD_JOB_RETENTION_DAYS` | `30` | Retain terminal status rows |
+| `UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE` | `6000` | Separate limiter for batched status |
+| `PREVIEW_MAX_DIMENSION` | `2560` | Longest JPEG preview edge |
+| `HEIC_CONVERSION_MAX_FAILURES` | `6` | Transient conversion attempts before fallback |
+| `IMAGE_MAX_SOURCE_PIXELS` | `50000000` | Pure-Go decode admission limit |
+| `HEIC_MAX_SOURCE_PIXELS` | `50000000` | libheif decode admission limit |
+| `MEDIA_TOOL_MEMORY_BYTES` | `1073741824` | Address-space cap per external media process |
+| `MEDIA_TOOL_LOG_BYTES` | `65536` | Captured stdout/stderr per external process |
+
+Claims use a single conditional `UPDATE ... RETURNING`; receiving the row is
+the definition of ownership. Each claim writes a fresh random `lease_token`
+and a `lease_until` longer than the attempt timeout. Every subsequent write by
+that worker requires its exact token, so a stale goroutine cannot publish,
+clean, or discard. Retry delays are persisted and exponential; workers never
+sleep holding a job.
+
+On startup the app requeues `processing` rows to `pending` and makes
+`cleanup`/`discarding` rows immediately claimable, rather than waiting out
+wall-clock leases after a redeploy.
+
+### Storage health gate
+
+A failed bind mount presents an empty directory. Without a guard, cleanup
+logic would interpret that as "the files are gone" and start deleting rows and
+sources. One check prevents the entire class:
+
+Before readiness and before any destructive operation, the app verifies media
+storage health. If `media_items` is empty the mount is trivially healthy.
+Otherwise it stats a bounded sample of expected originals; the mount is
+healthy when at least one exists. A non-empty database with an entirely
+missing sample opens a dependency circuit: `/readyz` reports not ready,
+uploads and all deletions are refused with retryable 503, gallery reads
+continue, and a stable remediation log names the expected path. Health is
+re-evaluated each reconcile interval and closes the circuit automatically once
+the volume returns.
+
+Deletion paths additionally re-check health immediately before unlinking, so a
+volume that disappears mid-run cannot cause a cascade of deletions.
+
+## Upload Path
+
+### Pre-create admission
+
+The blocking `pre-create` hook remains the size and filename gate and
+additionally:
+
+1. Requires the internal proxy secret and rejects deferred or non-positive
+   sizes and missing filenames.
+2. Captures a `statfs` snapshot of the upload and media filesystems and
+   rejects when the projected obligation would cross `INGEST_MIN_FREE_BYTES`.
+   The projected obligation is `expected_size` on the upload volume plus
+   `expected_size` on the media volume.
+3. Generates safe random `upload_id` and `media_id` values and verifies that
+   neither derived tus path exists.
+4. Sanitizes and stores filename, guest name, declared SHA-256, and the
+   resolved uploader IP, then inserts the `uploading` row in one immediate
+   transaction.
+5. Returns the generated ID through `ChangeFileInfo.ID`.
+
+Because the ID is always freshly generated, no pre-create outcome can ask
+tusd to open an existing data or sidecar path.
+
+Deterministic validation keeps the existing 400/413 semantics. Capacity
+pressure and transient SQLite busy errors instead return a normal 2xx hook
+envelope carrying `RejectUpload` with an embedded 503 and `Retry-After`. This
+is the only mechanism by which tusd v2.10 relays a chosen status, and it
+prevents tusd from converting backpressure into an opaque internal 500. The
+public proxy preserves those statuses so the browser backs off instead of
+hard-failing the file.
+
+Admission is bounded by a short context well under the hook timeout, and no
+`statfs` call runs while the SQLite write lock is held.
+
+### Pre-finish durability barrier
+
+This is the fix for the lost uploads. Enable tusd's blocking `pre-finish`
+hook. It runs inside the final PATCH, and its response becomes that PATCH's
+response, so completing it successfully is exactly what makes transport
+success truthful.
+
+At the earliest handler entry, before authentication and body decode, record
+one absolute deadline of `now + UPLOAD_DURABILITY_WAIT_SECONDS`. Every
+subsequent parse, validation, SQLite operation, and join uses a child context
+bounded by the remaining time; no phase resets it.
+
+1. Require a safe non-empty upload ID and `Storage.Type == "filestore"`.
+2. Derive the expected data path from `TUS_UPLOAD_DIR` and the upload ID, and
+   require the hook's storage path to equal it after cleaning.
+3. Require a positive known size, a complete offset, and a regular data file
+   whose size equals the declared size.
+4. Require the immutable size and sanitized metadata to match the `uploading`
+   row.
+5. Start or join an idempotent durability operation, keyed by upload ID, in
+   the fixed `UPLOAD_DURABILITY_WORKERS` executor. It fsyncs the data file,
+   the sidecar, and the upload directory.
+6. That operation then atomically transitions `uploading` to `pending`, sets
+   `source_completed_at` and `next_attempt_at`, requires
+   `cancellation_requested_at IS NULL`, and signals the workers.
+
+Pre-finish returns success only after the transition commits. It performs no
+move, hash, decode, or derivative work, and it never deletes the sidecar.
+
+If the executor is saturated or the budget expires, the hook returns HTTP 200
+with a hook envelope whose embedded response is a client-facing 503 plus
+`Retry-After`. The durability operation continues on the manager's context to
+its own deadline, so the work is not wasted, and the browser retries. tusd
+still emits `post-finish` in that case; it is treated only as an idempotent
+wake signal and never as proof of anything.
+
+Because a 503 can be chosen while the operation is still running, the proxy
+must not report success afterward. For every HEAD and PATCH it first consults
+the durable row and the in-process durability registry: if a complete source
+lacks the committed `source_completed_at`, it triggers or joins the same
+idempotent operation and returns retryable 503 until commit, without
+forwarding to tusd. This prevents an already-complete fast path from
+reporting success that the database has not recorded.
+
+Configure `-hooks-http-timeout=90s` and `-network-timeout=90s`, keep the
+default 10-second request-completion grace, and set `-hooks-http-retry=0`. The
+required inequality from the final body read is
+`75s app budget < 90s hook timeout < 100s edge window`, which leaves the
+app 15 seconds to return its envelope before either tusd or the edge cuts the
+request. The entrypoint derives and validates these values at startup.
+
+### Cancellation and termination
+
+Enable the blocking `pre-terminate` hook. No tus termination is authorized
+from queue status alone.
+
+A public DELETE is consumed by the app as cancellation intent and is never
+forwarded to tusd directly. It first applies the same completion fence used by
+HEAD and PATCH. If the row has already committed `pending` or later, it
+returns 409 and the upload proceeds to publication; a durable completion is
+never silently reversed. Otherwise one immediate transaction sets
+`cancellation_requested_at`, which causes every later PATCH and pre-finish
+promotion to fail closed.
+
+Maintenance then claims cancelled rows whose upload has been idle for one
+reconcile interval, transitions them to `discarding` with a worker lease, and
+issues the internal tusd DELETE carrying that lease token. The blocking
+`pre-terminate` hook permits deletion only when the row is `discarding` or
+`cleanup` and the forwarded token matches its live lease; every other request
+is rejected regardless of offset. The incomplete-upload janitor uses the same
+claim API rather than calling tusd directly.
+
+A termination is issued only for a job whose data path the worker has just
+observed to exist. If the path is already absent the worker issues no DELETE
+at all and terminalizes by row transition alone, because the app must never
+try to delete what it cannot observe: absence may be a faulted mount rather
+than a removed file.
+
+HTTP 204, 404, or 410 from tusd is a prompt to verify, not proof. The worker
+requires both derived paths to be absent, fsyncs the upload directory, and
+verifies absence again before the terminal transition. Remaining ambiguity
+schedules a retry; the app never unlinks tusd lock files.
+
+### Recovery reconciler
+
+Move tus sidecar parsing into a small shared package used by both the manager
+and incomplete-upload cleanup. Parsing stays size-bounded and validates file
+type, upload identity, storage paths, expected size, and data file type.
+
+The HTTP listener starts promptly with ingest readiness false. `/healthz`
+remains the existing shallow SQLite liveness check so gallery browsing and
+cloudflared start normally; a new `/readyz` reports ingest readiness while a
+bounded startup inventory parses sidecars in batches. Upload routes return
+retryable 503 until it finishes.
+
+Recovery rules, applied at startup and every
+`INGEST_RECONCILE_INTERVAL_SECONDS`:
+
+- A complete sidecar with no non-terminal row is adopted as an `uploading` row
+  with a generated media ID and recovered metadata, then fsynced and promoted
+  to `pending` in the same transaction. This is the cutover path for uploads
+  that completed under the old code, the recovery path for a lost hook, and the
+  path by which bytes hidden by a faulted mount are republished after a row was
+  already terminalized.
+- A contained regular data file whose size equals `expected_size` is a
+  recoverable completion even when the sidecar is missing or malformed.
+  Publication never deletes it merely because tus metadata was lost.
+- A partial data file keeps its row in `uploading`; a later PATCH resumes it.
+  Idle partials are governed only by the existing
+  `TUS_INCOMPLETE_RETENTION_HOURS` policy, including zero disabling it.
+- If both paths are absent, the row is resolved by row transition alone and
+  never by a tus termination. A row without `source_completed_at` reaches
+  public `cancelled`; a row with it stays `pending` and retryable, because its
+  bytes were once durably complete. Neither case deletes anything, so a mount
+  that returns is fully recovered by the adoption rules above.
+
+Existing `pending`, `processing`, `cleanup`, `complete`, `discarding`, and
+`discarded` rows are never reset by reconciliation.
+
+## Processing and Publication
+
+### Deterministic preparation
+
+The media processor gains an API that accepts the preallocated media ID and
+does not remove the source:
+
+1. Magic-sniff and allow-list check the incoming file. HEIC and HEIF ship in
+   the default `ALLOWED_IMAGE_MIME_TYPES` list; conversion outcomes never
+   remove them, so no HEIC is ever rejected for being unconvertible.
+2. Derive `stored_filename` from the media ID and sniffed MIME, and persist
+   both in a fenced update.
+3. Read size and compute the authoritative SHA-256 with a cancellation-aware
+   loop.
+4. Compare any declared client SHA-256. A mismatch records the rejected-upload
+   audit outcome and moves directly to `discarding`, before any final artifact
+   exists.
+5. Persist `authoritative_sha256` before creating the final original.
+6. Copy the immutable source through a lease-specific same-directory temporary
+   named `.ingest-<mediaID>-<leaseToken>-<kind>.tmp`, fsync and close it, then
+   fsync the originals directory. Only after that barrier is it a recoverable
+   alternate copy. Rename it to `originals/<mediaID>.<ext>` and fsync the
+   directory again.
+7. Reopen the final original and validate its size and SHA-256, then commit
+   `prepared_at`.
+8. Generate derivatives into deterministic paths.
+9. Return the media result plus typed derivative warnings.
+
+On retry, an existing deterministic original is reused only when its size and
+SHA-256 match; a mismatch is an error and is never silently overwritten. The
+worker rechecks its lease before each rename and before publication, so a
+stale worker cannot resurrect an artifact after cleanup.
+
+Before any JPEG, PNG, GIF, or WebP full decode, the processor calls
+`image.DecodeConfig`, rejects zero or overflowing dimensions, and skips
+thumbnailing above `IMAGE_MAX_SOURCE_PIXELS`. Skips are logged as
+deterministic derivative outcomes and publish the original anyway.
+
+`prepared_at` plus `stored_filename` and `authoritative_sha256` also form a
+recovery identity. If a crash loses the `prepared_at` commit, the next worker
+validates the deterministic final by persisted filename, size, and hash and
+backfills the marker rather than re-copying or deleting. A fully synced
+temporary whose rename was lost is promoted the same way. A temporary is
+removed only after another valid copy exists, or after conclusive mismatch.
+
+### Transactional publication
+
+Before duplicate resolution the worker validates the conflicting row's
+original: it opens the contained regular file and checks size and SHA-256
+against the row. A missing, unreadable, wrong-size, or wrong-hash original is
+an integrity fault, not a duplicate. The job returns to backoff, keeps both its
+source and its prepared original, and emits a critical log. This is what
+prevents "duplicate detected" from deleting a good new copy in favor of a
+corrupt old one.
+
+One immediate transaction then:
+
+1. Verifies `status='processing'` and the exact lease token.
+2. Inserts the media row with the SHA-256 conflict ignored, then selects the
+   authoritative row by SHA-256 while holding the write lock.
+3. If that row is this job's own `media_id`, records
+   `result_media_id = media_id` and keeps its artifacts.
+4. If it differs, records the other ID as `result_media_id` and marks this job
+   a duplicate whose own artifacts may be removed.
+5. Transitions the job to `cleanup` and commits the media result and the queue
+   transition together.
+
+A unique-hash race is serialized by the writer transaction and the database
+constraint. Any database failure rolls back everything; the job and its source
+stay retryable.
+
+Permanent purge deletes one media row and writes its `ActionPurge` audit in a
+single transaction, as today. It first requires that no non-terminal upload job
+references that media ID as `result_media_id`, so an in-flight duplicate can
+never lose the authoritative original it is about to depend on. Purge and
+duplicate resolution therefore always leave at least one committed row with a
+complete original.
+
+Upload audit recording stays best effort and preserves existing outcome
+coverage for success, duplicate resolution, unsupported content, and checksum
+mismatch.
+
+### Cleanup
+
+Cleanup is claimed under its own lease. For a duplicate, it removes this job's
+deterministic artifacts only when `result_media_id` is non-empty, differs from
+`media_id`, and a fresh check confirms no committed media row owns `media_id`.
+That ownership check is mandatory. Removal uses the persisted
+`stored_filename`, never the client filename or a re-sniffed source, and each
+unlink is followed by a directory fsync and an absence check.
+
+A `discarding` worker performs the same ownership check for the original,
+thumbnail, and preview before terminating the source, because a crash may have
+left artifacts from an earlier attempt.
+
+Only then does the worker call tusd's internal DELETE with its lease token,
+verify absence of both derived paths across a directory fsync, and commit the
+terminal transition with `terminal_at`. A crash after source deletion is
+recovered by the same verification. A cleanup error leaves the job in
+`cleanup` with backoff and never affects the committed media row.
+
+## Failure Handling
+
+Failures are classified by the manager:
+
+- **Transient core processing.** Context deadlines not caused by shutdown,
+  SQLite errors, filesystem I/O errors, and a conflicting media row whose
+  original fails validation. These increment `processing_failures`, retain the
+  source and prepared artifacts, and return to `pending` with capped backoff
+  indefinitely. There is no failure count that causes deletion.
+- **Missing source.** A `pending` or `processing` job whose source cannot be
+  found is transient, not terminal. It retries indefinitely and publishes if
+  the file returns. Absence is never terminalized, because a faulted or
+  unmounted volume is indistinguishable from a deleted file, and Invariant 4
+  reserves terminal outcomes for deterministic client failures.
+- **Deterministic client validation.** Unsafe identity or path, unsupported
+  magic type, and declared checksum mismatch. These record a durable terminal
+  reason and move to `discarding`. This is the only class that discards a
+  complete source, and it happens before any final artifact exists.
+- **Transient HEIC conversion.** Process start, timeout, resource, and
+  temporary output I/O failures increment only `conversion_failures` on a
+  short separate schedule.
+- **Deterministic HEIC conversion.** A typed unsupported codec, invalid primary
+  image, or pixel-limit result publishes the original immediately without
+  derivatives, because repeating the decode cannot change the outcome.
+- **Other derivative failures.** JPEG, PNG, GIF, WebP, AVIF thumbnails and all
+  ffprobe/ffmpeg probe or thumbnail failures keep today's best-effort
+  behavior: log and publish without that derivative.
+
+Queue residency, restarts, and unrelated core retries never consume the
+conversion budget.
+
+External media processes run with a bounded context, `MEDIA_TOOL_MEMORY_BYTES`
+address-space limit, capped thread count, and `MEDIA_TOOL_LOG_BYTES` of
+captured output, so a hostile or corrupt file cannot exhaust the container.
+
+## HEIC/HEIF Derivatives
+
+A new build stage compiles the `heif-preview` helper against pinned
+`libheif-dev` and `libpng-dev` from Alpine 3.22, which currently provides
+libheif 1.19.8-r1 against libpng 1.6.57-r0; the exact `-r` revisions are
+confirmed at build time against the digest-pinned base. The runtime image gains
+only the `libheif` and `libpng` runtime packages plus the copied helper binary.
+The Go server stays `CGO_ENABLED=0`; the helper is a separate executable, not
+linked into it.
+
+The general `heif-convert` tool is deliberately not used: it writes numbered
+filenames for multi-image files, does not guarantee the primary image comes
+first, and can report process success after an output write failure. Instead
+the image ships `heif-preview`, a helper linking libheif directly that:
+
+1. Reads the source with libheif's security limits applied.
+2. Selects the primary image handle explicitly.
+3. Rejects sources above `HEIC_MAX_SOURCE_PIXELS` before full decode.
+4. Decodes to interleaved RGB and writes exactly one PNG to a caller-specified
+   path, honoring stored rotation.
+5. Exits with distinct codes for unsupported codec, invalid primary image,
+   pixel-limit rejection, memory limit, and output write failure, so the
+   manager can classify deterministic versus transient outcomes.
+
+The Go side runs the helper into a temporary file, then encodes the JPEG
+preview bounded by `PREVIEW_MAX_DIMENSION` and the thumbnail through the
+existing pipeline. The HEIC original is never rewritten. AVIF continues
+through the existing ffmpeg fallback, which is already validated with the
+pinned image.
+
+Directory setup, media removal, purge staging, purge restoration, and purge
+finalization all include the previews directory. Preview presence is
+discovered by path and remains optional in recovery manifests.
+
+## API and Frontend
+
+Add:
+
+```text
+GET  /api/media/{id}/preview
+POST /api/uploads/status
+```
+
+`GET /api/media/{id}/preview` applies the same active and approved visibility
+check as files and downloads. When `has_preview` is true it serves
+`previews/<id>.jpg`; otherwise it streams the original with its stored MIME
+type, so an unconverted HEIC degrades to today's behavior rather than a 404.
+
+`GET /api/media/{id}/download` continues to serve untouched original bytes
+with the original filename. Video playback continues to use `/file`. Image
+lightbox slides switch to `/preview`. `hasPreview` is added to the media DTO
+and the frontend `MediaItem` type.
+
+`POST /api/uploads/status` accepts up to 100 upload IDs, applies its own
+limiter so status traffic cannot consume the public gallery bucket, and
+returns `uploading`, `processing`, `published`, `duplicate`, `failed`,
+`cancelled`, `recovering`, or per-ID `unknown`. A committed `cleanup` or
+`complete` job already reports `published` or `duplicate`; source cleanup does
+not delay visibility. `mediaId` is included only when the row is publicly
+visible. Internal `discarding` and `discarded` map through the stable
+`terminal_reason` rather than leaking queue states: unsupported type and
+checksum mismatch report `failed`; cancellation and rows whose paths were never
+observable report `cancelled`. Core server errors and missing sources keep
+reporting `processing` because they retry indefinitely.
+
+`POST /api/uploads/check` remains as a backward-compatible shim that always
+returns `duplicate:false` without a lookup, so pre-upgrade tabs continue to tus
+instead of removing the file. The new uploader does not call it.
+
+The browser client needs one real change beyond wiring. The pinned
+`@uppy/tus` 5.1.1 retry behavior is insufficient here: its delay iterator is
+shared across the plugin instance, has a five-entry budget, and ignores
+`Retry-After`; tus-js-client also stops before `onShouldRetry` once its finite
+array is exhausted. Wrap the tus uploader with per-file outer retry state that
+honors `Retry-After` on 423, 429, and 503, retries the create when no URL
+exists yet, and resumes from the retained URL through guarded HEAD when one
+does. Server-side duplicate resolution by SHA-256 remains authoritative, so a
+retry that produces a second upload converges to one media row.
+
+After transport completes, the uploader polls `POST /api/uploads/status` in
+batches with one request in flight, a two-second minimum interval, and jittered
+backoff, and only a terminal result clears the entry. `Gallery.tsx` replaces
+its bounded progressive refresh sequence with a status-driven refresh once
+uploads publish.
+
+## Structured Logging
+
+Add stable events with `upload_id`, `media_id`, `operation`, and `error`
+attributes for: durability barrier outcome, job claim and retry with the named
+counter, missing-source and unobservable-path decisions, publication and
+duplicate resolution, cleanup and discard outcomes, storage health circuit
+transitions, HEIC helper exit classification, and every ffprobe/ffmpeg failure. Attempt
+attributes name their specific budget rather than one ambiguous counter. Media
+bytes, hook secrets, declared hashes, uploader IPs, and guest names are never
+logged in these events.
+
+## Load-Test Completion Oracle
+
+`loadtest/tus_battle.py` keeps its streaming payload generator and gains a
+helper computing the exact SHA-256 of the generated byte sequence without
+materializing the file, sent as tus metadata.
+
+After transport, the harness runs a processing phase:
+
+1. Poll returned upload IDs through bounded `/api/uploads/status` batches,
+   surfacing terminal failure without waiting for the global deadline.
+2. When approval is disabled, re-fetch `GET /api/media/{id}/download` for each
+   published media ID and compare its digest with the generated one. This
+   reuses an existing public endpoint, so the harness needs no credentials,
+   admin session, or CSRF handling.
+3. Fetch public configuration to determine whether approval is required.
+4. Paginate `/api/gallery` and match unique generated filenames.
+
+The JSON report separates transport, processing, database, and gallery
+outcomes, backpressure responses by status and phase, unexpected 5xx count and
+rate, and processing latency median, p95, and maximum. Documented 429 and 503
+responses carrying `Retry-After` count as backpressure rather than unexpected
+failures, but their uploads must still complete before the deadline. The
+configured success threshold applies to database success when approval is
+enabled and gallery success when it is not; transport success alone never
+passes a stage.
+
+## Testing
+
+### Queue and durability
+
+- Migration creates the queue table, indexes, and `has_preview`; the opened
+  database reports WAL plus `synchronous=FULL`.
+- Concurrent claims hand a job to exactly one worker; a stale lease token
+  affects zero rows on transition, publication, cleanup, and discard.
+- Startup requeues `processing` and makes cleanup and discard claimable
+  without waiting for lease expiry.
+- Blocking pre-finish fsyncs and promotes before the final PATCH can return
+  success, and performs no media processing or deletion.
+- A canceled hook context cannot cause source deletion. This is a direct
+  regression test for the production incident: force the hook context to
+  cancel mid-ingest and assert the source, sidecar, and any media file all
+  survive and the job later publishes.
+- Durability queue saturation returns the 2xx envelope with an embedded 503
+  and `Retry-After`; the detached operation still commits, and a subsequent
+  HEAD or PATCH is fenced to 503 until it does, never reporting success first.
+- Real-tusd timing test: hold pre-finish past the old effective ceiling and
+  prove the 75-second budget still relays 503 before the 90-second hook and
+  100-second edge deadlines. Startup rejects reordered timeout values.
+- Terminal rows expire in bounded batches after the retention window.
+
+### Recovery and crash windows
+
+- A complete sidecar with no row is adopted and published at startup; a
+  complete data file with a missing or malformed sidecar is also recovered
+  rather than deleted.
+- A partial upload keeps its row, resumes through HEAD and PATCH, and is
+  governed only by the incomplete-retention policy.
+- Crash injection after the temporary is fsynced and its parent directory is
+  fsynced but before rename, then remove the source: recovery validates and
+  promotes the temporary and publishes it.
+- Crash injection after final rename and directory fsync but before the
+  `prepared_at` commit, then remove the source: recovery validates the final
+  from persisted filename and hash, backfills the marker, and publishes.
+- An emptied upload mount deletes nothing and loses nothing: `pending` jobs
+  stay retryable, rows without `source_completed_at` terminalize without any
+  tus termination being issued, and when the mount returns every complete
+  source is adopted and published.
+- A simulated tusd crash between the data and sidecar unlink is repaired, and
+  the terminal transition requires both absent across a directory fsync.
+- Storage health: with a non-empty database and an emptied media mount, the
+  app opens the circuit, refuses uploads and every deletion, keeps gallery
+  reads working, and closes the circuit automatically when the volume returns.
+  A mid-run disappearance aborts pending deletions.
+
+### Publication and cleanup
+
+- Media insert, duplicate resolution, and the cleanup transition are atomic;
+  forced failure leaves no media row and no transition.
+- Duplicate resolution validates the conflicting original by stored filename,
+  size, and SHA-256; missing or corrupt authoritative originals produce a
+  retryable integrity fault that deletes neither copy.
+- Self-publication writes `result_media_id = media_id`; duplicate cleanup
+  requires different IDs plus the ownership check, and a self-match never
+  removes artifacts.
+- Purge is blocked while a non-terminal job references the media ID, and
+  proceeds afterward; at least one row plus complete original always survives.
+- Cleanup removes the sidecar only after committed publication, and a stale
+  worker cannot recreate or rename an artifact after cleanup.
+- Deterministic rejection discards the source only after its state transition
+  commits, and only before any final artifact exists.
+
+### Cancellation and termination
+
+- Cancellation during an active upload commits intent, fails later promotion
+  closed, and reaches public `cancelled` after verified termination.
+- Cancellation racing pre-finish is decided by one conditional transition:
+  cancel-first blocks publication, pending-first returns 409 and the upload
+  publishes.
+- Internal DELETE requires the exact live lease token; a stale token is
+  rejected even while the row is in an authorized state, and public DELETE can
+  never terminate a complete upload.
+- Browser cancellation keeps the entry visible until status reports a terminal
+  result; 423, 429, 503, and network loss retry without reporting success.
+
+### HEIC and previews
+
+- A synthetic HEIC produced with `heif-enc` yields a JPEG preview and thumbnail
+  through the real helper and libheif, with dimensions within configured
+  maxima and original bytes and SHA-256 unchanged.
+- Multi-image fixtures whose primary is not first, rotated primaries,
+  oversized valid dimensions, memory-limit failures, and output-write failures
+  each map to the documented exit classification.
+- Transient conversion failures retry on the short schedule and then publish
+  the original with `has_preview=0`; deterministic outcomes publish
+  immediately without consuming the budget. Neither ever rejects the upload.
+- `/preview` serves the JPEG when present and falls back to the original
+  otherwise; `/download` always returns untouched bytes.
+
+### Client, logging, and load test
+
+- The retry wrapper honors `Retry-After` beyond the pinned five-entry budget
+  for create, HEAD, and PATCH, and a completed upload is never re-created
+  after cleanup makes its tus URL return 404.
+- Status polling respects batch size, single in-flight request, and minimum
+  interval, and reports terminal failure without waiting for the global
+  timeout.
+- Captured logs contain ffprobe and ffmpeg failure operations and IDs, and
+  carry no secrets, hashes, IPs, or guest names.
+- The harness distinguishes transport, database, and gallery outcomes, treats
+  documented `Retry-After` responses as backpressure, and fails the run when
+  database or gallery completion is missing.
+
+### Verification commands
+
+Run backend unit and race tests, frontend tests and build, Python load-test
+unit tests, and a Docker build and integration pass with the real libheif
+helper. The final container must still run as the existing non-root UID and
+GID with a read-only root filesystem and a writable `/tmp` tmpfs.
+
+## Compatibility and Rollout
+
+- Migration 0004 is additive; existing media rows get `has_preview=0`.
+- The incoming tus volume is no longer transient once a completed source is
+  queued. Backup documentation changes to require a stopped-stack, mutually
+  consistent backup of app data, media, and tus uploads. Omitting uploads
+  abandons queued work and is not a complete backup.
+- Rollback is not image-only. After migration 0004 or any new queue activity,
+  a pre-0004 app must not run against the upgraded volumes, because the legacy
+  `post-finish` path does not understand durable jobs and can delete their only
+  source. Rollback means stopping the new containers, restoring all three
+  volumes from one pre-upgrade backup, and starting the recorded old image
+  pair.
+- The tusd entrypoint enables `pre-create`, `pre-finish`, `post-finish`, and
+  `pre-terminate`, adds `X-Ingest-Lease-Token` to the existing
+  `-hooks-http-forward-headers` list, sets the derived timeout flags, and
+  passes `-disable-concatenation` because partial and final concatenation
+  would create completion semantics outside this state machine.
+- Startup adopts every valid pre-upgrade sidecar before readiness, so uploads
+  completed by the old code are published rather than stranded. Status reports
+  `recovering` during that window.
+- Existing image and video routes keep their behavior except that image
+  lightboxes use the preview endpoint, which falls back to the original.
+- Existing HEIC rows keep no previews; backfilling them is out of scope.
+- Service count, bind mounts, and the public hostname do not change, and no
+  new secret is introduced.
+
+## Decisions
+
+- Queue: SQLite with leased in-process workers, no external broker.
+- Durability boundary: blocking `pre-finish`, so transport success implies a
+  committed queue row and an fsynced source.
+- Backpressure: 2xx hook envelopes carrying 503 and `Retry-After`, since that
+  is the only status channel tusd v2.10 offers, plus a client wrapper that
+  actually honors it.
+- Deletion policy: only a committed media result or deterministic client
+  rejection authorizes removing a source; transient failures retry forever.
+- Mount safety: one storage health gate based on positive evidence, rather
+  than per-volume identity files and operator commands.
+- Concurrency: a single app instance is a deployment constraint, so worker
+  leases plus tusd's own file locker replace a general fencing lattice.
+- HEIC: a resource-limited `heif-preview` helper linked against pinned
+  libheif, then Go JPEG encoding; originals are never rewritten and HEIC is
+  never rejected.
+- Duplicates: resolved by content SHA-256 in one transaction after validating
+  the surviving original, so retries and multi-tab uploads converge safely.
