@@ -1165,9 +1165,7 @@ if info.ID != id ||
 	filepath.Clean(info.StorageInfoPath) != filepath.Clean(infoPath) {
 ```
 
-Do not change the janitor's retention policy, and keep its existing behavior that a complete data file is left alone for ingest recovery.
-
-Also change the janitor's deletion call so every termination in the system goes through the one guarded path. In the same file, replace `s.terminateTusUpload(ctx, candidate.id)` with `s.Terminate(ctx, candidate.id)` (added in Task 8). The surrounding `if err != nil { slog.Warn(...); continue }` already treats a refusal as "skip this candidate this pass", which is exactly the desired behavior when an upload the janitor saw as partial has since completed and been promoted.
+Do not change the janitor's retention policy, and keep its existing behavior that a complete data file is left alone for ingest recovery. Its deletion call is changed in Task 8, once the guarded terminator exists.
 
 - [ ] **Step 6: Run the affected tests**
 
@@ -2111,7 +2109,7 @@ Add temporary no-op stubs so the package compiles; Tasks 9, 11 and 12 replace th
 ```go
 func (m *Manager) claimAndRunOnce() (bool, error) { return false, nil }
 func (m *Manager) startupRecovery()               { m.ready.Store(true) }
-func (m *Manager) reconcileOnce()                 {}
+func (m *Manager) reconcileOnce() error           { return nil }
 ```
 
 Also add the registry placeholder in `durability.go` (fully implemented in Task 9):
@@ -2543,10 +2541,6 @@ Run `go get golang.org/x/sys@latest` inside the toolchain container if that modu
 // tusd always cleans up its own sidecar and lock state.
 //
 // It refuses to remove a source that a pending or processing job still needs.
-// The janitor decides to delete an upload it saw as partial and then issues
-// the DELETE later; in between, that upload's final PATCH can complete and
-// commit. Without this check the janitor would destroy the only copy of an
-// upload the browser has already been told was durable.
 func (s *Server) Terminate(ctx context.Context, uploadID string) error {
 	job, err := s.store.GetUploadJob(ctx, uploadID)
 	if err != nil {
@@ -2556,6 +2550,56 @@ func (s *Server) Terminate(ctx context.Context, uploadID string) error {
 		return fmt.Errorf("upload %s is queued for publication and must not be terminated", uploadID)
 	}
 	return s.terminateTusUpload(ctx, uploadID)
+}
+```
+
+Now route the janitor through it. In `backend/internal/httpapi/storage_cleanup.go`, replace `s.terminateTusUpload(ctx, candidate.id)` with:
+
+```go
+		// Claim the row before deleting. A status read followed by a DELETE is a
+		// race: the janitor decides an upload is an abandoned partial, and
+		// between that decision and tusd acting on it the final PATCH can
+		// complete and commit `pending`. The conditional claim cannot lose that
+		// race — whichever transition commits first, the other sees zero rows.
+		if err := s.store.ClaimUploadingForDiscard(ctx, candidate.id, store.NowMicros()); err != nil &&
+			!errors.Is(err, store.ErrNotClaimed) {
+			slog.Warn("could not claim incomplete upload for removal", "upload_id", candidate.id, "error", err)
+			continue
+		} else if errors.Is(err, store.ErrNotClaimed) && s.uploadJobExists(ctx, candidate.id) {
+			continue // it completed while we were deciding; leave it to ingest
+		}
+		if err := s.Terminate(ctx, candidate.id); err != nil {
+```
+
+with a small helper in the same file:
+
+```go
+// uploadJobExists reports whether the queue is tracking this upload at all.
+// A rowless partial is legacy residue the janitor may still remove.
+func (s *Server) uploadJobExists(ctx context.Context, uploadID string) bool {
+	job, err := s.store.GetUploadJob(ctx, uploadID)
+	return err != nil || job != nil
+}
+```
+
+and the matching store method appended to `upload_jobs.go`:
+
+```go
+// ClaimUploadingForDiscard atomically moves a still-uploading row to discard,
+// so a caller about to delete its files cannot be overtaken by a completion.
+// It returns ErrNotClaimed when the row has already moved on.
+func (s *Store) ClaimUploadingForDiscard(ctx context.Context, uploadID string, now int64) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET status = 'discarding',
+		       terminal_reason = CASE WHEN terminal_reason = '' THEN 'cancelled' ELSE terminal_reason END,
+		       next_attempt_at = ?,
+		       updated_at = ?
+		 WHERE upload_id = ? AND status = 'uploading'`, now, now, uploadID)
+	if err != nil {
+		return fmt.Errorf("claim uploading for discard: %w", err)
+	}
+	return requireOneRow(res)
 }
 ```
 
@@ -4119,9 +4163,11 @@ Expected: PASS. `TestTransientFailureNeverDeletesTheSource` is the regression te
 - [ ] **Step 9: Commit**
 
 ```bash
-git add backend/internal/ingest/ backend/internal/store/ backend/internal/media/processor.go
+git add backend/internal/ingest/ backend/internal/store/ backend/internal/media/ backend/internal/httpapi/
 git commit -m "feat: publish uploads transactionally and delete sources only after commit"
 ```
+
+Stage `backend/internal/media/` as a directory, not just `processor.go`: this task also deletes six tests from `processor_test.go`, and committing the source deletion without the test deletion produces a branch that fails `go test ./...` even though the working tree passes.
 
 ---
 
@@ -4399,7 +4445,10 @@ import (
 // gate on the first pass that succeeds.
 func (m *Manager) startupRecovery() {
 	if _, err := m.store.RequeueStartup(m.lifetime, store.NowMicros()); err != nil {
-		slog.Error("failed to requeue interrupted jobs", "operation", "startup_recovery", "error", err)
+		// A database failure here means nothing about the queue can be trusted
+		// yet, so readiness stays closed and the reconciler retries.
+		slog.Error("failed to requeue interrupted jobs; ingest stays not ready", "operation", "startup_recovery", "error", err)
+		return
 	}
 	if err := m.health.Check(m.lifetime); err != nil {
 		slog.Error("storage health check failed at startup", "operation", "startup_recovery", "error", err)
@@ -5034,6 +5083,7 @@ In `docker-compose.yml`, add to the `app` service environment:
       UPLOAD_DURABILITY_WORKERS: "${UPLOAD_DURABILITY_WORKERS:-2}"
       UPLOAD_RETRY_MAX_BACKOFF_MINUTES: "${UPLOAD_RETRY_MAX_BACKOFF_MINUTES:-15}"
       INGEST_RECONCILE_INTERVAL_SECONDS: "${INGEST_RECONCILE_INTERVAL_SECONDS:-15}"
+      INGEST_MIN_FREE_BYTES: "${INGEST_MIN_FREE_BYTES:-}"
       UPLOAD_JOB_RETENTION_DAYS: "${UPLOAD_JOB_RETENTION_DAYS:-30}"
       UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE: "${UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE:-6000}"
 ```
