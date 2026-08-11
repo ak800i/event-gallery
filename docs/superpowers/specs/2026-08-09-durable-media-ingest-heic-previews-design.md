@@ -563,10 +563,19 @@ returns `uploading`, `processing`, `published`, `duplicate`, `failed`,
 `complete` job already reports `published` or `duplicate`; source cleanup does
 not delay visibility. `mediaId` is included only when the row is publicly
 visible. Internal `discarding` and `discarded` map through the stable
-`terminal_reason` rather than leaking queue states: unsupported type and
-checksum mismatch report `failed`; cancellation and rows whose paths were never
-observable report `cancelled`. Core server errors and missing sources keep
-reporting `processing` because they retry indefinitely.
+`terminal_reason` rather than leaking queue states: cancellation and rows whose
+paths were never observable report `cancelled`; every other reason, including
+unsupported type, checksum mismatch, and any reason added later, reports
+`failed`, because telling a guest they cancelled an upload they did not is
+worse than reporting the failure it was. Core server errors and missing sources
+keep reporting `processing` because they retry indefinitely.
+
+A failed database read while answering a batch is a transient condition that
+carries no verdict about any upload in it, so the whole batch is refused with a
+retryable 503 and `Retry-After` rather than a 500. That covers both the queue
+read and the visibility lookup behind `mediaId`: rendering a failed lookup as a
+`published` entry whose `mediaId` is quietly absent would make a transient
+condition indistinguishable from an item that is legitimately not yet visible.
 
 `POST /api/uploads/check` remains as a backward-compatible shim that always
 returns `duplicate:false` without a lookup, so pre-upgrade tabs continue to tus

@@ -391,6 +391,14 @@ Then validate the timing inequality from the spec, near the other validation:
 	}
 ```
 
+`UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE` also needs the positivity floor the other limits get, in `Validate()` beside `MAX_UPLOAD_BYTES`. A non-positive value is not "unlimited": the derived burst floors at one, so the route degrades to a single status poll per IP forever, with nothing in the logs to explain it.
+
+```go
+	if c.UploadStatusRateLimitPerMinute <= 0 {
+		return fmt.Errorf("UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE must be positive")
+	}
+```
+
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/config/ -v`
@@ -5082,7 +5090,9 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"event-gallery/backend/internal/store"
@@ -5122,7 +5132,7 @@ func (s *Server) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		job, err := s.store.GetUploadJob(r.Context(), id)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "could not read upload state")
+			writeUploadStatusRetry(w)
 			return
 		}
 		// During the startup inventory an unknown id may simply not have been
@@ -5131,60 +5141,90 @@ func (s *Server) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 			results[id] = uploadStatusEntry{State: "recovering"}
 			continue
 		}
-		results[id] = s.publicUploadState(r.Context(), job)
+		entry, err := s.publicUploadState(r.Context(), job)
+		if err != nil {
+			writeUploadStatusRetry(w)
+			return
+		}
+		results[id] = entry
 	}
 	writeJSON(w, http.StatusOK, uploadStatusResponse{Results: results})
+}
+
+// writeUploadStatusRetry refuses the whole batch as transient. A failed read
+// says nothing about the uploads, so the caller must come back rather than
+// treat the batch as answered. A read failure is a database condition, not a
+// verdict, which is why this is 503 with Retry-After and not 500: the load
+// oracle counts an unexpected 5xx as a failure and documented backpressure as
+// backpressure, and the client must retry rather than believe the answer.
+func writeUploadStatusRetry(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "5")
+	writeError(w, http.StatusServiceUnavailable, "could not read upload state")
 }
 
 // publicUploadState maps internal queue states onto the small vocabulary the
 // browser understands, without leaking queue mechanics. Core failures report
 // "processing" because they retry indefinitely and will eventually publish.
-func (s *Server) publicUploadState(ctx context.Context, job *store.UploadJob) uploadStatusEntry {
+// A non-nil error is a transient read failure, not a verdict about the job.
+func (s *Server) publicUploadState(ctx context.Context, job *store.UploadJob) (uploadStatusEntry, error) {
 	if job == nil {
-		return uploadStatusEntry{State: "unknown"}
+		return uploadStatusEntry{State: "unknown"}, nil
 	}
 	switch job.Status {
 	case store.JobUploading:
 		if job.CancellationRequestedAt != nil {
-			return uploadStatusEntry{State: "cancelled"}
+			return uploadStatusEntry{State: "cancelled"}, nil
 		}
-		return uploadStatusEntry{State: "uploading"}
+		return uploadStatusEntry{State: "uploading"}, nil
 	case store.JobPending, store.JobProcessing:
-		return uploadStatusEntry{State: "processing"}
+		return uploadStatusEntry{State: "processing"}, nil
 	case store.JobCleanup, store.JobComplete:
 		// Publication already committed; source cleanup must not delay it.
 		state := "published"
 		if job.ResultMediaID != "" && job.ResultMediaID != job.MediaID {
 			state = "duplicate"
 		}
-		return uploadStatusEntry{State: state, MediaID: s.visibleMediaID(ctx, job.ResultMediaID)}
+		mediaID, err := s.visibleMediaID(ctx, job.ResultMediaID)
+		if err != nil {
+			return uploadStatusEntry{}, err
+		}
+		return uploadStatusEntry{State: state, MediaID: mediaID}, nil
 	case store.JobDiscarding, store.JobDiscarded:
 		switch job.TerminalReason {
-		case "unsupported_type", "checksum_mismatch":
-			return uploadStatusEntry{State: "failed"}
+		// Only these two mean the guest's own intent, or bytes that were never
+		// theirs to lose, ended the upload. Telling a guest they cancelled
+		// something they did not is worse than reporting it failed, so any
+		// other reason — including one added after this code was written —
+		// reports the failure it actually was.
+		case "cancelled", "unobservable":
+			return uploadStatusEntry{State: "cancelled"}, nil
 		default:
-			return uploadStatusEntry{State: "cancelled"}
+			return uploadStatusEntry{State: "failed"}, nil
 		}
 	default:
-		return uploadStatusEntry{State: "processing"}
+		return uploadStatusEntry{State: "processing"}, nil
 	}
 }
 
 // visibleMediaID returns the id only when the item is publicly viewable.
 // Awaiting approval or trashed media must not be addressable through an
-// upload receipt.
-func (s *Server) visibleMediaID(ctx context.Context, mediaID string) string {
+// upload receipt. Absence withholds the id; any other error is transient and
+// must not be rendered as a quietly missing field.
+func (s *Server) visibleMediaID(ctx context.Context, mediaID string) (string, error) {
 	if mediaID == "" {
-		return ""
+		return "", nil
 	}
 	if _, err := s.store.GetVisibleByID(ctx, mediaID, ""); err != nil {
-		return ""
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
 	}
-	return mediaID
+	return mediaID, nil
 }
 ```
 
-Register it as a sibling of the public group, not inside it. chi's `Mux.With` on an inline group copies the parent's middleware chain before appending, so registering inside `pub` would stack `publicRateLimit` *and* the new limiter — status polling would still drain the gallery bucket, which is the exact outcome this is meant to prevent:
+Register it as a sibling of the public group, not inside it. `pub.Use(s.publicRateLimit)` applies to everything registered inside that group, so registering there would stack `publicRateLimit` *and* the new limiter — status polling would still drain the gallery bucket, which is the exact outcome this is meant to prevent:
 
 ```go
 		api.With(s.uploadStatusRateLimit).Post("/uploads/status", s.handleUploadStatus)
