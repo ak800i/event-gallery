@@ -349,6 +349,16 @@ Recovery rules, applied at startup and every
 - A contained regular data file whose size equals `expected_size` is a
   recoverable completion even when the sidecar is missing or malformed.
   Publication never deletes it merely because tus metadata was lost.
+- A contained regular data file with *no* row and no sidecar has no independent
+  witness of its own size, so the observed size may not stand in for one:
+  adopting at it would make the durability barrier compare the size against
+  itself and leave no declared checksum to compare, and a partial upload would
+  publish and then have its source deleted. Such a file is adopted only once it
+  is older than `TUS_INCOMPLETE_RETENTION_HOURS` — the age at which that policy
+  would already delete a file of unknown standing outright — and unchanged in
+  size and mtime across two consecutive passes. A sidecar that exists but
+  cannot be parsed is not an absent one: it means "unknown", and both files are
+  left alone.
 - A partial data file keeps its row in `uploading`; a later PATCH resumes it.
   Idle partials are governed only by the existing
   `TUS_INCOMPLETE_RETENTION_HOURS` policy, including zero disabling it.
@@ -358,8 +368,15 @@ Recovery rules, applied at startup and every
   bytes were once durably complete. Neither case deletes anything, so a mount
   that returns is fully recovered by the adoption rules above.
 
-Existing `pending`, `processing`, `cleanup`, `complete`, `discarding`, and
-`discarded` rows are never reset by reconciliation.
+Reconciliation never returns a `pending`, `processing`, `cleanup`, or
+`discarding` row to an earlier stage: those are owned by the workers, and the
+one statement that does reset them — the startup requeue — runs once, before
+the worker pool starts. A `complete` or `discarded` row is reopened, into
+`cleanup` or `discarding` respectively, when tus files it had verified as gone
+are on the volume again, and a `discarded` row closed out as `unobservable` is
+deleted outright when its bytes return so the upload can be adopted afresh.
+Both are removals that could not finish, not work being redone: neither
+reverses a publication, and only a row whose files are present can be reopened.
 
 ## Processing and Publication
 
