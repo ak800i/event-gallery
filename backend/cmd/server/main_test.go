@@ -2,14 +2,24 @@ package main
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"event-gallery/backend/internal/config"
+	"event-gallery/backend/internal/db"
 	"event-gallery/backend/internal/ingest"
+	"event-gallery/backend/internal/media"
+	"event-gallery/backend/internal/store"
 )
 
-type stubTerminator struct{}
+// The field is what makes identity observable: an empty struct compares equal
+// to every other value of its type, so a mapping that substituted a different
+// terminator would still pass the assertion below.
+type stubTerminator struct{ name string }
 
 func (stubTerminator) Terminate(context.Context, string) error { return nil }
 
@@ -19,7 +29,7 @@ func (stubTerminator) Terminate(context.Context, string) error { return nil }
 // silent at runtime and would only surface as, say, durability commits running
 // on the media-processing worker count.
 func TestIngestOptionsMapsEveryConfigField(t *testing.T) {
-	term := stubTerminator{}
+	term := stubTerminator{name: "the one passed in"}
 	cfg := &config.Config{
 		MediaProcessingWorkers:  3,
 		UploadDurabilityWorkers: 5,
@@ -62,11 +72,78 @@ func TestIngestOptionsMapsEveryConfigField(t *testing.T) {
 	}
 }
 
-// The manager may never be handed a nil terminator: claimAndRunOnce calls it to
-// remove a discarded source, so a nil here is a panic in a worker goroutine
-// rather than a compile error at the call site.
-func TestIngestOptionsCarriesTerminator(t *testing.T) {
+// ingestOptions must pass the terminator it is given through verbatim, never
+// substitute a fallback of its own. A caller that forgets to pass the server
+// has to surface as a nil, because a quietly filled-in default would leave the
+// manager terminating sources through something other than the live server.
+func TestIngestOptionsSubstitutesNoTerminator(t *testing.T) {
 	if opts := ingestOptions(&config.Config{}, nil); opts.Terminator != nil {
-		t.Fatal("expected the nil terminator to pass through unchanged")
+		t.Fatalf("ingestOptions supplied a terminator of its own (%T) instead of passing nil through", opts.Terminator)
+	}
+}
+
+// The manager is only reachable from the HTTP layer because the wiring hands
+// it to the server. Without that, s.ingest stays nil, and the completion
+// fence, the pre-create gate and the durability barrier all quietly disable
+// themselves while every upload is refused -- the exact inertness this feature
+// exists to remove. Nothing in httpapi can catch a regression here, because
+// its harness attaches a manager of its own.
+//
+// /readyz is the assertion because it is the one place the attachment is
+// externally visible: a started manager reports ready, and a server that was
+// never handed one answers 503 with "ingest is still recovering".
+func TestNewServerWithIngestAttachesTheManager(t *testing.T) {
+	dir := t.TempDir()
+	mediaDir := filepath.Join(dir, "media")
+	tusDir := filepath.Join(dir, "tus")
+	if err := os.MkdirAll(tusDir, 0o750); err != nil {
+		t.Fatalf("create tus dir: %v", err)
+	}
+
+	sqlDB, err := db.Open(filepath.Join(dir, "gallery.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+
+	proc := media.NewProcessor(mediaDir, 200, []string{"image/jpeg"}, []string{"video/mp4"})
+	if err := proc.EnsureDirs(); err != nil {
+		t.Fatalf("ensure media dirs: %v", err)
+	}
+
+	cfg := &config.Config{
+		DataDir:                         dir,
+		MediaDir:                        mediaDir,
+		TusInternalURL:                  "http://127.0.0.1:1",
+		TusHookSecret:                   "test-hook-secret",
+		TusUploadDir:                    tusDir,
+		PublicRateLimitPerMinute:        6000,
+		PublicRateLimitBurst:            1000,
+		UploadStatusRateLimitPerMinute:  6000,
+		UploadConcurrencyPerIP:          2,
+		UploadBandwidthPerIPBytesPerSec: 1 << 20,
+		ThumbnailMaxDimension:           200,
+		MediaProcessingWorkers:          1,
+		MediaProcessingTimeout:          time.Minute,
+		UploadDurabilityWait:            5 * time.Second,
+		UploadDurabilityWorkers:         1,
+		UploadRetryMaxBackoff:           time.Minute,
+		IngestReconcileInterval:         time.Hour,
+		UploadJobRetention:              time.Hour,
+	}
+
+	srv, manager, err := newServerWithIngest(cfg, store.New(sqlDB), proc, nil)
+	if err != nil {
+		t.Fatalf("wire the server: %v", err)
+	}
+	manager.Start()
+	t.Cleanup(manager.Stop)
+
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/readyz = %d, want 200 -- the started manager was not attached to the server: %s",
+			rec.Code, rec.Body.String())
 	}
 }

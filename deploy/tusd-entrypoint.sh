@@ -19,6 +19,14 @@
 #                            file, which the one-row-per-upload job model has
 #                            no way to represent.
 #
+# The 90s above is one number in three places that cannot share a constant, and
+# all three must move together: these two flags, `tusdHookTimeout` in
+# backend/internal/config/config.go (which rejects a larger app budget at
+# startup), and the comment above UPLOAD_DURABILITY_WAIT_SECONDS in
+# docker-compose.yml. Raising these flags alone leaves the app rejecting
+# budgets tusd would now tolerate; lowering them alone lets the app accept a
+# budget tusd will cut mid-hook.
+#
 # -disable-termination is deliberately absent: the storage janitor removes
 # discarded sources through tusd's own DELETE endpoint, so disabling that
 # endpoint would strand them.

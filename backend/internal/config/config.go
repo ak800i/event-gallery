@@ -13,6 +13,20 @@ import (
 	"time"
 )
 
+// TusdHookTimeout mirrors the -hooks-http-timeout and -network-timeout flags
+// in deploy/tusd-entrypoint.sh, which is where tusd actually reads the value.
+// Go, shell and YAML cannot share a constant, so the number lives in three
+// places and they must move together:
+//
+//  1. this constant, which bounds UPLOAD_DURABILITY_WAIT_SECONDS below;
+//  2. -hooks-http-timeout and -network-timeout in deploy/tusd-entrypoint.sh;
+//  3. the comment above UPLOAD_DURABILITY_WAIT_SECONDS in docker-compose.yml.
+//
+// Raising the tusd flags alone leaves the app rejecting budgets tusd would now
+// tolerate; raising this alone lets the app accept a budget tusd will cut
+// mid-hook, which the browser sees as an opaque failure instead of a 503.
+const tusdHookTimeout = 90 * time.Second
+
 // Config holds all runtime configuration for the event-gallery server.
 type Config struct {
 	// ListenAddr is the address the HTTP server listens on, e.g. ":8080".
@@ -305,8 +319,8 @@ func Load() (*Config, error) {
 	// 75s app budget < 90s hook timeout < 100s edge window. If the budget is
 	// raised past the hook timeout, tusd cuts the request before we can relay
 	// a 503 and the browser sees an opaque failure instead of backpressure.
-	if cfg.UploadDurabilityWait >= 90*time.Second {
-		return nil, fmt.Errorf("UPLOAD_DURABILITY_WAIT_SECONDS must be below the 90s tusd hook timeout, got %v", cfg.UploadDurabilityWait)
+	if cfg.UploadDurabilityWait >= tusdHookTimeout {
+		return nil, fmt.Errorf("UPLOAD_DURABILITY_WAIT_SECONDS must be below the %v tusd hook timeout, got %v", tusdHookTimeout, cfg.UploadDurabilityWait)
 	}
 	// A non-positive budget is not "no bound": it leaves the hook running under
 	// tusd's own 90s timeout, which is the severed request the check above

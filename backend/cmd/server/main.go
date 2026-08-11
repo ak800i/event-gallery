@@ -54,6 +54,23 @@ func ingestOptions(cfg *config.Config, term ingest.SourceTerminator) ingest.Opti
 	}
 }
 
+// newServerWithIngest builds the HTTP server and the ingest manager and
+// attaches the manager to the server. It is a standalone function so a test
+// can hold the attachment: with s.ingest nil the completion fence, the
+// pre-create gate and the durability barrier all silently disable themselves
+// and every upload is refused, and no test in httpapi notices because its
+// harness attaches a manager of its own.
+func newServerWithIngest(cfg *config.Config, st *store.Store, proc *media.Processor, spaHandler http.Handler) (*httpapi.Server, *ingest.Manager, error) {
+	// The server is constructed first because it is also the SourceTerminator.
+	srv, err := httpapi.NewServer(cfg, st, proc, spaHandler)
+	if err != nil {
+		return nil, nil, err
+	}
+	manager := ingest.New(st, proc, ingestOptions(cfg, srv))
+	srv.SetIngest(manager)
+	return srv, manager, nil
+}
+
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -80,18 +97,14 @@ func run() error {
 		return err
 	}
 
-	srv, err := httpapi.NewServer(cfg, st, processor, spaHandler)
+	// Wired here, before StartCleanupLoops, on purpose. That call runs its
+	// first storage-cleanup pass immediately rather than waiting for the
+	// ticker, and the pass reaches purgeMedia, which reads s.ingest -- a field
+	// newServerWithIngest writes without synchronisation.
+	srv, ingestManager, err := newServerWithIngest(cfg, st, processor, spaHandler)
 	if err != nil {
 		return err
 	}
-
-	// Constructed here, before StartCleanupLoops, on purpose. That call runs
-	// its first storage-cleanup pass immediately rather than waiting for the
-	// ticker, and the pass reaches purgeMedia, which reads s.ingest -- a field
-	// written below without synchronisation. The server is built first because
-	// it is also the SourceTerminator.
-	ingestManager := ingest.New(st, processor, ingestOptions(cfg, srv))
-	srv.SetIngest(ingestManager)
 	// Registered after `defer sqlDB.Close()`, so it runs before it: Stop waits
 	// for in-flight durability commits, and those need the database open.
 	defer ingestManager.Stop()
@@ -132,6 +145,15 @@ func run() error {
 	// Called synchronously, not with `go`: Start takes its WaitGroup slot on
 	// the calling goroutine, so a shutdown racing startup cannot see an empty
 	// group, return, and close the database while recovery is still running.
+	//
+	// The accepted cost of that: SIGTERM is not honoured while the inventory
+	// runs. This blocks before the select on ctx.Done() below, and recovery
+	// runs on the manager's own lifetime context, which only Stop cancels. So
+	// on exactly the boot with the largest backlog, a redeploy waits out the
+	// inventory and Docker SIGKILLs at the 30s stop_grace_period. That is
+	// data-safe -- recovery is idempotent and commits nothing mid-inventory --
+	// and the next boot repeats the work. Do not convert this to `go Start()`
+	// to shorten it; that reopens the shutdown race above.
 	ingestManager.Start()
 
 	select {

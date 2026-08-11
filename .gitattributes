@@ -2,4 +2,11 @@
 # the working tree, and a `#!/bin/sh\r` shebang makes the container exit with
 # "no such file or directory". Pin shell scripts to LF so an image built on a
 # developer machine is the same one CI builds.
+#
+# This does not repair a checkout that is already CRLF: eol=lf applies on
+# checkout and add, so an existing working tree keeps building broken images
+# until it is renormalised. Diagnose with `git ls-files --eol '*.sh'` (i/lf
+# w/crlf is the stale state) and fix it with:
+#     git add --renormalize '*.sh' && git checkout -- '*.sh'
+# The renormalize stages current content first, so uncommitted edits survive.
 *.sh text eol=lf
