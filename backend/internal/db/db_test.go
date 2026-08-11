@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +107,60 @@ func TestOpen_IsIdempotent(t *testing.T) {
 	}
 	if count == 0 {
 		t.Errorf("expected at least one migration recorded")
+	}
+}
+
+func TestOpenAppliesDurabilityPragmas(t *testing.T) {
+	sqlDB, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer sqlDB.Close()
+
+	var journalMode string
+	if err := sqlDB.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		t.Fatalf("journal_mode: %v", err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		t.Errorf("journal_mode = %q, want wal", journalMode)
+	}
+
+	// 2 == FULL. Without it a power loss can lose the very commit that
+	// authorized deleting an upload's only source.
+	var synchronous int
+	if err := sqlDB.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		t.Fatalf("synchronous: %v", err)
+	}
+	if synchronous != 2 {
+		t.Errorf("synchronous = %d, want 2 (FULL)", synchronous)
+	}
+}
+
+func TestMigrationCreatesUploadJobs(t *testing.T) {
+	sqlDB, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer sqlDB.Close()
+
+	var hasPreview int
+	err = sqlDB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('media_items') WHERE name = 'has_preview'`).Scan(&hasPreview)
+	if err != nil || hasPreview != 1 {
+		t.Fatalf("media_items.has_preview missing: count=%d err=%v", hasPreview, err)
+	}
+
+	for _, index := range []string{"idx_upload_jobs_due", "idx_upload_jobs_lease", "idx_upload_jobs_terminal"} {
+		var n int
+		if err := sqlDB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?`, index).Scan(&n); err != nil || n != 1 {
+			t.Errorf("index %s missing: count=%d err=%v", index, n, err)
+		}
+	}
+
+	// The paired-lease CHECK must reject a half-set lease.
+	_, err = sqlDB.Exec(`INSERT INTO upload_jobs
+		(upload_id, media_id, status, original_filename, expected_size, lease_token, next_attempt_at, created_at, updated_at)
+		VALUES ('u1', 'm1', 'pending', 'a.jpg', 10, 'tok', 0, 0, 0)`)
+	if err == nil {
+		t.Error("expected CHECK violation for lease_token without lease_until")
 	}
 }

@@ -23,7 +23,10 @@ var migrationsFS embed.FS
 // pragmas suited for a concurrent web server, and runs any pending
 // migrations.
 func Open(path string) (*sql.DB, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)", path)
+	// synchronous=FULL is mandatory, not tuning: the queue commits are what
+	// authorize deleting a guest's only uploaded copy, so losing one to a
+	// power cut would lose the file.
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=foreign_keys(ON)", path)
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
