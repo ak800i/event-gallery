@@ -299,8 +299,9 @@ func preFinishRetry(w http.ResponseWriter, message string) {
 // source, or a row reconciliation has discarded, leaves the client retrying
 // on a five-second cadence with nothing that could ever tell it to stop. It
 // carries no Retry-After, and no RejectUpload, which tusd honours at
-// pre-create only. status must never be 409 or 423: tus-js-client retries
-// those two by default, so they are not terminal at the browser.
+// pre-create only. status must never be 409, 423, or 429: @uppy/tus installs
+// its own onShouldRetry and never falls through to tus-js-client's, and that
+// predicate retries those three, so they are not terminal at the browser.
 func preFinishFinal(w http.ResponseWriter, status int, message string) {
 	clientStatusHook(w, false, status, message, 0)
 }
