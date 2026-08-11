@@ -49,7 +49,6 @@ type Manager struct {
 	lifetime context.Context
 	cancel   context.CancelFunc
 	wake     chan struct{}
-	wakes    atomic.Uint64
 	wg       sync.WaitGroup
 	ready    atomic.Bool
 
@@ -142,17 +141,11 @@ func (m *Manager) Stop() {
 // Wake nudges a worker without blocking. A full channel already means "there
 // is work to look at", so dropping the signal is correct.
 func (m *Manager) Wake() {
-	m.wakes.Add(1)
 	select {
 	case m.wake <- struct{}{}:
 	default:
 	}
 }
-
-// WakeCount reports how many nudges Wake has received, including the ones it
-// dropped. A dropped nudge leaves no other trace, so this is the only way a
-// caller of the hook seam can prove it nudged the queue at all.
-func (m *Manager) WakeCount() uint64 { return m.wakes.Load() }
 
 func (m *Manager) runWorker(worker int) {
 	ticker := time.NewTicker(m.opts.ReconcileInterval)
@@ -226,10 +219,9 @@ func (m *Manager) expireTerminalJobs() {
 	}
 }
 
-// TODO(task-11/12): temporary stubs so the package compiles; the real
-// claim/reconcile/recovery implementations replace them.
-func (m *Manager) claimAndRunOnce() (bool, error) { return false, nil }
-func (m *Manager) reconcileOnce() error           { return nil }
+// TODO(task-12): temporary stub so the package compiles; the real reconcile
+// implementation replaces it.
+func (m *Manager) reconcileOnce() error { return nil }
 
 // The health gate starts closed, so something must prove the media volume is
 // mounted before uploads are admitted. Task 12's real implementation does the

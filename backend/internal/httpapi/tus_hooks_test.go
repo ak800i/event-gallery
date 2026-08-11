@@ -293,7 +293,17 @@ func TestPostFinishOnlyNudgesTheQueue(t *testing.T) {
 	if err := os.WriteFile(infoPath, []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	wakesBefore := h.ingest.WakeCount()
+	// A row the janitor claimed for discard and then abandoned, with no files
+	// of its own. The handler never looks at it, and the workers only wake on
+	// a nudge, so its terminal state is proof that the nudge reached one.
+	if err := h.store.CreateUploadingJob(context.Background(), &store.UploadJob{
+		UploadID: "queued", MediaID: "queued-media", OriginalFilename: "old.jpg", ExpectedSize: 10,
+	}); err != nil {
+		t.Fatalf("seed queued job: %v", err)
+	}
+	if err := h.store.ClaimUploadingForDiscard(context.Background(), "queued", store.NowMicros()); err != nil {
+		t.Fatalf("claim queued job: %v", err)
+	}
 
 	resp := postHook(t, h, tusHookRequest{
 		Type: "post-finish",
@@ -308,9 +318,6 @@ func TestPostFinishOnlyNudgesTheQueue(t *testing.T) {
 	if resp.RejectUpload {
 		t.Error("post-finish cannot reject anything; the bytes are already written")
 	}
-	if got := h.ingest.WakeCount(); got != wakesBefore+1 {
-		t.Errorf("post-finish must nudge the queue: wake count %d, want %d", got, wakesBefore+1)
-	}
 	if _, err := os.Stat(dataPath); err != nil {
 		t.Errorf("post-finish must never remove the source: %v", err)
 	}
@@ -323,6 +330,30 @@ func TestPostFinishOnlyNudgesTheQueue(t *testing.T) {
 	if len(galResp.Items) != 0 {
 		t.Errorf("post-finish must not publish media, got %d items", len(galResp.Items))
 	}
+	awaitJobStatus(t, h, "queued", store.JobDiscarded)
+}
+
+// awaitJobStatus waits for a background worker to carry a job to a state, so a
+// test can assert that the queue actually did the work rather than that a
+// counter moved.
+func awaitJobStatus(t *testing.T, h *testHarness, uploadID string, want store.JobStatus) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var last store.JobStatus
+	for time.Now().Before(deadline) {
+		job, err := h.store.GetUploadJob(context.Background(), uploadID)
+		if err != nil {
+			t.Fatalf("get job %s: %v", uploadID, err)
+		}
+		if job != nil {
+			last = job.Status
+			if job.Status == want {
+				return
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("job %s stayed at %q, want %q: the nudge never reached a worker", uploadID, last, want)
 }
 
 func assertRetryable(t *testing.T, resp tusHookResponse) {
@@ -371,6 +402,7 @@ func admitUpload(t *testing.T, h *testHarness, payload []byte) string {
 	if err := os.WriteFile(filepath.Join(h.cfg.TusUploadDir, id+".info"), []byte(`{"ID":"`+id+`"}`), 0o600); err != nil {
 		t.Fatalf("write sidecar: %v", err)
 	}
+	holdFromIngestWorkers(t, h, id)
 	return id
 }
 

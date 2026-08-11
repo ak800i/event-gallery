@@ -173,6 +173,7 @@ func seedUploadingJobSized(t *testing.T, h *testHarness, uploadID string, size i
 	if err != nil {
 		t.Fatalf("seed job: %v", err)
 	}
+	holdFromIngestWorkers(t, h, uploadID)
 }
 
 // writeSource lays down what tusd's filestore would have written. The sidecar

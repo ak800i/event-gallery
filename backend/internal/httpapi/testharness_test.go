@@ -101,6 +101,23 @@ func newTestHarness(t *testing.T) *testHarness {
 	return &testHarness{server: srv, router: srv.Router(), store: st, cfg: cfg, proc: proc, ingest: manager}
 }
 
+// holdFromIngestWorkers takes a long lease on a seeded row so the harness's
+// live ingest workers cannot claim it. Nothing in the HTTP path reads
+// lease_until, so every handler under test behaves exactly as it does in
+// production; only the background worker is excluded. Without this, a test
+// that promotes a row to pending is racing a worker that will immediately
+// claim it and move it on.
+func holdFromIngestWorkers(t *testing.T, h *testHarness, uploadID string) {
+	t.Helper()
+	until := time.Now().Add(time.Hour).UTC().UnixMicro()
+	// upload_jobs CHECKs that the token and the deadline are set together.
+	if _, err := h.store.DB().Exec(
+		`UPDATE upload_jobs SET lease_token = 'test-hold', lease_until = ? WHERE upload_id = ?`,
+		until, uploadID); err != nil {
+		t.Fatalf("hold %s away from the workers: %v", uploadID, err)
+	}
+}
+
 // withTusTarget rebuilds the server's tus reverse proxy to point at a given
 // backend URL (used to stand in for tusd via httptest.Server).
 func (h *testHarness) withTusTarget(t *testing.T, targetURL string) {

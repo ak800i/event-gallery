@@ -168,6 +168,7 @@ func seedUploadingJob(t *testing.T, h *testHarness, uploadID string) {
 	if err != nil {
 		t.Fatalf("seed job: %v", err)
 	}
+	holdFromIngestWorkers(t, h, uploadID)
 }
 
 func TestTusCleanupClaimsTheRowBeforeDeleting(t *testing.T) {

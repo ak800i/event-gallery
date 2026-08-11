@@ -18,6 +18,78 @@ func newTestProcessor(t *testing.T) *Processor {
 	return p
 }
 
+// swapPrepareSync replaces the copy's sync calls for one test, so the fakes run
+// at exactly the points the real calls do and the ordering itself can be
+// observed rather than merely the fact that a sync happened.
+func swapPrepareSync(t *testing.T, file func(*os.File) error, dir func(string) error) {
+	t.Helper()
+	origFile, origDir := prepareSyncFile, prepareSyncDir
+	prepareSyncFile, prepareSyncDir = file, dir
+	t.Cleanup(func() { prepareSyncFile, prepareSyncDir = origFile, origDir })
+}
+
+// A crash may only ever leave a stale temporary, never a truncated or
+// unreferenced original. That requires write, fsync file, fsync dir, rename,
+// fsync dir — in that order — so each step is observed against the filesystem
+// state at the moment it runs.
+func TestPrepareOriginalSyncsBeforeItPublishes(t *testing.T) {
+	p := newTestProcessor(t)
+	source := filepath.Join(t.TempDir(), "incoming")
+	payload := bytes.Repeat([]byte("z"), 4096)
+	if err := os.WriteFile(source, payload, 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	sum, err := SHA256File(source)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	finalPath := p.OriginalPath("media-1.jpg")
+	tmpPath := filepath.Join(p.OriginalsDir(), ".ingest-media-1-lease-a-original.tmp")
+
+	var events []string
+	swapPrepareSync(t,
+		func(f *os.File) error {
+			// The temporary must be whole before it is durable, or a crash
+			// could leave a short file that the next attempt renames.
+			stat, err := os.Stat(tmpPath)
+			if err != nil || stat.Size() != int64(len(payload)) {
+				t.Errorf("temporary was synced before it was fully written: %v %+v", err, stat)
+			}
+			events = append(events, "sync-file")
+			return f.Sync()
+		},
+		func(dir string) error {
+			if _, err := os.Stat(finalPath); err == nil {
+				events = append(events, "sync-dir-after-rename")
+			} else {
+				events = append(events, "sync-dir-before-rename")
+			}
+			return FsyncDir(dir)
+		})
+
+	err = p.PrepareOriginal(context.Background(), PrepareRequest{
+		SourcePath:     source,
+		MediaID:        "media-1",
+		LeaseToken:     "lease-a",
+		StoredFilename: "media-1.jpg",
+		Size:           int64(len(payload)),
+		SHA256:         sum,
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	want := []string{"sync-file", "sync-dir-before-rename", "sync-dir-after-rename"}
+	if len(events) != len(want) {
+		t.Fatalf("sync sequence = %v, want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("sync sequence = %v, want %v", events, want)
+		}
+	}
+}
+
 func TestPrepareOriginalKeepsSource(t *testing.T) {
 	p := newTestProcessor(t)
 	source := filepath.Join(t.TempDir(), "incoming")

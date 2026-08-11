@@ -300,6 +300,18 @@ func TestEnsureDurableRefusesSourceThatDoesNotMatchTheAdmittedSize(t *testing.T)
 	}
 }
 
+// takeWake consumes a queued nudge, reporting whether one was there. Wake
+// drops signals rather than queueing them, so the channel itself is the only
+// trace a nudge leaves.
+func takeWake(m *Manager) bool {
+	select {
+	case <-m.wake:
+		return true
+	default:
+		return false
+	}
+}
+
 func TestEnsureDurableWakesTheQueueOnlyOnSuccess(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	m := New(st, proc, testOptions(t))
@@ -311,22 +323,21 @@ func TestEnsureDurableWakesTheQueueOnlyOnSuccess(t *testing.T) {
 		t.Fatalf("remove u2 source: %v", err)
 	}
 
-	before := m.WakeCount()
+	takeWake(m)
 	if err := m.EnsureDurable(context.Background(), "u1"); err != nil {
 		t.Fatalf("ensure durable: %v", err)
 	}
-	if got := m.WakeCount(); got != before+1 {
+	if !takeWake(m) {
 		// Nothing else nudges the queue at this point, so a promoted job would
 		// sit until the next reconcile tick.
-		t.Errorf("wake count %d, want %d: a promotion must nudge the workers", got, before+1)
+		t.Error("a promotion must nudge the workers")
 	}
 
-	before = m.WakeCount()
 	if err := m.EnsureDurable(context.Background(), "u2"); err == nil {
 		t.Fatal("u2 has no source and must not be promoted")
 	}
-	if got := m.WakeCount(); got != before {
-		t.Errorf("wake count %d, want %d: a failed barrier queued nothing", got, before)
+	if takeWake(m) {
+		t.Error("a failed barrier queued nothing")
 	}
 }
 

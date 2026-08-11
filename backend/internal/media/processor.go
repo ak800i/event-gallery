@@ -2,14 +2,10 @@ package media
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/google/uuid"
 
 	"event-gallery/backend/internal/models"
 )
@@ -92,63 +88,26 @@ type Result struct {
 	CapturedAt      *time.Time
 }
 
-// Process validates and ingests a completed upload located at tempPath
-// (typically tusd's temporary storage). On success the original file has
-// been moved into permanent storage and tempPath no longer exists. On
-// failure tempPath is left untouched so the caller can decide how to clean
-// up.
-func (p *Processor) Process(ctx context.Context, tempPath, originalFilename string) (*Result, error) {
-	mimeType, kind, err := Sniff(tempPath)
-	if err != nil {
-		return nil, err
+// ExtensionForMIME picks the stored file's extension from sniffed content,
+// falling back to the client's filename only for unmapped types.
+func ExtensionForMIME(mimeType, originalFilename string) string {
+	if ext := mimeToExt[mimeType]; ext != "" {
+		return ext
 	}
-	if !IsAllowed(mimeType, kind, p.AllowedImageMIMEs, p.AllowedVideoMIMEs) {
-		return nil, &ErrUnsupportedType{Sniffed: mimeType}
-	}
+	return filepath.Ext(originalFilename)
+}
 
-	stat, err := os.Stat(tempPath)
-	if err != nil {
-		return nil, fmt.Errorf("stat temp file: %w", err)
-	}
-
-	sha256Hex, err := SHA256File(tempPath)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := p.EnsureDirs(); err != nil {
-		return nil, err
-	}
-
-	id := uuid.NewString()
-	ext := mimeToExt[mimeType]
-	if ext == "" {
-		ext = filepath.Ext(originalFilename)
-	}
-	storedFilename := id + ext
-	finalPath := p.OriginalPath(storedFilename)
-
-	if err := moveFile(tempPath, finalPath); err != nil {
-		return nil, fmt.Errorf("move to permanent storage: %w", err)
-	}
-
-	result := &Result{
-		ID:             id,
-		StoredFilename: storedFilename,
-		Kind:           kind,
-		MimeType:       mimeType,
-		SizeBytes:      stat.Size(),
-		SHA256:         sha256Hex,
-	}
-
+// Derive generates thumbnails and metadata for an already-stored original.
+// Every failure here is best effort: the item publishes regardless.
+func (p *Processor) Derive(ctx context.Context, finalPath, id string, kind models.MediaKind) *Result {
+	result := &Result{ID: id}
 	switch kind {
 	case models.KindImage:
 		p.processImage(ctx, finalPath, id, result)
 	case models.KindVideo:
 		p.processVideo(ctx, finalPath, id, result)
 	}
-
-	return result, nil
+	return result
 }
 
 func (p *Processor) processImage(ctx context.Context, finalPath, id string, result *Result) {
@@ -209,50 +168,4 @@ func (p *Processor) processVideo(ctx context.Context, finalPath, id string, resu
 	if err := GenerateVideoThumbnail(ctx, finalPath, p.ThumbnailPath(id), p.ThumbnailMaxDimension, duration); err == nil {
 		result.HasThumbnail = true
 	}
-}
-
-// RemoveMedia deletes the stored original and thumbnail (if any) for a
-// media item. Used when purging soft-deleted items is ever needed and by
-// tests; the current admin flow only soft-deletes, so this is primarily a
-// utility for cleanup paths and tests.
-func (p *Processor) RemoveMedia(storedFilename, id string) error {
-	var firstErr error
-	if err := os.Remove(p.OriginalPath(storedFilename)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		firstErr = err
-	}
-	if err := os.Remove(p.ThumbnailPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) && firstErr == nil {
-		firstErr = err
-	}
-	return firstErr
-}
-
-func moveFile(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
-		return nil
-	}
-	// Cross-device rename (EXDEV) or other rename failure: fall back to
-	// copy + remove, which works across filesystem/volume boundaries.
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(dst)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		os.Remove(dst)
-		return err
-	}
-	if err := os.Remove(src); err != nil {
-		return fmt.Errorf("remove source after copy: %w", err)
-	}
-	return nil
 }

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"event-gallery/backend/internal/models"
 )
 
 // JobStatus mirrors the CHECK constraint on upload_jobs.status.
@@ -368,4 +370,156 @@ func requireOneRow(res sql.Result) error {
 		return ErrNotClaimed
 	}
 	return nil
+}
+
+// RecordArtifactIdentity persists the deterministic artifact identity before
+// the final original exists, so a crash can be recovered by name and hash
+// instead of by re-copying or deleting.
+func (s *Store) RecordArtifactIdentity(ctx context.Context, uploadID, leaseToken, storedFilename, mimeType, sha256Hex string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET stored_filename = ?, mime_type = ?, authoritative_sha256 = ?, updated_at = ?
+		 WHERE upload_id = ? AND lease_token = ?`,
+		storedFilename, mimeType, sha256Hex, NowMicros(), uploadID, leaseToken)
+	if err != nil {
+		return fmt.Errorf("record artifact identity: %w", err)
+	}
+	return requireOneRow(res)
+}
+
+// RecordPrepared marks that a verified final original now exists. It is
+// deliberately separate from RecordArtifactIdentity: prepared_at is a crash
+// marker, and it would be worthless if it were set before the copy succeeded.
+func (s *Store) RecordPrepared(ctx context.Context, uploadID, leaseToken string) error {
+	now := NowMicros()
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs SET prepared_at = ?, updated_at = ?
+		 WHERE upload_id = ? AND lease_token = ?`,
+		now, now, uploadID, leaseToken)
+	if err != nil {
+		return fmt.Errorf("record prepared: %w", err)
+	}
+	return requireOneRow(res)
+}
+
+// PublishMedia inserts the media row and moves the job to cleanup in one
+// transaction, so a crash can never leave a published file with no job or a
+// finished job with no row. It returns the authoritative media id for this
+// content, which may belong to an earlier upload of the same bytes.
+func (s *Store) PublishMedia(ctx context.Context, uploadID, leaseToken string, item *models.MediaItem, now int64) (string, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("begin publish: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Fence and take the write lock in one statement. Starting with a read
+	// would open a deferred transaction that has to upgrade later, and SQLite
+	// answers that upgrade with SQLITE_BUSY_SNAPSHOT, which busy_timeout does
+	// not retry.
+	fence, err := tx.ExecContext(ctx,
+		`UPDATE upload_jobs SET updated_at = ? WHERE upload_id = ? AND lease_token = ? AND status = 'processing'`,
+		now, uploadID, leaseToken)
+	if err != nil {
+		return "", false, fmt.Errorf("fence publish: %w", err)
+	}
+	if owned, err := fence.RowsAffected(); err != nil {
+		return "", false, fmt.Errorf("rows affected: %w", err)
+	} else if owned == 0 {
+		return "", false, ErrNotClaimed
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO media_items (
+			id, original_filename, stored_filename, kind, mime_type, size_bytes, sha256,
+			width, height, duration_seconds, has_thumbnail, captured_at, uploaded_at, approved_at,
+			uploader_name, uploader_ip, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			CASE WHEN COALESCE((SELECT value FROM app_config WHERE key = ?), 'false') = 'false' THEN ? ELSE NULL END,
+			?, ?, ?)
+		ON CONFLICT(sha256) DO NOTHING`,
+		item.ID, item.OriginalFilename, item.StoredFilename, string(item.Kind), item.MimeType,
+		item.SizeBytes, item.SHA256, nullableInt(item.Width), nullableInt(item.Height),
+		nullableFloat(item.DurationSeconds), boolToInt(item.HasThumbnail),
+		formatTimePtr(item.CapturedAt), formatTime(item.UploadedAt), ConfigKeyApprovalRequired,
+		formatTime(item.UploadedAt), item.UploaderName, item.UploaderIP, string(models.StatusActive),
+	)
+	if err != nil {
+		return "", false, fmt.Errorf("insert media: %w", err)
+	}
+
+	// Whoever won the unique hash constraint owns this content.
+	var authoritativeID string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM media_items WHERE sha256 = ?`, item.SHA256).Scan(&authoritativeID); err != nil {
+		return "", false, fmt.Errorf("resolve authoritative media: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET status = 'cleanup', result_media_id = ?, lease_token = NULL, lease_until = NULL, updated_at = ?
+		 WHERE upload_id = ? AND lease_token = ?`,
+		authoritativeID, now, uploadID, leaseToken)
+	if err != nil {
+		return "", false, fmt.Errorf("transition to cleanup: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", false, fmt.Errorf("commit publish: %w", err)
+	}
+	return authoritativeID, authoritativeID != item.ID, nil
+}
+
+// MarkUnobservable closes out an admitted upload whose bytes were never
+// observable — a create whose client vanished, or a partial the retention
+// janitor removed. It goes straight to a terminal state because there is
+// nothing to delete, and it carries a reason distinct from cancellation
+// precisely so it stays reversible: if the paths were merely hidden by a
+// faulted mount, reconciliation re-adopts them when they return.
+func (s *Store) MarkUnobservable(ctx context.Context, uploadID string, now int64) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET status = 'discarded',
+		       terminal_reason = 'unobservable',
+		       terminal_at = ?,
+		       lease_token = NULL,
+		       lease_until = NULL,
+		       updated_at = ?
+		 WHERE upload_id = ?
+		   AND status = 'uploading'
+		   AND source_completed_at IS NULL`, now, now, uploadID)
+	if err != nil {
+		return fmt.Errorf("mark upload unobservable: %w", err)
+	}
+	return requireOneRow(res)
+}
+
+// DeleteUploadJob removes a terminal row so its upload id can be adopted
+// afresh. Only used when bytes reappear for an 'unobservable' closure.
+func (s *Store) DeleteUploadJob(ctx context.Context, uploadID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM upload_jobs WHERE upload_id = ? AND status IN ('complete', 'discarded')`, uploadID)
+	if err != nil {
+		return fmt.Errorf("delete terminal upload job: %w", err)
+	}
+	return nil
+}
+
+// ReopenTerminal returns a finished job to a working stage because files it
+// had verified as gone have reappeared. The ordinary worker path then completes
+// the removal it could not perform while the volume was unavailable.
+func (s *Store) ReopenTerminal(ctx context.Context, uploadID string, status JobStatus, now int64) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET status = ?,
+		       terminal_at = NULL,
+		       next_attempt_at = ?,
+		       lease_token = NULL,
+		       lease_until = NULL,
+		       updated_at = ?
+		 WHERE upload_id = ? AND status IN ('complete', 'discarded')`,
+		status, now, now, uploadID)
+	if err != nil {
+		return fmt.Errorf("reopen terminal upload job: %w", err)
+	}
+	return requireOneRow(res)
 }

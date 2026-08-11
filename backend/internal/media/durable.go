@@ -37,6 +37,14 @@ func FsyncDir(path string) error {
 	return nil
 }
 
+// Indirected so a test can assert that the copy and its directory entry are on
+// stable storage before the rename publishes them. Without a seam the ordering
+// is only protected by the comment below it.
+var (
+	prepareSyncFile = (*os.File).Sync
+	prepareSyncDir  = FsyncDir
+)
+
 // PrepareRequest describes one copy into permanent storage. Size and SHA256
 // are the already-computed identity of the source, which makes preparation
 // idempotent across retries.
@@ -72,7 +80,7 @@ func (p *Processor) PrepareOriginal(ctx context.Context, req PrepareRequest) err
 		// Re-sync the directory: the previous attempt may have failed on
 		// exactly this step, and skipping it would publish a rename that a
 		// crash could still roll back.
-		return FsyncDir(p.OriginalsDir())
+		return prepareSyncDir(p.OriginalsDir())
 	}
 
 	src, err := os.Open(req.SourcePath)
@@ -94,7 +102,7 @@ func (p *Processor) PrepareOriginal(ctx context.Context, req PrepareRequest) err
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := prepareSyncFile(tmp); err != nil {
 		tmp.Close()
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("fsync temporary: %w", err)
@@ -104,7 +112,7 @@ func (p *Processor) PrepareOriginal(ctx context.Context, req PrepareRequest) err
 		return fmt.Errorf("close temporary: %w", err)
 	}
 	// Only now is the temporary a recoverable alternate copy.
-	if err := FsyncDir(p.OriginalsDir()); err != nil {
+	if err := prepareSyncDir(p.OriginalsDir()); err != nil {
 		return err
 	}
 	// A worker whose attempt was cancelled must not publish an artifact after
@@ -116,7 +124,7 @@ func (p *Processor) PrepareOriginal(ctx context.Context, req PrepareRequest) err
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		return fmt.Errorf("rename original into place: %w", err)
 	}
-	return FsyncDir(p.OriginalsDir())
+	return prepareSyncDir(p.OriginalsDir())
 }
 
 // SHA256FileContext hashes a file, honoring cancellation. The whole-file hash

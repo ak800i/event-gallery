@@ -1,7 +1,11 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,6 +15,28 @@ import (
 	"event-gallery/backend/internal/models"
 	"event-gallery/backend/internal/store"
 )
+
+// jpegFixture returns a tiny but genuinely valid JPEG, so the processing path
+// runs against content Sniff recognises and the thumbnailer can decode.
+func jpegFixture(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2)), nil); err != nil {
+		t.Fatalf("encode jpeg: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// pngFixture is valid, recognised content that the fixture processor does not
+// allow, which is a different rejection branch from unrecognised bytes.
+func pngFixture(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buf.Bytes()
+}
 
 func newIngestFixture(t *testing.T) (*store.Store, *media.Processor) {
 	t.Helper()

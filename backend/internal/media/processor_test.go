@@ -1,12 +1,7 @@
 package media
 
 import (
-	"context"
-	"os"
-	"path/filepath"
 	"testing"
-
-	"event-gallery/backend/internal/models"
 )
 
 func TestMimeToExt_AVIF(t *testing.T) {
@@ -15,165 +10,17 @@ func TestMimeToExt_AVIF(t *testing.T) {
 	}
 }
 
-func TestProcessor_ProcessImage(t *testing.T) {
-	dir := t.TempDir()
-	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/jpeg"}, []string{"video/mp4"})
-
-	tempPath := filepath.Join(dir, "incoming.tmp")
-	writeJPEG(t, tempPath, 300, 150)
-
-	result, err := proc.Process(context.Background(), tempPath, "family-photo.jpg")
-	if err != nil {
-		t.Fatalf("process: %v", err)
+// The stored name comes from sniffed content, not from whatever the client
+// called the file. Only an unmapped type may fall back to the client's
+// extension.
+func TestExtensionForMIMEPrefersSniffedContent(t *testing.T) {
+	if got := ExtensionForMIME("image/jpeg", "photo.png"); got != ".jpg" {
+		t.Errorf("ExtensionForMIME(image/jpeg) = %q, want .jpg", got)
 	}
-	if result.Kind != models.KindImage {
-		t.Errorf("expected image kind, got %s", result.Kind)
+	if got := ExtensionForMIME("application/x-unmapped", "clip.mkv"); got != ".mkv" {
+		t.Errorf("unmapped type must fall back to the filename, got %q", got)
 	}
-	if result.MimeType != "image/jpeg" {
-		t.Errorf("expected image/jpeg, got %s", result.MimeType)
-	}
-	if result.Width != 300 || result.Height != 150 {
-		t.Errorf("expected 300x150, got %dx%d", result.Width, result.Height)
-	}
-	if !result.HasThumbnail {
-		t.Error("expected thumbnail to be generated")
-	}
-	if result.SHA256 == "" {
-		t.Error("expected non-empty sha256")
-	}
-
-	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
-		t.Error("expected temp file to be moved away")
-	}
-	if _, err := os.Stat(proc.OriginalPath(result.StoredFilename)); err != nil {
-		t.Errorf("expected original file at final path: %v", err)
-	}
-	if _, err := os.Stat(proc.ThumbnailPath(result.ID)); err != nil {
-		t.Errorf("expected thumbnail file: %v", err)
-	}
-}
-
-func TestProcessor_ProcessAVIF(t *testing.T) {
-	requireFFmpeg(t)
-	dir := t.TempDir()
-	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/avif"}, nil)
-
-	tempPath := filepath.Join(dir, "incoming.tmp")
-	generateTestAVIF(t, tempPath, 60, 40) // landscape; skips if no AV1 encoder
-
-	result, err := proc.Process(context.Background(), tempPath, "guest.avif")
-	if err != nil {
-		t.Fatalf("process: %v", err)
-	}
-	if result.MimeType != "image/avif" {
-		t.Errorf("expected image/avif, got %s", result.MimeType)
-	}
-	if !result.HasThumbnail {
-		t.Error("expected an ffmpeg-generated thumbnail for AVIF")
-	}
-	if result.Width <= 0 || result.Height <= 0 {
-		t.Errorf("expected non-zero dimensions, got %dx%d", result.Width, result.Height)
-	}
-	if !(result.Width > result.Height) {
-		t.Errorf("expected landscape stored dims, got %dx%d", result.Width, result.Height)
-	}
-	if _, err := os.Stat(proc.ThumbnailPath(result.ID)); err != nil {
-		t.Errorf("expected thumbnail file on disk: %v", err)
-	}
-}
-
-func TestProcessor_ProcessAVIF_RealFixture(t *testing.T) {
-	requireFFmpeg(t)
-	const fixture = "testdata/sample_portrait.avif"
-	if _, err := os.Stat(fixture); err != nil {
-		t.Skip("sample_portrait.avif fixture not present")
-	}
-	dir := t.TempDir()
-	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/avif"}, nil)
-
-	tempPath := filepath.Join(dir, "incoming.tmp")
-	data, err := os.ReadFile(fixture)
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-	if err := os.WriteFile(tempPath, data, 0o644); err != nil {
-		t.Fatalf("write temp: %v", err)
-	}
-
-	result, err := proc.Process(context.Background(), tempPath, "guest.avif")
-	if err != nil {
-		t.Fatalf("process: %v", err)
-	}
-	if result.MimeType != "image/avif" {
-		t.Errorf("expected image/avif, got %s", result.MimeType)
-	}
-	if !result.HasThumbnail {
-		t.Error("expected a thumbnail for the real AVIF fixture")
-	}
-	if !(result.Height > result.Width) {
-		t.Errorf("expected portrait stored dims (ground truth), got %dx%d", result.Width, result.Height)
-	}
-	if _, err := os.Stat(proc.OriginalPath(result.StoredFilename)); err != nil {
-		t.Errorf("expected original file: %v", err)
-	}
-	if _, err := os.Stat(proc.ThumbnailPath(result.ID)); err != nil {
-		t.Errorf("expected thumbnail file: %v", err)
-	}
-}
-
-func TestProcessor_RejectsDisallowedType(t *testing.T) {
-	dir := t.TempDir()
-	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/png"}, nil)
-
-	tempPath := filepath.Join(dir, "incoming.tmp")
-	writeJPEG(t, tempPath, 100, 100)
-
-	_, err := proc.Process(context.Background(), tempPath, "photo.jpg")
-	if err == nil {
-		t.Fatal("expected error for disallowed jpeg when only png is allowed")
-	}
-	if _, statErr := os.Stat(tempPath); statErr != nil {
-		t.Error("expected temp file to remain untouched after rejection")
-	}
-}
-
-func TestProcessor_RejectsUnknownContent(t *testing.T) {
-	dir := t.TempDir()
-	proc := NewProcessor(filepath.Join(dir, "media"), 100, []string{"image/jpeg"}, []string{"video/mp4"})
-
-	tempPath := filepath.Join(dir, "incoming.tmp")
-	if err := os.WriteFile(tempPath, []byte("not a real media file"), 0o644); err != nil {
-		t.Fatalf("write temp file: %v", err)
-	}
-
-	_, err := proc.Process(context.Background(), tempPath, "notreal.jpg")
-	if err == nil {
-		t.Fatal("expected error for unrecognized content")
-	}
-}
-
-func TestMoveFile_CrossDeviceFallback(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src.bin")
-	dst := filepath.Join(dir, "sub", "dst.bin")
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	content := []byte("cross device move test content")
-	if err := os.WriteFile(src, content, 0o644); err != nil {
-		t.Fatalf("write src: %v", err)
-	}
-	if err := moveFile(src, dst); err != nil {
-		t.Fatalf("moveFile: %v", err)
-	}
-	got, err := os.ReadFile(dst)
-	if err != nil {
-		t.Fatalf("read dst: %v", err)
-	}
-	if string(got) != string(content) {
-		t.Errorf("content mismatch after move")
-	}
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Errorf("expected src removed after move")
+	if got := ExtensionForMIME("application/x-unmapped", "noextension"); got != "" {
+		t.Errorf("no extension anywhere must stay empty, got %q", got)
 	}
 }
