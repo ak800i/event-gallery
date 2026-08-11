@@ -87,48 +87,34 @@ func TestHandlePublicConfig_ReflectsExpiredUploads(t *testing.T) {
 	}
 }
 
-func TestHandleUploadCheck_NotDuplicate(t *testing.T) {
+// The legacy preflight is a shim now: a pre-upgrade tab deletes the guest's
+// only copy of the file on a duplicate verdict, so it must answer false to
+// everything, including input the old handler would have rejected.
+func TestHandleUploadCheck_AlwaysAnswersNotDuplicate(t *testing.T) {
 	h := newTestHarness(t)
-	body := []byte(`{"sha256":"` + repeatChar('a', 64) + `","size":1000,"filename":"a.jpg"}`)
-	rec := doRequest(h, http.MethodPost, "/api/uploads/check", body)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp uploadCheckResponse
-	json.Unmarshal(rec.Body.Bytes(), &resp)
-	if resp.Duplicate {
-		t.Error("expected not duplicate")
-	}
-}
+	duplicateSHA := repeatChar('b', 64)
+	insertTestMedia(t, h, "id1", duplicateSHA, time.Now())
 
-func TestHandleUploadCheck_Duplicate(t *testing.T) {
-	h := newTestHarness(t)
-	sha := repeatChar('b', 64)
-	insertTestMedia(t, h, "id1", sha, time.Now())
-
-	body := []byte(`{"sha256":"` + sha + `","size":1000,"filename":"a.jpg"}`)
-	rec := doRequest(h, http.MethodPost, "/api/uploads/check", body)
-	var resp uploadCheckResponse
-	json.Unmarshal(rec.Body.Bytes(), &resp)
-	if !resp.Duplicate || resp.MediaID != "id1" {
-		t.Errorf("expected duplicate of id1, got %+v", resp)
+	bodies := map[string][]byte{
+		"unseen content":   []byte(`{"sha256":"` + repeatChar('a', 64) + `","size":1000,"filename":"a.jpg"}`),
+		"known content":    []byte(`{"sha256":"` + duplicateSHA + `","size":1000,"filename":"a.jpg"}`),
+		"malformed digest": []byte(`{"sha256":"short","size":100}`),
+		"impossible size":  []byte(`{"sha256":"` + repeatChar('c', 64) + `","size":999999999999}`),
 	}
-}
-
-func TestHandleUploadCheck_InvalidSHA(t *testing.T) {
-	h := newTestHarness(t)
-	rec := doRequest(h, http.MethodPost, "/api/uploads/check", []byte(`{"sha256":"short","size":100}`))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}
-
-func TestHandleUploadCheck_SizeTooLarge(t *testing.T) {
-	h := newTestHarness(t)
-	body := []byte(`{"sha256":"` + repeatChar('c', 64) + `","size":999999999999}`)
-	rec := doRequest(h, http.MethodPost, "/api/uploads/check", body)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			rec := doRequest(h, http.MethodPost, "/api/uploads/check", body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var resp uploadCheckResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.Duplicate || resp.MediaID != "" {
+				t.Errorf("expected no duplicate verdict, got %+v", resp)
+			}
+		})
 	}
 }
 

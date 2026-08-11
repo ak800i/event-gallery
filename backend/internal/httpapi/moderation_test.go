@@ -48,8 +48,8 @@ func TestModeration_DefaultOffAndApprovalFlow(t *testing.T) {
 	checkRec := doRequest(h, http.MethodPost, "/api/uploads/check", checkBody)
 	var duplicate uploadCheckResponse
 	_ = json.Unmarshal(checkRec.Body.Bytes(), &duplicate)
-	if !duplicate.Duplicate || duplicate.MediaID != "" {
-		t.Fatalf("pending duplicate must not disclose media ID: %+v", duplicate)
+	if duplicate.Duplicate || duplicate.MediaID != "" {
+		t.Fatalf("the legacy preflight must neither claim a duplicate nor disclose pending media: %+v", duplicate)
 	}
 	for _, method := range []string{http.MethodPost, http.MethodDelete} {
 		likeReq := newRequestWithHeader(method, "/api/media/pending-id/like", nil, deviceIDHeader, "device")

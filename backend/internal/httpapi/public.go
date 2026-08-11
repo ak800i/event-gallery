@@ -169,51 +169,16 @@ func (s *Server) handlePublicConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-type uploadCheckRequest struct {
-	SHA256   string `json:"sha256"`
-	Size     int64  `json:"size"`
-	Filename string `json:"filename"`
-}
-
 type uploadCheckResponse struct {
 	Duplicate bool   `json:"duplicate"`
 	MediaID   string `json:"mediaId,omitempty"`
 }
 
-// handleUploadCheck lets the client ask, before spending any bandwidth,
-// whether a file with this exact whole-file SHA-256 has already been
-// uploaded. This is a courtesy optimization; the authoritative duplicate
-// check happens server-side again after the tus upload completes.
+// handleUploadCheck is retained only for tabs loaded before this deploy. The
+// old client removed the local file on a duplicate verdict, so this must
+// always answer false and let server-side SHA-256 resolution converge instead.
 func (s *Server) handleUploadCheck(w http.ResponseWriter, r *http.Request) {
-	var req uploadCheckRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	req.SHA256 = strings.ToLower(strings.TrimSpace(req.SHA256))
-	if len(req.SHA256) != 64 {
-		writeError(w, http.StatusBadRequest, "sha256 must be a 64-character hex digest")
-		return
-	}
-	if req.Size <= 0 || req.Size > s.cfg.MaxUploadBytes {
-		writeError(w, http.StatusBadRequest, "file size is invalid or exceeds the maximum allowed")
-		return
-	}
-
-	existing, err := s.store.GetBySHA256(r.Context(), req.SHA256)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeJSON(w, http.StatusOK, uploadCheckResponse{Duplicate: false})
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to check for duplicates")
-		return
-	}
-	resp := uploadCheckResponse{Duplicate: true}
-	if existing.Status == models.StatusActive && existing.ApprovedAt != nil {
-		resp.MediaID = existing.ID
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, uploadCheckResponse{Duplicate: false})
 }
 
 func (s *Server) lookupActiveMedia(w http.ResponseWriter, r *http.Request) (*models.MediaItem, bool) {

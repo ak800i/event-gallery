@@ -22,6 +22,21 @@ func (s *Server) publicRateLimit(next http.Handler) http.Handler {
 	})
 }
 
+// uploadStatusRateLimit meters upload status polling on its own per-IP budget.
+// Polling is far chattier than browsing, so sharing the public bucket would let
+// a few uploading tabs rate-limit everybody else's gallery.
+func (s *Server) uploadStatusRateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r, s.cfg.TrustedProxyCIDRs)
+		if !s.uploadStatusLimiter.Allow(ip) {
+			w.Header().Set("Retry-After", "5")
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded, please slow down")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // securityHeaders sets a conservative baseline of security-related response
 // headers appropriate for a same-origin SPA + JSON API.
 func securityHeaders(next http.Handler) http.Handler {

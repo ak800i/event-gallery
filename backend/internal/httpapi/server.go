@@ -24,10 +24,11 @@ type Server struct {
 	store     *store.Store
 	processor *media.Processor
 
-	publicLimiter     *ratelimit.KeyedLimiter
-	loginLimiter      *ratelimit.KeyedLimiter
-	uploadConcurrency *ratelimit.ConcurrencyLimiter
-	uploadBandwidth   *ratelimit.KeyedLimiter
+	publicLimiter       *ratelimit.KeyedLimiter
+	loginLimiter        *ratelimit.KeyedLimiter
+	uploadStatusLimiter *ratelimit.KeyedLimiter
+	uploadConcurrency   *ratelimit.ConcurrencyLimiter
+	uploadBandwidth     *ratelimit.KeyedLimiter
 
 	tusProxy *tusReverseProxy
 
@@ -58,6 +59,14 @@ func NewServer(cfg *config.Config, st *store.Store, proc *media.Processor, spaHa
 		loginLimiter: ratelimit.NewKeyedLimiter(
 			rate.Limit(5.0/60.0), // 5 attempts per minute per IP
 			5,
+			30*time.Minute,
+		),
+		// Polling has its own bucket so a tab watching its uploads cannot
+		// spend the budget the gallery needs. Burst is a quarter minute's
+		// worth, the same proportion the public limiter defaults to.
+		uploadStatusLimiter: ratelimit.NewKeyedLimiter(
+			rate.Limit(float64(cfg.UploadStatusRateLimitPerMinute)/60.0),
+			max(cfg.UploadStatusRateLimitPerMinute/4, 1),
 			30*time.Minute,
 		),
 		uploadConcurrency: ratelimit.NewConcurrencyLimiter(cfg.UploadConcurrencyPerIP),
@@ -97,6 +106,7 @@ func max64(a, b int64) int64 {
 func (s *Server) StartCleanupLoops(stop <-chan struct{}) {
 	s.publicLimiter.StartCleanup(10*time.Minute, stop)
 	s.loginLimiter.StartCleanup(10*time.Minute, stop)
+	s.uploadStatusLimiter.StartCleanup(10*time.Minute, stop)
 	s.uploadBandwidth.StartCleanup(10*time.Minute, stop)
 
 	go func() {
@@ -133,6 +143,11 @@ func (s *Server) Router() http.Handler {
 		api.Handle("/tus", http.HandlerFunc(s.handleTusProxy))
 		api.Handle("/tus/*", http.HandlerFunc(s.handleTusProxy))
 		api.Post("/internal/tus-hooks", s.handleTusHook)
+
+		// A sibling of the public group, not a member: chi copies the parent
+		// chain into an inline group, so registering it inside pub would spend
+		// the gallery budget as well as this route's own.
+		api.With(s.uploadStatusRateLimit).Post("/uploads/status", s.handleUploadStatus)
 
 		api.Group(func(pub chi.Router) {
 			pub.Use(s.publicRateLimit)
