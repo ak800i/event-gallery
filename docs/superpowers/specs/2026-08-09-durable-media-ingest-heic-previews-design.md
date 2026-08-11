@@ -259,12 +259,22 @@ bounded by the remaining time; no phase resets it.
 Pre-finish returns success only after the transition commits. It performs no
 move, hash, decode, or derivative work, and it never deletes the sidecar.
 
-If the executor is saturated or the budget expires, the hook returns HTTP 200
-with a hook envelope whose embedded response is a client-facing 503 plus
-`Retry-After`. The durability operation continues on the manager's context to
-its own deadline, so the work is not wasted, and the browser retries. tusd
-still emits `post-finish` in that case; it is treated only as an idempotent
-wake signal and never as proof of anything.
+Every refusal returns HTTP 200 with a hook envelope whose embedded response is
+the one the client sees; tusd honors `RejectUpload` at pre-create only, so that
+embedded status is the whole of the decision. Which status it carries follows
+the same rule as admission. A transient condition — a saturated executor, an
+expired budget, a shutdown in progress, or a store or fsync error — is a
+client-facing 503 plus `Retry-After`. The durability operation continues on the
+manager's context to its own deadline, so the work is not wasted, and the
+browser retries. A deterministic one — an upload ID or storage path the app did
+not derive, an incomplete offset, a source that is missing, irregular, or not
+the size that was admitted, or a row that was cancelled, discarded, or never
+existed — is a client-facing 4xx carrying no `Retry-After`, because no retry
+can change it. Without that terminal answer a permanently unpromotable upload
+would be retried on the `Retry-After` cadence forever, including after
+reconciliation had discarded its row. tusd still emits `post-finish` in either
+case; it is treated only as an idempotent wake signal and never as proof of
+anything.
 
 Because a 503 can be chosen while the operation is still running, the proxy
 must not report success afterward. For every HEAD and PATCH it first consults

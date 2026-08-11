@@ -2793,6 +2793,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"event-gallery/backend/internal/media"
@@ -2802,6 +2803,23 @@ import (
 // ErrDurabilityBusy means the fixed executor is saturated. Callers must relay
 // backpressure to the browser, never report success.
 var ErrDurabilityBusy = errors.New("durability executor is saturated")
+
+// ErrDurabilityClosing means shutdown has begun, so no new operation may
+// start. It is as transient as a refusal gets: the next process accepts the
+// same retry.
+var ErrDurabilityClosing = errors.New("durability executor is shutting down")
+
+// ErrDurabilityFinal marks a deterministic refusal — the upload is not the one
+// we admitted, or its row has left the lifecycle. Retrying can only fail the
+// same way, so callers must tell the client to stop rather than to come back
+// in five seconds. Every other failure is transient by omission.
+var ErrDurabilityFinal = errors.New("upload can never be made durable")
+
+// Indirected so a test can assert the barrier syncs before it commits.
+var (
+	fsyncFile = media.FsyncFile
+	fsyncDir  = media.FsyncDir
+)
 
 type durabilityOp struct {
 	done chan struct{}
@@ -2817,6 +2835,7 @@ type durabilityRegistry struct {
 	inFlight map[string]*durabilityOp
 	slots    chan struct{}
 	wg       sync.WaitGroup
+	closing  bool
 }
 
 func newDurabilityRegistry(m *Manager) *durabilityRegistry {
@@ -2832,8 +2851,19 @@ func newDurabilityRegistry(m *Manager) *durabilityRegistry {
 }
 
 // wait blocks until every detached operation has finished, so shutdown cannot
-// close the database while a promotion is still committing.
-func (r *durabilityRegistry) wait() { r.wg.Wait() }
+// close the database while a promotion is still committing. It first closes
+// the registry under the same lock that guards wg.Add: without that, a hook
+// arriving now could take the counter from zero to one underneath this Wait,
+// which panics on the caller's shutdown goroutine. HTTP shutdown cannot close
+// that window instead, because Server.Shutdown returns when its grace expires
+// without terminating handlers that are still running, and that grace is
+// shorter than UPLOAD_DURABILITY_WAIT_SECONDS.
+func (r *durabilityRegistry) wait() {
+	r.mu.Lock()
+	r.closing = true
+	r.mu.Unlock()
+	r.wg.Wait()
+}
 
 // EnsureDurable fsyncs a completed upload's source and commits its pending
 // row. Returning nil is the only thing that entitles tus to report success.
@@ -2849,6 +2879,10 @@ func (r *durabilityRegistry) ensure(ctx context.Context, uploadID string) error 
 	r.mu.Lock()
 	op, joined := r.inFlight[uploadID]
 	if !joined {
+		if r.closing {
+			r.mu.Unlock()
+			return ErrDurabilityClosing
+		}
 		select {
 		case r.slots <- struct{}{}:
 		default:
@@ -2872,10 +2906,13 @@ func (r *durabilityRegistry) ensure(ctx context.Context, uploadID string) error 
 
 func (r *durabilityRegistry) run(uploadID string, op *durabilityOp) {
 	defer func() {
+		// Both under one lock: dropping the map entry first leaves a caller
+		// arriving in that window with nothing to join and no free slot, so it
+		// would be refused as busy for no reason.
 		r.mu.Lock()
 		delete(r.inFlight, uploadID)
-		r.mu.Unlock()
 		<-r.slots
+		r.mu.Unlock()
 		close(op.done)
 		r.wg.Done()
 	}()
@@ -2886,7 +2923,8 @@ func (r *durabilityRegistry) run(uploadID string, op *durabilityOp) {
 
 	op.err = r.manager.makeDurable(ctx, uploadID)
 	if op.err != nil {
-		slog.Error("durability barrier failed", "operation", "durability", "upload_id", uploadID, "error", op.err)
+		slog.Error("durability barrier failed", "operation", "durability", "upload_id", uploadID,
+			"final", errors.Is(op.err, ErrDurabilityFinal), "error", op.err)
 		return
 	}
 	slog.Info("upload became durable", "operation", "durability", "upload_id", uploadID)
@@ -2897,12 +2935,19 @@ func (r *durabilityRegistry) run(uploadID string, op *durabilityOp) {
 // hashes, decodes, or deletes anything: that work belongs to the workers,
 // where it cannot delay or fail the client's request.
 func (m *Manager) makeDurable(ctx context.Context, uploadID string) error {
+	dataPath := m.DataPath(uploadID)
+	// This is the operation that fsyncs and publishes whatever the id resolves
+	// to, so containment is asserted here and not only at the HTTP boundary.
+	if filepath.Dir(dataPath) != filepath.Clean(m.opts.UploadDir) {
+		return fmt.Errorf("%w: upload id %q escapes the upload directory", ErrDurabilityFinal, uploadID)
+	}
+
 	job, err := m.store.GetUploadJob(ctx, uploadID)
 	if err != nil {
 		return err
 	}
 	if job == nil {
-		return fmt.Errorf("no upload job for %s", uploadID)
+		return fmt.Errorf("%w: no upload job for %s", ErrDurabilityFinal, uploadID)
 	}
 	switch job.Status {
 	case store.JobUploading:
@@ -2910,40 +2955,76 @@ func (m *Manager) makeDurable(ctx context.Context, uploadID string) error {
 	case store.JobDiscarding, store.JobDiscarded:
 		// Reporting success here would tell the browser its upload is safe
 		// while the discard worker is removing it.
-		return fmt.Errorf("upload %s is being discarded", uploadID)
+		return fmt.Errorf("%w: upload %s is being discarded", ErrDurabilityFinal, uploadID)
 	default:
 		return nil // already durable; nothing to do
 	}
 
-	dataPath := m.DataPath(uploadID)
 	stat, err := os.Stat(dataPath)
 	if err != nil {
-		return fmt.Errorf("stat completed source: %w", err)
+		return fmt.Errorf("%w: stat completed source: %w", ErrDurabilityFinal, err)
 	}
 	if !stat.Mode().IsRegular() {
-		return fmt.Errorf("source %s is not a regular file", dataPath)
+		return fmt.Errorf("%w: source %s is not a regular file", ErrDurabilityFinal, dataPath)
 	}
 	if stat.Size() != job.ExpectedSize {
-		return fmt.Errorf("source size %d, expected %d", stat.Size(), job.ExpectedSize)
+		return fmt.Errorf("%w: source size %d, expected %d", ErrDurabilityFinal, stat.Size(), job.ExpectedSize)
 	}
 
-	if err := media.FsyncFile(dataPath); err != nil {
+	if err := fsyncFile(dataPath); err != nil {
 		return err
 	}
-	if err := media.FsyncFile(m.InfoPath(uploadID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := fsyncFile(m.InfoPath(uploadID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := media.FsyncDir(m.opts.UploadDir); err != nil {
+	if err := fsyncDir(m.opts.UploadDir); err != nil {
 		return err
 	}
 
-	return m.store.PromoteToPending(ctx, uploadID, store.NowMicros())
+	if err := m.store.PromoteToPending(ctx, uploadID, store.NowMicros()); err != nil {
+		if errors.Is(err, store.ErrNotClaimed) {
+			return m.classifyLostPromotion(ctx, uploadID)
+		}
+		return err
+	}
+	return nil
+}
+
+// classifyLostPromotion decides what a promotion that matched no row means.
+// PromoteToPending reports the same ErrNotClaimed whether another caller has
+// already committed the row — which is a success — or the upload was cancelled
+// underneath us, which is final. Only the row itself can tell them apart.
+func (m *Manager) classifyLostPromotion(ctx context.Context, uploadID string) error {
+	job, err := m.store.GetUploadJob(ctx, uploadID)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return fmt.Errorf("%w: upload job %s disappeared during promotion", ErrDurabilityFinal, uploadID)
+	}
+	switch job.Status {
+	case store.JobDiscarding, store.JobDiscarded:
+		return fmt.Errorf("%w: upload %s is being discarded", ErrDurabilityFinal, uploadID)
+	case store.JobUploading:
+		if job.CancellationRequestedAt != nil {
+			return fmt.Errorf("%w: upload %s was cancelled", ErrDurabilityFinal, uploadID)
+		}
+		// Still uploading, still not cancelled, yet the update matched nothing.
+		// Unexplained, so transient: never tell a client to give up on bytes
+		// that may still be committable.
+		return fmt.Errorf("promotion of upload %s matched no row", uploadID)
+	default:
+		return nil // pending or later: another caller committed it
+	}
 }
 ```
 
 - [ ] **Step 4: Add the blocking hook handler**
 
-Replace the `handlePreFinishHook` stub in `tus_hooks.go`:
+Replace the `handlePreFinishHook` stub in `tus_hooks.go`. Both responses below
+share the envelope construction with `rejectHook` and `retryHook`, factored out
+into one `clientStatusHook(w, reject, status, message, retryAfterSeconds)`
+helper rather than copied a third and fourth time:
 
 ```go
 // handlePreFinishHook runs inside the upload's final PATCH, and its response
@@ -2956,63 +3037,87 @@ func (s *Server) handlePreFinishHook(w http.ResponseWriter, r *http.Request, req
 	ctx := r.Context()
 
 	upload := req.Event.Upload
+	// Every refusal is logged: behind a generic client status, the server log
+	// is the only trace a traversing id or a misconfigured backend leaves.
+	retry := func(reason string) {
+		slog.Warn("pre-finish cannot commit the upload yet",
+			"operation", "pre_finish", "upload_id", upload.ID, "reason", reason)
+		preFinishRetry(w, reason)
+	}
+	final := func(reason string) {
+		slog.Warn("pre-finish refused an upload it can never commit",
+			"operation", "pre_finish", "upload_id", upload.ID, "reason", reason)
+		preFinishFinal(w, http.StatusBadRequest, reason)
+	}
+
 	if s.ingest == nil {
-		preFinishRetry(w, "ingest is not ready")
+		retry("ingest is not ready")
 		return
 	}
-	if upload.ID == "" || !safeUploadID(upload.ID) {
-		preFinishRetry(w, "invalid upload id")
+	if !safeUploadID(upload.ID) {
+		final("invalid upload id")
 		return
 	}
-	if req.Event.Upload.Storage.Type != "filestore" {
-		preFinishRetry(w, "unsupported storage backend")
+	if upload.Storage.Type != "filestore" {
+		final("unsupported storage backend")
 		return
 	}
 	// The hook must be talking about the path we derive, not one it chose.
 	if filepath.Clean(upload.Storage.Path) != filepath.Clean(s.ingest.DataPath(upload.ID)) {
-		preFinishRetry(w, "unexpected storage path")
+		final("unexpected storage path")
 		return
 	}
 	if upload.Size <= 0 || upload.Offset != upload.Size {
-		preFinishRetry(w, "upload is not complete")
+		final("upload is not complete")
 		return
 	}
 
 	switch err := s.ingest.EnsureDurable(ctx, upload.ID); {
 	case err == nil:
 		allowHook(w)
+	case errors.Is(err, ingest.ErrDurabilityFinal):
+		// The row has left the lifecycle, or the source is not the file we
+		// admitted. Relaying this as backpressure would make the client retry
+		// an upload that can never complete, on a five-second cadence, forever.
+		slog.Warn("durability barrier refused the upload for good",
+			"operation", "pre_finish", "upload_id", upload.ID, "error", err)
+		preFinishFinal(w, http.StatusConflict, "upload can no longer be completed")
 	default:
-		// Saturation or an expired budget is backpressure. The detached
-		// operation continues, so the retry will usually find it already done.
+		// Saturation, shutdown or an expired budget is backpressure. The
+		// detached operation continues, so the retry will usually find it
+		// already done.
 		slog.Warn("durability barrier did not complete within the request budget",
 			"operation", "pre_finish", "upload_id", upload.ID, "error", err)
 		preFinishRetry(w, "upload is still being persisted, please retry")
 	}
 }
 
-// preFinishRetry is the only failure response pre-finish has. tusd ignores
-// RejectUpload for this hook — the upload is already written and cannot be
-// rejected here — and merges HTTPResponse into the final PATCH response. So
-// every failure is reported as retryable backpressure, and it is the
-// completion fence, not this status, that stops a false success. Nothing is
-// lost either way: an upload we refuse to promote is picked up later by
-// reconciliation.
+// preFinishRetryAfterSeconds paces a client whose upload we could not commit
+// inside its request budget.
+const preFinishRetryAfterSeconds = 5
+
+// preFinishRetry reports a transient refusal. tusd ignores RejectUpload for
+// this hook — the upload is already written and cannot be rejected here — and
+// merges HTTPResponse into the final PATCH response, so the embedded 503 is
+// what makes the browser back off and come back. Nothing is lost meanwhile:
+// an upload we could not promote in time is picked up by reconciliation.
 func preFinishRetry(w http.ResponseWriter, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(tusHookResponse{
-		HTTPResponse: &tusHookHTTPResponse{
-			StatusCode: http.StatusServiceUnavailable,
-			Body:       `{"error":"` + message + `"}`,
-			Header: map[string]string{
-				"Content-Type": "application/json",
-				"Retry-After":  "5",
-			},
-		},
-	})
+	clientStatusHook(w, false, http.StatusServiceUnavailable, message, preFinishRetryAfterSeconds)
 }
 
-// safeUploadID rejects anything that could escape the upload directory.
+// preFinishFinal reports a refusal no retry can change, and is the terminal
+// state a single retryable status cannot express: without it a permanently
+// truncated source, or a row reconciliation has discarded, leaves the client
+// retrying on a five-second cadence with nothing that could ever tell it to
+// stop. It carries no Retry-After, and no RejectUpload, which tusd honours at
+// pre-create only.
+func preFinishFinal(w http.ResponseWriter, status int, message string) {
+	clientStatusHook(w, false, status, message, 0)
+}
+
+// safeUploadID rejects anything that could escape the upload directory. It is
+// the boundary half of a check the barrier also makes for itself, since
+// EnsureDurable is reachable from more than this handler.
 func safeUploadID(id string) bool {
 	if id == "" || len(id) > 128 {
 		return false
@@ -3027,7 +3132,19 @@ func safeUploadID(id string) bool {
 }
 ```
 
-Add `"path/filepath"` and `"context"` to the imports.
+Add `"errors"`, `"path/filepath"`, `"context"`, and the `ingest` package to the
+imports.
+
+The split is what the design requires and what makes the barrier terminable:
+deterministic rejections are 4xx and final, transient conditions are 503 and
+retryable. `makeDurable` decides which by wrapping `ErrDurabilityFinal`, so the
+handler classifies rather than guesses. Final: an unsafe upload id, a foreign
+storage backend, a storage path the app did not derive, an offset behind size
+or unknown size, a source that is missing, irregular, or shorter than
+`expected_size`, a row that is `discarding` or `discarded`, a cancelled job,
+and a job row that does not exist. Transient: ingest unavailable,
+`ErrDurabilityBusy`, `ErrDurabilityClosing`, store and query errors, fsync
+errors, and the expiry or cancellation of the caller's wait.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
