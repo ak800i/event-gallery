@@ -135,7 +135,7 @@ func (m *Manager) reconcileOnce() error {
 			continue
 		}
 		uploadID := strings.TrimSuffix(entry.Name(), ".info")
-		if !isSafeUploadID(uploadID) {
+		if !SafeUploadID(uploadID) {
 			continue // skips tusd lock files and our own dot-prefixed temporaries
 		}
 		if _, done := seen[uploadID]; done {
@@ -398,7 +398,14 @@ func sanitizeAdoptedFilename(name string) string {
 	return name
 }
 
-func isSafeUploadID(id string) bool {
+// SafeUploadID rejects anything that could escape the upload directory. It is
+// exported because the HTTP layer's hook guard and completion fence must apply
+// the identical rule: the fence is only ever applied to ids that guard
+// accepts, so an id this predicate admits for adoption but that one refuses is
+// an upload whose fence has quietly switched itself off. They guard one
+// directory and must not diverge again -- there is one implementation, and the
+// two are pinned against each other in httpapi's TestSafeUploadID test.
+func SafeUploadID(id string) bool {
 	if id == "" || len(id) > 128 {
 		return false
 	}

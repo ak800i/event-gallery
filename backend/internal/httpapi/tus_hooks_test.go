@@ -681,17 +681,27 @@ func TestPreFinishRelaysATransientRefusalAsBackpressure(t *testing.T) {
 // safeUploadID is the guard that keeps a hook payload from selecting a path
 // outside the upload directory, so it is asserted directly: every other check
 // in the handler would mask a weakened predicate here.
+//
+// It must also accept every id the ingest reconciler is willing to adopt. The
+// two predicates guard the same directory, and the completion fence is applied
+// only to ids this one accepts -- so any id the reconciler would take and this
+// would refuse is an upload the fence silently stops protecting.
 func TestSafeUploadIDAcceptsOnlyGeneratedIdentifiers(t *testing.T) {
-	valid := []string{"0123456789abcdef", "0123456789ABCDEF", "a-b_c", strings.Repeat("a", 128)}
+	valid := []string{"0123456789abcdef", "0123456789ABCDEF", "a-b_c", "zz", strings.Repeat("a", 128)}
 	for _, id := range valid {
 		if !safeUploadID(id) {
 			t.Errorf("safeUploadID(%q) = false, want true", id)
 		}
 	}
-	invalid := []string{"", "..", "../x", "a/b", `a\b`, "a.b", "a b", "abc%2f", "zz", strings.Repeat("a", 129)}
+	invalid := []string{"", "..", "../x", "a/b", `a\b`, "a.b", "a b", "abc%2f", strings.Repeat("a", 129)}
 	for _, id := range invalid {
 		if safeUploadID(id) {
 			t.Errorf("safeUploadID(%q) = true, want false", id)
+		}
+	}
+	for _, id := range append(append([]string{}, valid...), invalid...) {
+		if got, want := safeUploadID(id), ingest.SafeUploadID(id); got != want {
+			t.Errorf("safeUploadID(%q) = %v but the reconciler says %v: the fence and the adopter must never disagree", id, got, want)
 		}
 	}
 }

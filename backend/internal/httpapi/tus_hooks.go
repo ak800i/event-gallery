@@ -306,18 +306,14 @@ func preFinishFinal(w http.ResponseWriter, status int, message string) {
 	clientStatusHook(w, false, status, message, 0)
 }
 
-// safeUploadID rejects anything that could escape the upload directory.
+// safeUploadID rejects anything that could escape the upload directory. It is
+// the ingest reconciler's own predicate, deliberately, and not a copy: the
+// reconciler adopts any id it accepts, while the completion fence protects
+// only ids this one accepts, so the moment the two alphabets differ the fence
+// disables itself for every id in the gap. Do not reintroduce a second rule
+// here.
 func safeUploadID(id string) bool {
-	if id == "" || len(id) > 128 {
-		return false
-	}
-	for _, r := range id {
-		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
-		if !isHex && r != '-' && r != '_' {
-			return false
-		}
-	}
-	return true
+	return ingest.SafeUploadID(id)
 }
 
 // newUploadIdentifier returns a URL-safe random id. It is always freshly

@@ -135,8 +135,8 @@ func TestTusProxy_EnforcesUploadConcurrencyPerIP(t *testing.T) {
 	}
 }
 
-// Upload ids must be hex: safeUploadID rejects anything else, and
-// tusUploadIDFromPath would return "" so the handler would never see the job.
+// Upload ids must clear safeUploadID -- the ingest reconciler's own predicate
+// -- or tusUploadIDFromPath returns "" and the handler never sees the job.
 const testUploadID = "a1b2c3"
 
 func TestTusUploadIDFromPathAcceptsOnlyGeneratedIdentifiers(t *testing.T) {
@@ -149,16 +149,23 @@ func TestTusUploadIDFromPathAcceptsOnlyGeneratedIdentifiers(t *testing.T) {
 		"/api/tus",
 		"/api/tus/",
 		"/api/tus/.",
-		"/api/tus/../../etc/passwd",
 		// One path segment can still carry a Windows separator, which
 		// filepath.Join would honour, so path.Base alone is not containment.
 		`/api/tus/..\..\etc\passwd`,
-		"/api/tus/not-hex-id",
+		"/api/tus/dotted.id",
+		"/api/tus/spaced id",
 	}
 	for _, p := range rejected {
 		if got := tusUploadIDFromPath(p); got != "" {
 			t.Errorf("tusUploadIDFromPath(%q) = %q, want empty", p, got)
 		}
+	}
+	// A POSIX traversal is collapsed by path.Base before the predicate ever
+	// sees it, so what comes out is a segment contained in the upload
+	// directory that simply names no upload. Containment is the property being
+	// guarded here; refusing implausible-looking names is not.
+	if got := tusUploadIDFromPath("/api/tus/../../etc/passwd"); got != "passwd" {
+		t.Errorf("tusUploadIDFromPath collapsed a traversal to %q, want the contained segment %q", got, "passwd")
 	}
 }
 
