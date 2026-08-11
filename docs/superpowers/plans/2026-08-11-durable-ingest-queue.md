@@ -3081,7 +3081,7 @@ func (s *Server) handlePreFinishHook(w http.ResponseWriter, r *http.Request, req
 		// an upload that can never complete, on a five-second cadence, forever.
 		slog.Warn("durability barrier refused the upload for good",
 			"operation", "pre_finish", "upload_id", upload.ID, "error", err)
-		preFinishFinal(w, http.StatusConflict, "upload can no longer be completed")
+		preFinishFinal(w, http.StatusGone, "upload can no longer be completed")
 	default:
 		// Saturation, shutdown or an expired budget is backpressure. The
 		// detached operation continues, so the retry will usually find it
@@ -3110,7 +3110,8 @@ func preFinishRetry(w http.ResponseWriter, message string) {
 // truncated source, or a row reconciliation has discarded, leaves the client
 // retrying on a five-second cadence with nothing that could ever tell it to
 // stop. It carries no Retry-After, and no RejectUpload, which tusd honours at
-// pre-create only.
+// pre-create only. status must never be 409 or 423: tus-js-client retries
+// those two by default, so they are not terminal at the browser.
 func preFinishFinal(w http.ResponseWriter, status int, message string) {
 	clientStatusHook(w, false, status, message, 0)
 }
@@ -3145,6 +3146,11 @@ or unknown size, a source that is missing, irregular, or shorter than
 and a job row that does not exist. Transient: ingest unavailable,
 `ErrDurabilityBusy`, `ErrDurabilityClosing`, store and query errors, fsync
 errors, and the expiry or cancellation of the caller's wait.
+
+The final status must not be 409 or 423. tus-js-client's default
+`onShouldRetry` is `!inStatusCategory(status, 400) || status === 409 || status
+=== 423`, so those two are retried exactly like a 5xx and cannot terminate
+anything.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 

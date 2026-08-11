@@ -269,9 +269,10 @@ manager's context to its own deadline, so the work is not wasted, and the
 browser retries. A deterministic one — an upload ID or storage path the app did
 not derive, an incomplete offset, a source that is missing, irregular, or not
 the size that was admitted, or a row that was cancelled, discarded, or never
-existed — is a client-facing 4xx carrying no `Retry-After`, because no retry
-can change it. Without that terminal answer a permanently unpromotable upload
-would be retried on the `Retry-After` cadence forever, including after
+existed — is a client-facing 4xx carrying no `Retry-After`, and never 409 or
+423, which tus-js-client retries by default and which therefore cannot express
+a terminal refusal. Without that terminal answer a permanently unpromotable
+upload would be retried on the `Retry-After` cadence forever, including after
 reconciliation had discarded its row. tusd still emits `post-finish` in either
 case; it is treated only as an idempotent wake signal and never as proof of
 anything.
