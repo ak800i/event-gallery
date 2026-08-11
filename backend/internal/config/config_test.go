@@ -16,6 +16,11 @@ func clearEnv(t *testing.T) {
 		"ALLOWED_IMAGE_MIME_TYPES", "ALLOWED_VIDEO_MIME_TYPES", "GUEST_NAME_MAX_LENGTH", "TZ",
 		"TRUSTED_PROXY_CIDRS", "TRASH_RETENTION_DAYS", "TUS_INCOMPLETE_RETENTION_HOURS",
 		"STORAGE_CLEANUP_INTERVAL_MINUTES",
+		"MEDIA_PROCESSING_WORKERS", "MEDIA_PROCESSING_TIMEOUT_MINUTES",
+		"UPLOAD_DURABILITY_WAIT_SECONDS", "UPLOAD_DURABILITY_WORKERS",
+		"UPLOAD_RETRY_MAX_BACKOFF_MINUTES", "INGEST_RECONCILE_INTERVAL_SECONDS",
+		"INGEST_MIN_FREE_BYTES", "UPLOAD_JOB_RETENTION_DAYS",
+		"UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE",
 	}
 	for _, k := range keys {
 		t.Setenv(k, "")
@@ -200,5 +205,63 @@ func TestValidate_MissingTusHookSecret(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error when TUS_HOOK_SECRET is missing")
+	}
+}
+
+func TestLoad_IngestDefaults(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+	t.Setenv("MAX_UPLOAD_BYTES", "1000")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.MediaProcessingWorkers != 2 {
+		t.Errorf("MediaProcessingWorkers = %d, want 2", cfg.MediaProcessingWorkers)
+	}
+	if cfg.UploadDurabilityWait != 75*time.Second {
+		t.Errorf("UploadDurabilityWait = %v, want 75s", cfg.UploadDurabilityWait)
+	}
+	// Default floor is twice the largest single upload: the incoming copy
+	// plus the permanent copy.
+	if cfg.IngestMinFreeBytes != 2000 {
+		t.Errorf("IngestMinFreeBytes = %d, want 2000", cfg.IngestMinFreeBytes)
+	}
+	if cfg.UploadJobRetention != 30*24*time.Hour {
+		t.Errorf("UploadJobRetention = %v, want 720h", cfg.UploadJobRetention)
+	}
+}
+
+func TestLoad_IngestOverrides(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+	t.Setenv("MEDIA_PROCESSING_WORKERS", "6")
+	t.Setenv("INGEST_MIN_FREE_BYTES", "12345")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.MediaProcessingWorkers != 6 {
+		t.Errorf("MediaProcessingWorkers = %d, want 6", cfg.MediaProcessingWorkers)
+	}
+	if cfg.IngestMinFreeBytes != 12345 {
+		t.Errorf("IngestMinFreeBytes = %d, want 12345", cfg.IngestMinFreeBytes)
+	}
+}
+
+func TestLoad_RejectsDurabilityWaitAboveHookTimeout(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+	t.Setenv("UPLOAD_DURABILITY_WAIT_SECONDS", "120")
+
+	// 75s < 90s < 100s is load-bearing: a budget above the hook timeout means
+	// tusd cuts the request before we can relay a retryable 503.
+	if _, err := Load(); err == nil {
+		t.Fatal("expected a budget above the 90s hook timeout to be rejected")
 	}
 }

@@ -93,6 +93,17 @@ type Config struct {
 	// StorageCleanupInterval controls trash/tus janitor frequency.
 	StorageCleanupInterval time.Duration
 
+	// Durable ingest queue.
+	MediaProcessingWorkers         int
+	MediaProcessingTimeout         time.Duration
+	UploadDurabilityWait           time.Duration
+	UploadDurabilityWorkers        int
+	UploadRetryMaxBackoff          time.Duration
+	IngestReconcileInterval        time.Duration
+	IngestMinFreeBytes             int64
+	UploadJobRetention             time.Duration
+	UploadStatusRateLimitPerMinute int
+
 	// Timezone is informational; TZ should also be set as an OS env var so
 	// the Go runtime and any shelled-out tools (ffmpeg) agree on local time.
 	Timezone string
@@ -127,6 +138,16 @@ func envInt64(key string, def int64) (int64, error) {
 		return 0, fmt.Errorf("invalid integer for %s: %w", key, err)
 	}
 	return n, nil
+}
+
+// envDuration keeps the many duration settings from turning Load() into
+// dozens of lines of identical error plumbing.
+func envDuration(key string, defUnits int, unit time.Duration) (time.Duration, error) {
+	units, err := envInt(key, defUnits)
+	if err != nil {
+		return 0, err
+	}
+	return time.Duration(units) * unit, nil
 }
 
 func envBool(key string, def bool) (bool, error) {
@@ -238,6 +259,36 @@ func Load() (*Config, error) {
 	}
 	cfg.StorageCleanupInterval = time.Duration(cleanupIntervalMinutes) * time.Minute
 
+	if cfg.MediaProcessingWorkers, err = envInt("MEDIA_PROCESSING_WORKERS", 2); err != nil {
+		return nil, err
+	}
+	if cfg.MediaProcessingTimeout, err = envDuration("MEDIA_PROCESSING_TIMEOUT_MINUTES", 60, time.Minute); err != nil {
+		return nil, err
+	}
+	if cfg.UploadDurabilityWait, err = envDuration("UPLOAD_DURABILITY_WAIT_SECONDS", 75, time.Second); err != nil {
+		return nil, err
+	}
+	if cfg.UploadDurabilityWorkers, err = envInt("UPLOAD_DURABILITY_WORKERS", 2); err != nil {
+		return nil, err
+	}
+	if cfg.UploadRetryMaxBackoff, err = envDuration("UPLOAD_RETRY_MAX_BACKOFF_MINUTES", 15, time.Minute); err != nil {
+		return nil, err
+	}
+	if cfg.IngestReconcileInterval, err = envDuration("INGEST_RECONCILE_INTERVAL_SECONDS", 15, time.Second); err != nil {
+		return nil, err
+	}
+	// The free-space floor defaults to twice the largest single upload: the
+	// incoming copy plus the permanent copy.
+	if cfg.IngestMinFreeBytes, err = envInt64("INGEST_MIN_FREE_BYTES", 2*cfg.MaxUploadBytes); err != nil {
+		return nil, err
+	}
+	if cfg.UploadJobRetention, err = envDuration("UPLOAD_JOB_RETENTION_DAYS", 30, 24*time.Hour); err != nil {
+		return nil, err
+	}
+	if cfg.UploadStatusRateLimitPerMinute, err = envInt("UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE", 6000); err != nil {
+		return nil, err
+	}
+
 	cfg.AllowedImageMIMEs = envList("ALLOWED_IMAGE_MIME_TYPES", []string{
 		"image/jpeg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif", "image/avif",
 	})
@@ -249,6 +300,13 @@ func Load() (*Config, error) {
 		return nil, err
 	} else {
 		cfg.GuestNameMaxLength = guestNameMax
+	}
+
+	// 75s app budget < 90s hook timeout < 100s edge window. If the budget is
+	// raised past the hook timeout, tusd cuts the request before we can relay
+	// a 503 and the browser sees an opaque failure instead of backpressure.
+	if cfg.UploadDurabilityWait >= 90*time.Second {
+		return nil, fmt.Errorf("UPLOAD_DURABILITY_WAIT_SECONDS must be below the 90s tusd hook timeout, got %v", cfg.UploadDurabilityWait)
 	}
 
 	if err := cfg.Validate(); err != nil {
