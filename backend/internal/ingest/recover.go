@@ -58,10 +58,12 @@ func (m *Manager) startupRecovery() {
 // finish, and leaving things exactly as they are. It reports whether the
 // inventory pass actually completed, which is what gates readiness.
 func (m *Manager) reconcileOnce() error {
-	// The inventory is read before anything acts, because both steps below
-	// draw their conclusions from the absence of files. On a volume that
-	// cannot be read at all that absence is not evidence, and every stale row
-	// would be closed out at once on the strength of it.
+	// The inventory is read before anything acts, for two reasons.
+	// resolveRowsWithoutFiles draws its conclusions from the absence of files,
+	// and on a volume that cannot be read at all that absence is not evidence:
+	// every stale row would be closed out at once on the strength of it.
+	// sweepCancelled reads no files, but it hands deletions to workers, and a
+	// volume this pass could not read is not one to start removing things on.
 	entries, err := os.ReadDir(m.opts.UploadDir)
 	if err != nil {
 		slog.Warn("cannot read upload directory", "operation", "reconcile", "error", err)
