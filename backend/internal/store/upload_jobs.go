@@ -320,6 +320,28 @@ func (s *Store) DeleteTerminalJobsBefore(ctx context.Context, cutoff int64, limi
 	return res.RowsAffected()
 }
 
+// SampleStoredFilenames returns up to limit stored filenames, used to prove a
+// media volume is actually mounted before anything is deleted. Ordered by
+// rowid so the sample is the oldest rows: an original this run just wrote must
+// never be the evidence that authorizes deleting its own source.
+func (s *Store) SampleStoredFilenames(ctx context.Context, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT stored_filename FROM media_items ORDER BY rowid LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sample stored filenames: %w", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan stored filename: %w", err)
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
 func requireOneRow(res sql.Result) error {
 	n, err := res.RowsAffected()
 	if err != nil {

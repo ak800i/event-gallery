@@ -243,3 +243,34 @@ func claimInto(t *testing.T, s *Store, uploadID, mediaID string, to JobStatus) *
 	}
 	return job
 }
+
+func TestSampleStoredFilenamesTakesOldestRowsFirst(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	// uploaded_at deliberately disagrees with insertion order, so ordering the
+	// sample by time in either direction produces a different answer.
+	base := time.Now()
+	offsets := map[string]time.Duration{"a": -2 * time.Hour, "b": -3 * time.Hour, "c": -time.Hour}
+	for _, id := range []string{"a", "b", "c"} {
+		if err := s.InsertMedia(ctx, sampleMedia(id, id+"-sha", base.Add(offsets[id]))); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+
+	names, err := s.SampleStoredFilenames(ctx, 2)
+	if err != nil {
+		t.Fatalf("sample: %v", err)
+	}
+	// The sample must be the oldest rows and must honour the limit, so an
+	// original this run just wrote can never be the evidence that proves the
+	// volume healthy and authorizes deleting its own upload source.
+	want := []string{"a.jpg", "b.jpg"}
+	if len(names) != len(want) {
+		t.Fatalf("sample = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("sample = %v, want %v", names, want)
+		}
+	}
+}
