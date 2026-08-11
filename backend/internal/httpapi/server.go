@@ -12,6 +12,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"event-gallery/backend/internal/config"
+	"event-gallery/backend/internal/ingest"
 	"event-gallery/backend/internal/media"
 	"event-gallery/backend/internal/ratelimit"
 	"event-gallery/backend/internal/store"
@@ -29,6 +30,8 @@ type Server struct {
 	uploadBandwidth   *ratelimit.KeyedLimiter
 
 	tusProxy *tusReverseProxy
+
+	ingest *ingest.Manager
 
 	cleanupWG sync.WaitGroup
 
@@ -76,6 +79,10 @@ func NewServer(cfg *config.Config, st *store.Store, proc *media.Processor, spaHa
 
 	return s, nil
 }
+
+// SetIngest wires the durable ingest manager after construction, because the
+// manager needs the processor and store that NewServer already holds.
+func (s *Server) SetIngest(m *ingest.Manager) { s.ingest = m }
 
 func max64(a, b int64) int64 {
 	if a > b {

@@ -2,8 +2,11 @@ package ingest
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -227,4 +230,45 @@ func (m *Manager) reconcileOnce() error           { return nil }
 func (m *Manager) startupRecovery() {
 	_ = m.health.Check(m.lifetime)
 	m.ready.Store(true)
+}
+
+// DataPath and InfoPath are the only two paths tusd's filestore derives from
+// an upload id. Deriving them here keeps every absence check consistent.
+func (m *Manager) DataPath(uploadID string) string {
+	return filepath.Join(m.opts.UploadDir, uploadID)
+}
+
+func (m *Manager) InfoPath(uploadID string) string {
+	return filepath.Join(m.opts.UploadDir, uploadID+".info")
+}
+
+// UploadPathsExist reports whether either derived path is already taken.
+func (m *Manager) UploadPathsExist(uploadID string) bool {
+	if _, err := os.Stat(m.DataPath(uploadID)); err == nil {
+		return true
+	}
+	if _, err := os.Stat(m.InfoPath(uploadID)); err == nil {
+		return true
+	}
+	return false
+}
+
+// AdmitCapacity refuses a create that would push either volume under the free
+// space floor. It is deliberately coarse: running out of disk is a transient
+// failure that retries, so approximate accounting is safe.
+func (m *Manager) AdmitCapacity(ctx context.Context, size int64) error {
+	if m.opts.MinFreeBytes <= 0 {
+		return nil
+	}
+	for _, dir := range []string{m.opts.UploadDir, m.processor.MediaDir} {
+		free, err := freeBytes(dir)
+		if err != nil {
+			slog.Warn("could not stat filesystem for admission", "operation", "admit_capacity", "dir", dir, "error", err)
+			continue
+		}
+		if free-size < m.opts.MinFreeBytes {
+			return fmt.Errorf("free space on %s would fall below the floor", dir)
+		}
+	}
+	return nil
 }

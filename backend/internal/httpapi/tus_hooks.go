@@ -2,17 +2,18 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
-	"os"
 	"path"
+	"strconv"
 	"strings"
-	"time"
 
-	"event-gallery/backend/internal/media"
-	"event-gallery/backend/internal/models"
+	"github.com/google/uuid"
+
+	"event-gallery/backend/internal/store"
 )
 
 // The following types mirror the JSON schema tusd sends for HTTP hooks, as
@@ -54,9 +55,14 @@ type tusHookHTTPResponse struct {
 	Header     map[string]string `json:"Header,omitempty"`
 }
 
+type tusHookChangeFileInfo struct {
+	ID string `json:"ID,omitempty"`
+}
+
 type tusHookResponse struct {
-	HTTPResponse *tusHookHTTPResponse `json:"HTTPResponse,omitempty"`
-	RejectUpload bool                 `json:"RejectUpload,omitempty"`
+	HTTPResponse   *tusHookHTTPResponse   `json:"HTTPResponse,omitempty"`
+	RejectUpload   bool                   `json:"RejectUpload,omitempty"`
+	ChangeFileInfo *tusHookChangeFileInfo `json:"ChangeFileInfo,omitempty"`
 }
 
 func rejectHook(w http.ResponseWriter, status int, message string) {
@@ -79,6 +85,27 @@ func allowHook(w http.ResponseWriter) {
 	_ = json.NewEncoder(w).Encode(tusHookResponse{})
 }
 
+// retryHook relays backpressure at admission time. tusd honors RejectUpload
+// only for pre-create, and only when the hook itself answers 2xx and embeds
+// the real response — a non-2xx here would become an opaque 500 at the browser
+// instead of a retryable 503.
+func retryHook(w http.ResponseWriter, retryAfterSeconds int, message string) {
+	resp := tusHookResponse{
+		RejectUpload: true,
+		HTTPResponse: &tusHookHTTPResponse{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       `{"error":"` + message + `"}`,
+			Header: map[string]string{
+				"Content-Type": "application/json",
+				"Retry-After":  strconv.Itoa(retryAfterSeconds),
+			},
+		},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 // handleTusHook is the single endpoint tusd calls for every hook event
 // (pre-create, post-finish, etc., configured via -hooks-http). It is only
 // ever meant to be reachable from tusd itself: tusd is on an internal-only
@@ -87,6 +114,16 @@ func allowHook(w http.ResponseWriter) {
 // original client request (see tus_proxy.go), which tusd copies through
 // via -hooks-http-forward-headers.
 func (s *Server) handleTusHook(w http.ResponseWriter, r *http.Request) {
+	// One absolute deadline for the whole hook, recorded before authentication
+	// and body decode so no later phase can reset it. A non-positive budget
+	// means "unbounded", never "already expired", which would refuse every
+	// upload with a transient error nobody could diagnose.
+	if s.cfg.UploadDurabilityWait > 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), s.cfg.UploadDurabilityWait)
+		defer cancel()
+		r = r.WithContext(ctx)
+	}
+
 	if r.Header.Get(internalProxySecretHeader) != s.cfg.TusHookSecret || s.cfg.TusHookSecret == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized hook caller")
 		return
@@ -100,16 +137,27 @@ func (s *Server) handleTusHook(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Type {
 	case "pre-create":
-		s.handlePreCreateHook(w, req)
+		s.handlePreCreateHook(w, r, req)
+	case "pre-finish":
+		s.handlePreFinishHook(w, r, req)
 	case "post-finish":
-		s.handlePostFinishHook(w, r.Context(), req)
+		// Non-blocking and unordered: treat it only as an idempotent nudge.
+		if s.ingest != nil {
+			s.ingest.Wake()
+		}
+		allowHook(w)
 	default:
 		allowHook(w)
 	}
 }
 
-func (s *Server) handlePreCreateHook(w http.ResponseWriter, req tusHookRequest) {
+func (s *Server) handlePreCreateHook(w http.ResponseWriter, r *http.Request, req tusHookRequest) {
 	upload := req.Event.Upload
+
+	// Deterministic client errors keep their existing 4xx semantics. A
+	// non-positive length is one of them: upload_jobs.expected_size carries a
+	// CHECK (expected_size > 0), so admitting a deferred or negative size would
+	// surface a constraint violation to the guest as an opaque failure.
 	if upload.Size <= 0 {
 		rejectHook(w, http.StatusBadRequest, "upload size must be known and positive")
 		return
@@ -123,99 +171,74 @@ func (s *Server) handlePreCreateHook(w http.ResponseWriter, req tusHookRequest) 
 		rejectHook(w, http.StatusBadRequest, "filename metadata is required")
 		return
 	}
-	allowHook(w)
-}
 
-func (s *Server) handlePostFinishHook(w http.ResponseWriter, ctx context.Context, req tusHookRequest) {
-	upload := req.Event.Upload
-	storagePath := upload.Storage.Path
-	if storagePath == "" {
-		slog.Error("post-finish hook missing storage path", "upload_id", upload.ID)
-		allowHook(w)
+	// Capacity and readiness are backpressure, not client errors.
+	if s.ingest == nil || !s.ingest.Ready() {
+		retryHook(w, 5, "server is still recovering queued uploads")
+		return
+	}
+	if !s.ingest.Health().Healthy() {
+		retryHook(w, 30, "media storage is unavailable")
+		return
+	}
+	if err := s.ingest.AdmitCapacity(r.Context(), upload.Size); err != nil {
+		retryHook(w, 30, "insufficient free space")
 		return
 	}
 
-	originalFilename := sanitizeFilename(upload.MetaData["filename"])
-	guestName := sanitizeGuestName(upload.MetaData["guestName"], s.cfg.GuestNameMaxLength)
-	declaredSHA256 := strings.ToLower(strings.TrimSpace(upload.MetaData["sha256"]))
-	uploaderIP := firstHeaderValue(req.Event.HTTPRequest.Header, clientIPHeader)
-	if uploaderIP == "" {
-		uploaderIP = req.Event.HTTPRequest.RemoteAddr
-	}
-
-	defer cleanupTusInfoFile(storagePath)
-
-	if _, err := os.Stat(storagePath); errors.Is(err, os.ErrNotExist) {
-		// Already processed (e.g. a hook retry after we'd moved the file
-		// away on a previous, successful attempt). Nothing to do.
-		allowHook(w)
-		return
-	}
-
-	result, err := s.processor.Process(ctx, storagePath, originalFilename)
+	uploadID, err := newUploadIdentifier()
 	if err != nil {
-		var unsupported *media.ErrUnsupportedType
-		if errors.As(err, &unsupported) {
-			slog.Warn("rejected upload with unsupported content", "filename", originalFilename, "guest", guestName)
-			_ = s.store.RecordAudit(ctx, models.ActionUpload, actorLabel(guestName), "", originalFilename, "rejected: unsupported or unrecognized file type")
-			_ = os.Remove(storagePath)
-			allowHook(w)
-			return
-		}
-		slog.Error("failed to process upload", "error", err, "filename", originalFilename)
-		writeError(w, http.StatusInternalServerError, "processing failed")
+		retryHook(w, 5, "could not allocate an upload id")
+		return
+	}
+	if s.ingest.UploadPathsExist(uploadID) {
+		retryHook(w, 1, "upload id collision, please retry")
 		return
 	}
 
-	if declaredSHA256 != "" && declaredSHA256 != result.SHA256 {
-		slog.Warn("upload sha256 mismatch, discarding", "filename", originalFilename, "declared", declaredSHA256, "actual", result.SHA256)
-		_ = s.store.RecordAudit(ctx, models.ActionUpload, actorLabel(guestName), "", originalFilename, "rejected: checksum mismatch after upload")
-		_ = s.processor.RemoveMedia(result.StoredFilename, result.ID)
-		allowHook(w)
+	job := &store.UploadJob{
+		UploadID:         uploadID,
+		MediaID:          uuid.NewString(),
+		OriginalFilename: sanitizeFilename(filename),
+		ExpectedSize:     upload.Size,
+		DeclaredSHA256:   strings.ToLower(strings.TrimSpace(upload.MetaData["sha256"])),
+		GuestName:        sanitizeGuestName(upload.MetaData["guestName"], s.cfg.GuestNameMaxLength),
+		UploaderIP:       hookUploaderIP(req),
+	}
+	if err := s.store.CreateUploadingJob(r.Context(), job); err != nil {
+		slog.Error("failed to record upload job", "operation", "pre_create", "error", err)
+		retryHook(w, 5, "could not record the upload")
 		return
 	}
 
-	if existing, err := s.store.GetBySHA256(ctx, result.SHA256); err == nil && existing != nil {
-		slog.Info("duplicate upload ignored", "filename", originalFilename, "existing_id", existing.ID)
-		_ = s.store.RecordAudit(ctx, models.ActionUpload, actorLabel(guestName), existing.ID, originalFilename, "duplicate content ignored (already in gallery)")
-		_ = s.processor.RemoveMedia(result.StoredFilename, result.ID)
-		allowHook(w)
-		return
-	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(tusHookResponse{
+		ChangeFileInfo: &tusHookChangeFileInfo{ID: uploadID},
+	})
+}
 
-	item := &models.MediaItem{
-		ID:               result.ID,
-		OriginalFilename: originalFilename,
-		StoredFilename:   result.StoredFilename,
-		Kind:             result.Kind,
-		MimeType:         result.MimeType,
-		SizeBytes:        result.SizeBytes,
-		SHA256:           result.SHA256,
-		Width:            result.Width,
-		Height:           result.Height,
-		DurationSeconds:  result.DurationSeconds,
-		HasThumbnail:     result.HasThumbnail,
-		CapturedAt:       result.CapturedAt,
-		UploadedAt:       time.Now(),
-		UploaderName:     guestName,
-		UploaderIP:       uploaderIP,
-	}
-	if err := s.store.InsertMedia(ctx, item); err != nil {
-		slog.Error("failed to insert media item", "error", err)
-		_ = s.processor.RemoveMedia(result.StoredFilename, result.ID)
-		writeError(w, http.StatusInternalServerError, "failed to save media item")
-		return
-	}
-	_ = s.store.RecordAudit(ctx, models.ActionUpload, actorLabel(guestName), item.ID, originalFilename, "")
-
+// TODO(task-9): the durability barrier replaces this stub.
+func (s *Server) handlePreFinishHook(w http.ResponseWriter, r *http.Request, req tusHookRequest) {
 	allowHook(w)
 }
 
-func actorLabel(guestName string) string {
-	if guestName == "" {
-		return "anonymous guest"
+// newUploadIdentifier returns a URL-safe random id. It is always freshly
+// generated so no pre-create outcome can ever ask tusd to open an existing
+// data or sidecar path.
+func newUploadIdentifier() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
 	}
-	return guestName
+	return hex.EncodeToString(buf), nil
+}
+
+func hookUploaderIP(req tusHookRequest) string {
+	if ip := firstHeaderValue(req.Event.HTTPRequest.Header, clientIPHeader); ip != "" {
+		return ip
+	}
+	return req.Event.HTTPRequest.RemoteAddr
 }
 
 func firstHeaderValue(headers map[string][]string, key string) string {
@@ -225,16 +248,6 @@ func firstHeaderValue(headers map[string][]string, key string) string {
 		}
 	}
 	return ""
-}
-
-// cleanupTusInfoFile removes tusd's sidecar `.info` metadata file after we
-// have moved the actual upload data out of tusd's storage directory. Both
-// containers share this volume, so the path is valid from here too.
-func cleanupTusInfoFile(dataPath string) {
-	infoPath := dataPath + ".info"
-	if err := os.Remove(infoPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		slog.Warn("failed to remove tusd info file", "path", infoPath, "error", err)
-	}
 }
 
 func sanitizeFilename(name string) string {

@@ -11,6 +11,7 @@ import (
 
 	"event-gallery/backend/internal/config"
 	"event-gallery/backend/internal/db"
+	"event-gallery/backend/internal/ingest"
 	"event-gallery/backend/internal/media"
 	"event-gallery/backend/internal/store"
 )
@@ -22,6 +23,7 @@ type testHarness struct {
 	store  *store.Store
 	cfg    *config.Config
 	proc   *media.Processor
+	ingest *ingest.Manager
 }
 
 func newTestHarness(t *testing.T) *testHarness {
@@ -67,6 +69,14 @@ func newTestHarness(t *testing.T) *testHarness {
 		StorageCleanupInterval:          time.Hour,
 		AllowedImageMIMEs:               []string{"image/jpeg", "image/png"},
 		AllowedVideoMIMEs:               []string{"video/mp4"},
+		MediaProcessingWorkers:          1,
+		MediaProcessingTimeout:          time.Minute,
+		UploadDurabilityWait:            5 * time.Second,
+		UploadDurabilityWorkers:         1,
+		UploadRetryMaxBackoff:           time.Minute,
+		IngestReconcileInterval:         time.Hour, // tests drive reconciliation explicitly
+		UploadJobRetention:              time.Hour,
+		UploadStatusRateLimitPerMinute:  6000,
 	}
 
 	srv, err := NewServer(cfg, st, proc, nil)
@@ -74,7 +84,21 @@ func newTestHarness(t *testing.T) *testHarness {
 		t.Fatalf("new server: %v", err)
 	}
 
-	return &testHarness{server: srv, router: srv.Router(), store: st, cfg: cfg, proc: proc}
+	manager := ingest.New(st, proc, ingest.Options{
+		Workers:           cfg.MediaProcessingWorkers,
+		DurabilityWorkers: cfg.UploadDurabilityWorkers,
+		ProcessingTimeout: cfg.MediaProcessingTimeout,
+		MaxBackoff:        cfg.UploadRetryMaxBackoff,
+		ReconcileInterval: cfg.IngestReconcileInterval,
+		JobRetention:      cfg.UploadJobRetention,
+		UploadDir:         tusDir,
+		Terminator:        srv,
+	})
+	manager.Start()
+	t.Cleanup(manager.Stop)
+	srv.SetIngest(manager)
+
+	return &testHarness{server: srv, router: srv.Router(), store: st, cfg: cfg, proc: proc, ingest: manager}
 }
 
 // withTusTarget rebuilds the server's tus reverse proxy to point at a given

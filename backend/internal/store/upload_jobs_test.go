@@ -225,6 +225,74 @@ func TestRequeueStartupPreservesLateStages(t *testing.T) {
 	}
 }
 
+func TestClaimUploadingForDiscardTakesOnlyUploadingRows(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	seedUploading(t, s, "u1", "m1")
+
+	if err := s.ClaimUploadingForDiscard(ctx, "u1", NowMicros()); err != nil {
+		t.Fatalf("claim for discard: %v", err)
+	}
+	got, err := s.GetUploadJob(ctx, "u1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != JobDiscarding {
+		t.Errorf("status = %q, want discarding", got.Status)
+	}
+	if got.TerminalReason != "cancelled" {
+		t.Errorf("terminal_reason = %q, want cancelled", got.TerminalReason)
+	}
+
+	if err := s.ClaimUploadingForDiscard(ctx, "nope", NowMicros()); err != ErrNotClaimed {
+		t.Errorf("claim of unknown upload = %v, want ErrNotClaimed", err)
+	}
+}
+
+// The janitor decides an upload is an abandoned partial and then deletes its
+// files. If the final PATCH commits `pending` in between, the deletion would
+// destroy a source the queue is about to publish. The conditional claim is
+// what makes that impossible: whichever transition commits first, the other
+// one matches zero rows.
+func TestClaimUploadingForDiscardLosesToACompletedUpload(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	seedUploading(t, s, "u1", "m1")
+
+	if err := s.PromoteToPending(ctx, "u1", NowMicros()); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if err := s.ClaimUploadingForDiscard(ctx, "u1", NowMicros()); err != ErrNotClaimed {
+		t.Fatalf("claim after promotion = %v, want ErrNotClaimed", err)
+	}
+
+	got, err := s.GetUploadJob(ctx, "u1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != JobPending {
+		t.Errorf("status = %q, want pending (the completion must survive)", got.Status)
+	}
+}
+
+func TestClaimUploadingForDiscardKeepsAnExistingReason(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	seedUploading(t, s, "u1", "m1")
+	if _, err := s.DB().ExecContext(ctx,
+		`UPDATE upload_jobs SET terminal_reason = 'unsupported_type' WHERE upload_id = ?`, "u1"); err != nil {
+		t.Fatalf("seed reason: %v", err)
+	}
+
+	if err := s.ClaimUploadingForDiscard(ctx, "u1", NowMicros()); err != nil {
+		t.Fatalf("claim for discard: %v", err)
+	}
+	got, _ := s.GetUploadJob(ctx, "u1")
+	if got.TerminalReason != "unsupported_type" {
+		t.Errorf("terminal_reason = %q, want the original reason preserved", got.TerminalReason)
+	}
+}
+
 // claimInto seeds a job and carries it to the given stage by claiming it, so a
 // test can observe a stage that is only reachable through the queue.
 func claimInto(t *testing.T, s *Store, uploadID, mediaID string, to JobStatus) *UploadJob {

@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"event-gallery/backend/internal/store"
 )
 
 func writeTusPartial(t *testing.T, dir, id string, size, offset int64, age time.Duration) {
@@ -141,5 +143,115 @@ func TestTusCleanupRetainsSidecarsWithMismatchedIdentity(t *testing.T) {
 				t.Fatalf("sidecar that does not describe this upload must never be deleted, got %d DELETEs", calls.Load())
 			}
 		})
+	}
+}
+
+// countingTusd stands in for tusd and records how many DELETEs it received.
+func countingTusd(t *testing.T, h *testHarness, calls *atomic.Int32) {
+	t.Helper()
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(fake.Close)
+	h.cfg.TusInternalURL = fake.URL
+}
+
+func seedUploadingJob(t *testing.T, h *testHarness, uploadID string) {
+	t.Helper()
+	err := h.store.CreateUploadingJob(context.Background(), &store.UploadJob{
+		UploadID:         uploadID,
+		MediaID:          uploadID + "-media",
+		OriginalFilename: "photo.jpg",
+		ExpectedSize:     100,
+	})
+	if err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+}
+
+func TestTusCleanupClaimsTheRowBeforeDeleting(t *testing.T) {
+	h := newTestHarness(t)
+	writeTusPartial(t, h.cfg.TusUploadDir, "stale", 100, 10, 72*time.Hour)
+	seedUploadingJob(t, h, "stale")
+	var calls atomic.Int32
+	countingTusd(t, h, &calls)
+
+	h.server.cleanupIncompleteTusUploads(context.Background())
+
+	if calls.Load() != 1 {
+		t.Fatalf("expected one DELETE, got %d", calls.Load())
+	}
+	job, err := h.store.GetUploadJob(context.Background(), "stale")
+	if err != nil || job == nil {
+		t.Fatalf("job row: %+v %v", job, err)
+	}
+	if job.Status != store.JobDiscarding {
+		t.Errorf("status = %q, want discarding: the row must be claimed before the files go", job.Status)
+	}
+}
+
+// The janitor decides an upload is abandoned, and before it acts the final
+// PATCH lands and the queue takes ownership of the source. Deleting it then
+// would destroy a file the app has already promised to publish.
+func TestTusCleanupWillNotDeleteAnUploadTheQueueOwns(t *testing.T) {
+	for _, status := range []store.JobStatus{store.JobPending, store.JobProcessing} {
+		t.Run(string(status), func(t *testing.T) {
+			h := newTestHarness(t)
+			writeTusPartial(t, h.cfg.TusUploadDir, "stale", 100, 10, 72*time.Hour)
+			seedUploadingJob(t, h, "stale")
+			if _, err := h.store.DB().Exec(`UPDATE upload_jobs SET status = ? WHERE upload_id = ?`, string(status), "stale"); err != nil {
+				t.Fatalf("advance status: %v", err)
+			}
+			var calls atomic.Int32
+			countingTusd(t, h, &calls)
+
+			h.server.cleanupIncompleteTusUploads(context.Background())
+
+			if calls.Load() != 0 {
+				t.Fatalf("an upload the queue owns must never be terminated, got %d DELETEs", calls.Load())
+			}
+			job, _ := h.store.GetUploadJob(context.Background(), "stale")
+			if job.Status != status {
+				t.Errorf("status = %q, want %q untouched", job.Status, status)
+			}
+		})
+	}
+}
+
+// Terminate is the single seam both the janitor and the ingest workers use. It
+// must refuse outright when the queue still needs the source, so a caller that
+// forgets to claim first cannot delete a live upload.
+func TestTerminateRefusesSourcesTheQueueStillNeeds(t *testing.T) {
+	h := newTestHarness(t)
+	seedUploadingJob(t, h, "u1")
+	if _, err := h.store.DB().Exec(`UPDATE upload_jobs SET status = 'pending' WHERE upload_id = ?`, "u1"); err != nil {
+		t.Fatalf("advance status: %v", err)
+	}
+	var calls atomic.Int32
+	countingTusd(t, h, &calls)
+
+	if err := h.server.Terminate(context.Background(), "u1"); err == nil {
+		t.Fatal("Terminate must refuse a pending job")
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("no DELETE may be issued for a refused termination, got %d", calls.Load())
+	}
+}
+
+func TestTerminateRemovesADiscardingSource(t *testing.T) {
+	h := newTestHarness(t)
+	seedUploadingJob(t, h, "u1")
+	if err := h.store.ClaimUploadingForDiscard(context.Background(), "u1", store.NowMicros()); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	var calls atomic.Int32
+	countingTusd(t, h, &calls)
+
+	if err := h.server.Terminate(context.Background(), "u1"); err != nil {
+		t.Fatalf("Terminate: %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected one DELETE, got %d", calls.Load())
 	}
 }

@@ -16,6 +16,7 @@ import (
 
 	"event-gallery/backend/internal/media"
 	"event-gallery/backend/internal/models"
+	"event-gallery/backend/internal/store"
 	"event-gallery/backend/internal/tussidecar"
 )
 
@@ -220,12 +221,31 @@ func (s *Server) cleanupIncompleteTusUploads(ctx context.Context) {
 			continue
 		}
 		attempts++
-		if err := s.terminateTusUpload(ctx, candidate.id); err != nil {
+		// Claim the row before deleting. A status read followed by a DELETE is a
+		// race: the janitor decides an upload is an abandoned partial, and
+		// between that decision and tusd acting on it the final PATCH can
+		// complete and commit `pending`. The conditional claim cannot lose that
+		// race — whichever transition commits first, the other sees zero rows.
+		if err := s.store.ClaimUploadingForDiscard(ctx, candidate.id, store.NowMicros()); err != nil &&
+			!errors.Is(err, store.ErrNotClaimed) {
+			slog.Warn("could not claim incomplete upload for removal", "upload_id", candidate.id, "error", err)
+			continue
+		} else if errors.Is(err, store.ErrNotClaimed) && s.uploadJobExists(ctx, candidate.id) {
+			continue // it completed while we were deciding; leave it to ingest
+		}
+		if err := s.Terminate(ctx, candidate.id); err != nil {
 			slog.Warn("failed to expire incomplete tus upload", "upload_id", candidate.id, "error", err)
 			continue
 		}
 		slog.Info("expired incomplete tus upload", "upload_id", candidate.id, "age_hours", time.Since(candidate.activity).Hours(), "bytes_reclaimed", candidate.size)
 	}
+}
+
+// uploadJobExists reports whether the queue is tracking this upload at all.
+// A rowless partial is legacy residue the janitor may still remove.
+func (s *Server) uploadJobExists(ctx context.Context, uploadID string) bool {
+	job, err := s.store.GetUploadJob(ctx, uploadID)
+	return err != nil || job != nil
 }
 
 func inspectTusCandidate(dir, infoName string) (*tusCandidate, error) {

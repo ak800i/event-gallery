@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -107,6 +108,22 @@ func (s *Server) handleTusProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.tusProxy.proxy.ServeHTTP(w, r)
+}
+
+// Terminate implements ingest.SourceTerminator. Both the incomplete-upload
+// janitor and the ingest workers remove tus files through this one path, so
+// tusd always cleans up its own sidecar and lock state.
+//
+// It refuses to remove a source that a pending or processing job still needs.
+func (s *Server) Terminate(ctx context.Context, uploadID string) error {
+	job, err := s.store.GetUploadJob(ctx, uploadID)
+	if err != nil {
+		return err
+	}
+	if job != nil && (job.Status == store.JobPending || job.Status == store.JobProcessing) {
+		return fmt.Errorf("upload %s is queued for publication and must not be terminated", uploadID)
+	}
+	return s.terminateTusUpload(ctx, uploadID)
 }
 
 // uploadsClosed reports whether the admin-configured upload expiry has

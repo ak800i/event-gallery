@@ -248,6 +248,23 @@ func (s *Store) ReleaseForRetry(ctx context.Context, uploadID, leaseToken string
 	return requireOneRow(res)
 }
 
+// ClaimUploadingForDiscard atomically moves a still-uploading row to discard,
+// so a caller about to delete its files cannot be overtaken by a completion.
+// It returns ErrNotClaimed when the row has already moved on.
+func (s *Store) ClaimUploadingForDiscard(ctx context.Context, uploadID string, now int64) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET status = 'discarding',
+		       terminal_reason = CASE WHEN terminal_reason = '' THEN 'cancelled' ELSE terminal_reason END,
+		       next_attempt_at = ?,
+		       updated_at = ?
+		 WHERE upload_id = ? AND status = 'uploading'`, now, now, uploadID)
+	if err != nil {
+		return fmt.Errorf("claim uploading for discard: %w", err)
+	}
+	return requireOneRow(res)
+}
+
 // RequestCancellation records durable intent. It never reverses a completion:
 // callers must check for pending-or-later first and return 409 instead.
 func (s *Store) RequestCancellation(ctx context.Context, uploadID string, now int64) error {
