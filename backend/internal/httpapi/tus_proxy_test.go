@@ -523,8 +523,68 @@ func TestClientDeleteIsNeverForwardedToTusd(t *testing.T) {
 	doRequest(h, http.MethodDelete, "/api/tus/"+testUploadID, nil) // complete
 	doRequest(h, http.MethodDelete, "/api/tus/c0ffee", nil)        // still uploading
 
+	// tusd re-derives the method from this header in its middleware, before it
+	// routes, so a POST carrying it would reach terminateUpload with the DELETE
+	// interception never having run.
+	override := httptest.NewRequest(http.MethodPost, "/api/tus/"+testUploadID, nil)
+	override.Header.Set("X-HTTP-Method-Override", http.MethodDelete)
+	serveRequest(h, override)
+
 	if forwarded.Load() {
 		t.Fatal("a client DELETE reached tusd")
+	}
+}
+
+func TestMethodOverrideIsRefused(t *testing.T) {
+	h := newTestHarness(t)
+	var forwarded atomic.Bool
+	tusd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer tusd.Close()
+	h.withTusTarget(t, tusd.URL)
+	seedUploadingJobSized(t, h, testUploadID, 100)
+
+	// This proxy routes on r.Method alone, so a request that means one method
+	// and says another has no unambiguous handling here. Refusing it outright
+	// is what keeps every check below reading the same method.
+	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodHead, http.MethodDelete} {
+		req := httptest.NewRequest(method, "/api/tus/"+testUploadID, nil)
+		req.Header.Set("X-HTTP-Method-Override", http.MethodDelete)
+		if rec := serveRequest(h, req); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s carrying an override = %d, want 400", method, rec.Code)
+		}
+	}
+	if forwarded.Load() {
+		t.Error("a request carrying a method override reached tusd")
+	}
+	if job := loadJob(t, h, testUploadID); job.CancellationRequestedAt != nil {
+		t.Error("a refused request must not record cancellation intent")
+	}
+}
+
+func TestNoForwardedRequestCarriesAMethodOverride(t *testing.T) {
+	h := newTestHarness(t)
+	fake, received := newFakeTusd(t)
+	h.withTusTarget(t, fake.URL)
+
+	// Below the handler's own refusal: whatever reaches the director, tusd
+	// must never be handed a method this backend did not authorise. This holds
+	// for every forwarded method, not only the one the handler intercepts.
+	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodHead, http.MethodGet, http.MethodOptions} {
+		req := httptest.NewRequest(method, "/api/tus/"+testUploadID, nil)
+		req.Header.Set("X-HTTP-Method-Override", http.MethodDelete)
+		h.server.tusProxy.proxy.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	if len(*received) == 0 {
+		t.Fatal("nothing reached tusd, so nothing was proven")
+	}
+	for _, got := range *received {
+		if v := got.Header.Get("X-HTTP-Method-Override"); v != "" {
+			t.Errorf("%s reached tusd carrying X-HTTP-Method-Override: %q", got.Method, v)
+		}
 	}
 }
 

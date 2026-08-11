@@ -62,6 +62,30 @@ func TestPromoteToPendingIsBlockedByCancellation(t *testing.T) {
 	}
 }
 
+// The handler checks the status before it asks for cancellation, but the row
+// can move to pending in between. This predicate is the half of that pair that
+// cannot lose the race, so it is worth pinning on its own.
+func TestRequestCancellationLosesToACompletedUpload(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	seedUploading(t, s, "u1", "m1")
+
+	if err := s.PromoteToPending(ctx, "u1", NowMicros()); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if err := s.RequestCancellation(ctx, "u1", NowMicros()); err != ErrNotClaimed {
+		t.Fatalf("cancel after promotion = %v, want ErrNotClaimed", err)
+	}
+
+	got, err := s.GetUploadJob(ctx, "u1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.CancellationRequestedAt != nil {
+		t.Error("a durable completion must not carry cancellation intent")
+	}
+}
+
 func TestClaimIsExclusiveAndFenced(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

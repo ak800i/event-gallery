@@ -38,6 +38,12 @@ const internalProxySecretHeader = "X-Internal-Proxy-Secret"
 // can record an accurate uploader IP for the audit log.
 const clientIPHeader = "X-Event-Gallery-Client-Ip"
 
+// methodOverrideHeader asks a server to treat a POST as some other method.
+// tusd honours it in its middleware, before it routes, so a request that says
+// DELETE here is dispatched to terminate no matter what method this backend
+// saw. Nothing in this system sends it.
+const methodOverrideHeader = "X-HTTP-Method-Override"
+
 type tusReverseProxy struct {
 	proxy      *httputil.ReverseProxy
 	hookSecret string
@@ -57,6 +63,9 @@ func newTusReverseProxy(targetURL, hookSecret string, trustedProxies []netip.Pre
 		req.URL.Path = "/files" + strings.TrimPrefix(req.URL.Path, "/api/tus")
 		req.Header.Set(internalProxySecretHeader, hookSecret)
 		req.Header.Set(clientIPHeader, ip)
+		// Stripped for every forwarded request, whatever the caller decided
+		// above: tusd must only ever act on the method this backend routed on.
+		req.Header.Del(methodOverrideHeader)
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusBadGateway, "upload service temporarily unavailable")
@@ -90,6 +99,15 @@ func (s *Server) handleTusProxy(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r, s.cfg.TrustedProxyCIDRs)
 	if !s.publicLimiter.Allow(ip) {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded, please slow down")
+		return
+	}
+
+	// Everything below routes on r.Method, so a request that means one method
+	// and says another has no single answer here. Refusing it is what keeps the
+	// DELETE interception, the expiry check and the PATCH limits all reading
+	// the same method.
+	if r.Header.Get(methodOverrideHeader) != "" {
+		writeError(w, http.StatusBadRequest, "method override is not supported")
 		return
 	}
 
