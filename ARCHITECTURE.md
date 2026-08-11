@@ -163,7 +163,7 @@ Trash starts as a **soft database status change**. Pending and trashed media use
 - Upload expiry blocks only new upload creation; existing uploads, browsing, and downloads continue.
 - Approval is off by default. When enabled, new completed uploads are admin-only until approved; disabling it atomically publishes all pending media.
 - Per-IP token buckets, PATCH concurrency, and bandwidth controls are process-local and intentionally generous for guests sharing venue NAT.
-- Limiter/session cleanup and one bounded storage janitor run in background goroutines; media processing runs in a durable SQLite-backed queue with leases, capped retries, and a startup reconciler, not inline in tus hooks.
+- Limiter/session cleanup and one bounded storage janitor run in background goroutines; media processing runs in a durable SQLite-backed queue with leases, capped *backoff*, and a startup reconciler, not inline in tus hooks. Retries themselves are unbounded on purpose: no failure count may ever escalate into deleting a source.
 - A guest's source file is never moved or deleted until its artifacts are fsynced and its media row is committed, so no failure between the two loses the upload.
 - `/readyz` reports whether this instance can accept uploads: startup recovery finished and the media volume proven. `/healthz` stays a shallow liveness check, so a storage fault refuses uploads without taking read-only gallery serving offline.
 - The storage janitor purges expired trash and terminates stale incomplete uploads through tusd's internal DELETE endpoint. Retention can be disabled with zero-valued settings.

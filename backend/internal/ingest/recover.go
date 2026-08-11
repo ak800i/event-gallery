@@ -299,16 +299,21 @@ func (m *Manager) reconcileOne(uploadID string) error {
 // produced independent evidence that it is finished.
 //
 // Nothing can prove such a file complete -- that is precisely what the missing
-// sidecar took away -- so the standard here is the one the system already
-// applies to files of unknown standing: an idle partial older than
-// TUS_INCOMPLETE_RETENTION_HOURS is one the retention policy would delete
-// outright. A file that clears that bar and is byte-for-byte unchanged across
-// two consecutive passes is therefore being treated *less* destructively by
-// adoption -- which preserves its bytes as a gallery original before removing
-// the source -- than by the policy that already governs it. What this rules
-// out is the case the policy never sanctioned: a transfer still in progress,
-// or bytes a faulted mount has only just handed back, being published at
-// whatever length one pass happened to see and then deleted.
+// sidecar took away -- so the standard here is borrowed from the one the
+// retention policy applies to files of unknown standing. Note the borrowing is
+// by analogy, not by precedent: the janitor enumerates .info entries and needs
+// a parseable sidecar, so it cannot see this file at all, and its status quo is
+// "sits intact forever" rather than "gets deleted". Adoption is the more
+// destructive option here, which is why the bar is evidence rather than age
+// alone. A file older than TUS_INCOMPLETE_RETENTION_HOURS that is also
+// byte-for-byte unchanged across two consecutive passes has stopped being
+// written to by any measure available to us. What this rules out is the case
+// no policy ever sanctioned: a transfer still in progress, or bytes a faulted
+// mount has only just handed back, being published at whatever length one pass
+// happened to see and then deleted.
+//
+// Known limit: the witness reads size and mtime, so a mount that returns a
+// truncated file with its original metadata intact would clear both gates.
 //
 // The two-pass comparison mirrors the incomplete-upload janitor's re-read
 // immediately before its DELETE, and for the same reason: one look at a file
