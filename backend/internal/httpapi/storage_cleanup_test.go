@@ -14,6 +14,12 @@ import (
 
 func writeTusPartial(t *testing.T, dir, id string, size, offset int64, age time.Duration) {
 	t.Helper()
+	writeTusPartialWithSidecar(t, dir, id, size, offset, age, nil)
+}
+
+// mutate, when non-nil, corrupts the sidecar before it is written.
+func writeTusPartialWithSidecar(t *testing.T, dir, id string, size, offset int64, age time.Duration, mutate func(info map[string]any)) {
+	t.Helper()
 	dataPath := filepath.Join(dir, id)
 	infoPath := dataPath + ".info"
 	if err := os.WriteFile(dataPath, make([]byte, offset), 0o640); err != nil {
@@ -22,6 +28,9 @@ func writeTusPartial(t *testing.T, dir, id string, size, offset int64, age time.
 	info := map[string]any{
 		"ID": id, "Size": size, "SizeIsDeferred": false,
 		"Storage": map[string]any{"Type": "filestore", "Path": dataPath, "InfoPath": infoPath},
+	}
+	if mutate != nil {
+		mutate(info)
 	}
 	raw, _ := json.Marshal(info)
 	if err := os.WriteFile(infoPath, raw, 0o640); err != nil {
@@ -97,5 +106,40 @@ func TestTusCleanupUsesDataFileActivity(t *testing.T) {
 	h.server.cleanupIncompleteTusUploads(context.Background())
 	if calls.Load() != 0 {
 		t.Fatal("recent data-file activity must prevent expiration")
+	}
+}
+
+func TestTusCleanupRetainsSidecarsWithMismatchedIdentity(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(dir string, info map[string]any)
+	}{
+		{"id", func(dir string, info map[string]any) { info["ID"] = "someone-else" }},
+		{"path", func(dir string, info map[string]any) {
+			info["Storage"].(map[string]any)["Path"] = filepath.Join(dir, "someone-else")
+		}},
+		{"infopath", func(dir string, info map[string]any) {
+			info["Storage"].(map[string]any)["InfoPath"] = filepath.Join(dir, "someone-else.info")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTestHarness(t)
+			dir := h.cfg.TusUploadDir
+			writeTusPartialWithSidecar(t, dir, "stale", 100, 10, 72*time.Hour, func(info map[string]any) {
+				tc.mutate(dir, info)
+			})
+			var calls atomic.Int32
+			fakeTusd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer fakeTusd.Close()
+			h.cfg.TusInternalURL = fakeTusd.URL
+			h.server.cleanupIncompleteTusUploads(context.Background())
+			if calls.Load() != 0 {
+				t.Fatalf("sidecar that does not describe this upload must never be deleted, got %d DELETEs", calls.Load())
+			}
+		})
 	}
 }

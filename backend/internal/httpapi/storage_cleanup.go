@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 
 	"event-gallery/backend/internal/media"
 	"event-gallery/backend/internal/models"
+	"event-gallery/backend/internal/tussidecar"
 )
 
 var errMediaNotTrashed = errors.New("media must be trashed before permanent deletion")
@@ -170,19 +170,7 @@ func (s *Server) purgeExpiredTrash(ctx context.Context) {
 const (
 	maxTusScanEntries = 10000
 	maxTusDeletes     = 100
-	maxTusSidecarSize = 64 * 1024
 )
-
-type tusFileInfo struct {
-	ID             string `json:"ID"`
-	Size           int64  `json:"Size"`
-	SizeIsDeferred bool   `json:"SizeIsDeferred"`
-	Storage        struct {
-		Type     string `json:"Type"`
-		Path     string `json:"Path"`
-		InfoPath string `json:"InfoPath"`
-	} `json:"Storage"`
-}
 
 type tusCandidate struct {
 	id       string
@@ -253,24 +241,14 @@ func inspectTusCandidate(dir, infoName string) (*tusCandidate, error) {
 	if !infoStat.Mode().IsRegular() {
 		return nil, fmt.Errorf("sidecar is not a regular file")
 	}
-	file, err := os.Open(infoPath)
+	info, err := tussidecar.Parse(infoPath)
 	if err != nil {
-		return nil, err
-	}
-	raw, err := io.ReadAll(io.LimitReader(file, maxTusSidecarSize+1))
-	file.Close()
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) > maxTusSidecarSize {
-		return nil, fmt.Errorf("sidecar exceeds %d bytes", maxTusSidecarSize)
-	}
-	var info tusFileInfo
-	if err := json.Unmarshal(raw, &info); err != nil {
 		return nil, err
 	}
 	dataPath := filepath.Join(dir, id)
-	if info.ID != id || info.Size <= 0 || info.SizeIsDeferred || info.Storage.Type != "filestore" || filepath.Clean(info.Storage.Path) != filepath.Clean(dataPath) || filepath.Clean(info.Storage.InfoPath) != filepath.Clean(infoPath) {
+	if info.ID != id ||
+		filepath.Clean(info.StoragePath) != filepath.Clean(dataPath) ||
+		filepath.Clean(info.StorageInfoPath) != filepath.Clean(infoPath) {
 		return nil, fmt.Errorf("sidecar identity/storage mismatch")
 	}
 	dataStat, err := os.Lstat(dataPath)
