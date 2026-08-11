@@ -21,8 +21,8 @@
 - Transient failures retry indefinitely with capped backoff. There is no failure count that causes deletion.
 - Timing inequality that must hold: `75s app budget < 90s hook timeout < 100s edge window`.
 - Go is not installed on the developer workstation. Run backend commands inside the toolchain image from the repo root:
-  `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./... -race`
-  If Go is available locally, run the equivalent from `backend/` directly. CI runs `go test ./... && go vet ./... && go build ./cmd/server`.
+  `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./... -race`
+  Use the Debian-based `golang:1.25` image, **not** `golang:1.25-alpine`: `-race` requires cgo and a C toolchain, and the Alpine image ships no compiler. Without it every `-race` command in this plan fails with "race is only supported on ..."/missing gcc. Plain (non-race) runs work on either image. CI runs `go test ./... && go vet ./... && go build ./cmd/server`.
 - Commit after every task. Use Conventional Commit prefixes (`feat:`, `fix:`, `test:`, `chore:`).
 - Code blocks show function bodies, not whole files. When a step adds a function to an existing file, add the imports it needs and remove any that become unused; `go build` will tell you which.
 - Several existing tests assert behavior this plan deliberately removes. Each such task has an explicit step listing them. Do not "fix" them by restoring the old behavior.
@@ -974,7 +974,7 @@ func requireOneRow(res sql.Result) error {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/store/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/store/ -race -v`
 Expected: PASS, including the pre-existing store tests.
 
 - [ ] **Step 5: Commit**
@@ -1346,6 +1346,8 @@ package media
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -1446,10 +1448,33 @@ func (p *Processor) PrepareOriginal(ctx context.Context, req PrepareRequest) err
 	if err := FsyncDir(p.OriginalsDir()); err != nil {
 		return err
 	}
+	// A worker whose attempt was cancelled must not publish an artifact after
+	// its successor may already have cleaned up.
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
 		return fmt.Errorf("rename original into place: %w", err)
 	}
 	return FsyncDir(p.OriginalsDir())
+}
+
+// SHA256FileContext hashes a file, honoring cancellation. The whole-file hash
+// of a multi-gigabyte upload is long enough that a shutdown must be able to
+// interrupt it.
+func SHA256FileContext(ctx context.Context, path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	sum := sha256.New()
+	if err := copyWithContext(ctx, sum, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 // VerifyOriginal proves a stored original is the exact content we expect.
@@ -1501,7 +1526,7 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) error {
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/media/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/media/ -race -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1705,7 +1730,9 @@ func NewHealthGate(st *store.Store, proc *media.Processor, sampleSize int) *Heal
 		sampleSize = 8
 	}
 	g := &HealthGate{store: st, processor: proc, sampleSize: sampleSize}
-	g.healthy.Store(true)
+	// Starts closed. Nothing may be deleted until a check has actually proven
+	// the media volume is mounted.
+	g.healthy.Store(false)
 	return g
 }
 
@@ -1752,7 +1779,7 @@ func (g *HealthGate) setHealthy(now bool) {
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/ingest/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/ingest/ -race -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -1793,6 +1820,15 @@ package ingest
 
 import (
 	"context"
+	"testing"
+	"time"
+)
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -1970,8 +2006,14 @@ func (m *Manager) leaseDuration() time.Duration {
 	return m.opts.ProcessingTimeout + m.opts.ReconcileInterval
 }
 
-// Start launches the pool.
+// Start runs the startup inventory synchronously and then launches the pool.
+// Readiness is therefore true the moment Start returns, which is what the
+// rollout requires: every valid pre-upgrade sidecar is adopted before the app
+// reports ready. Callers should already be serving HTTP so /healthz and the
+// gallery stay available while this runs.
 func (m *Manager) Start() {
+	m.startupRecovery()
+
 	for i := 0; i < m.opts.Workers; i++ {
 		m.wg.Add(1)
 		go func(worker int) {
@@ -2029,8 +2071,6 @@ func (m *Manager) runWorker(worker int) {
 func (m *Manager) runReconciler() {
 	ticker := time.NewTicker(m.opts.ReconcileInterval)
 	defer ticker.Stop()
-
-	m.startupRecovery()
 
 	for {
 		select {
@@ -2097,7 +2137,7 @@ func (r *durabilityRegistry) wait() { r.wg.Wait() }
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/ingest/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/ingest/ -race -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -2262,9 +2302,10 @@ type tusHookResponse struct {
 	ChangeFileInfo *tusHookChangeFileInfo `json:"ChangeFileInfo,omitempty"`
 }
 
-// retryHook relays backpressure. tusd only honors a chosen status code when
-// the hook itself answers 2xx and embeds the real response, so a non-2xx here
-// would become an opaque 500 at the browser instead of a retryable 503.
+// retryHook relays backpressure at admission time. tusd honors RejectUpload
+// only for pre-create, and only when the hook itself answers 2xx and embeds
+// the real response — a non-2xx here would become an opaque 500 at the browser
+// instead of a retryable 503.
 func retryHook(w http.ResponseWriter, retryAfterSeconds int, message string) {
 	resp := tusHookResponse{
 		RejectUpload: true,
@@ -2499,7 +2540,7 @@ Run `go get golang.org/x/sys@latest` inside the toolchain container if that modu
 
 - [ ] **Step 8: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/httpapi/ ./internal/ingest/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/httpapi/ ./internal/ingest/ -race -v`
 Expected: PASS.
 
 - [ ] **Step 9: Commit**
@@ -2563,7 +2604,6 @@ func seedCompleteUpload(t *testing.T, m *Manager, st *store.Store, uploadID stri
 func TestEnsureDurableCommitsPending(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	m := New(st, proc, testOptions(t))
-	m.Start()
 	defer m.Stop()
 
 	seedCompleteUpload(t, m, st, "u1", []byte("payload"))
@@ -2591,7 +2631,6 @@ func TestEnsureDurableCommitsPending(t *testing.T) {
 func TestEnsureDurableIsIdempotent(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	m := New(st, proc, testOptions(t))
-	m.Start()
 	defer m.Stop()
 
 	seedCompleteUpload(t, m, st, "u1", []byte("payload"))
@@ -2605,7 +2644,6 @@ func TestEnsureDurableIsIdempotent(t *testing.T) {
 func TestEnsureDurableCommitsEvenAfterCallerGivesUp(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	m := New(st, proc, testOptions(t))
-	m.Start()
 	defer m.Stop()
 
 	seedCompleteUpload(t, m, st, "u1", []byte("payload"))
@@ -2630,7 +2668,6 @@ func TestEnsureDurableCommitsEvenAfterCallerGivesUp(t *testing.T) {
 func TestEnsureDurableRefusesCancelledUpload(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	m := New(st, proc, testOptions(t))
-	m.Start()
 	defer m.Stop()
 
 	seedCompleteUpload(t, m, st, "u1", []byte("payload"))
@@ -2642,6 +2679,8 @@ func TestEnsureDurableRefusesCancelledUpload(t *testing.T) {
 	}
 }
 ```
+
+Every test in this package that drives the queue by hand — `EnsureDurable`, `claimAndRunOnce`, `reconcileOnce` — deliberately does **not** call `m.Start()`. `New` creates the lifetime context, so all three work on an unstarted manager, and starting the pool would let a worker claim the job first and race the assertions. `defer m.Stop()` is still needed to wait for detached durability goroutines.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -2772,7 +2811,14 @@ func (m *Manager) makeDurable(ctx context.Context, uploadID string) error {
 	if job == nil {
 		return fmt.Errorf("no upload job for %s", uploadID)
 	}
-	if job.Status != store.JobUploading {
+	switch job.Status {
+	case store.JobUploading:
+		// Needs the barrier; continue below.
+	case store.JobDiscarding, store.JobDiscarded:
+		// Reporting success here would tell the browser its upload is safe
+		// while the discard worker is removing it.
+		return fmt.Errorf("upload %s is being discarded", uploadID)
+	default:
 		return nil // already durable; nothing to do
 	}
 
@@ -2818,24 +2864,24 @@ func (s *Server) handlePreFinishHook(w http.ResponseWriter, r *http.Request, req
 
 	upload := req.Event.Upload
 	if s.ingest == nil {
-		retryHook(w, 5, "ingest is not ready")
+		preFinishRetry(w, "ingest is not ready")
 		return
 	}
 	if upload.ID == "" || !safeUploadID(upload.ID) {
-		rejectHook(w, http.StatusBadRequest, "invalid upload id")
+		preFinishRetry(w, "invalid upload id")
 		return
 	}
 	if req.Event.Upload.Storage.Type != "filestore" {
-		rejectHook(w, http.StatusBadRequest, "unsupported storage backend")
+		preFinishRetry(w, "unsupported storage backend")
 		return
 	}
 	// The hook must be talking about the path we derive, not one it chose.
 	if filepath.Clean(upload.Storage.Path) != filepath.Clean(s.ingest.DataPath(upload.ID)) {
-		rejectHook(w, http.StatusBadRequest, "unexpected storage path")
+		preFinishRetry(w, "unexpected storage path")
 		return
 	}
 	if upload.Size <= 0 || upload.Offset != upload.Size {
-		rejectHook(w, http.StatusBadRequest, "upload is not complete")
+		preFinishRetry(w, "upload is not complete")
 		return
 	}
 
@@ -2847,8 +2893,30 @@ func (s *Server) handlePreFinishHook(w http.ResponseWriter, r *http.Request, req
 		// operation continues, so the retry will usually find it already done.
 		slog.Warn("durability barrier did not complete within the request budget",
 			"operation", "pre_finish", "upload_id", upload.ID, "error", err)
-		retryHook(w, 5, "upload is still being persisted, please retry")
+		preFinishRetry(w, "upload is still being persisted, please retry")
 	}
+}
+
+// preFinishRetry is the only failure response pre-finish has. tusd ignores
+// RejectUpload for this hook — the upload is already written and cannot be
+// rejected here — and merges HTTPResponse into the final PATCH response. So
+// every failure is reported as retryable backpressure, and it is the
+// completion fence, not this status, that stops a false success. Nothing is
+// lost either way: an upload we refuse to promote is picked up later by
+// reconciliation.
+func preFinishRetry(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(tusHookResponse{
+		HTTPResponse: &tusHookHTTPResponse{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       `{"error":"` + message + `"}`,
+			Header: map[string]string{
+				"Content-Type": "application/json",
+				"Retry-After":  "5",
+			},
+		},
+	})
 }
 
 // safeUploadID rejects anything that could escape the upload directory.
@@ -2870,7 +2938,7 @@ Add `"path/filepath"` and `"context"` to the imports.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/ingest/ ./internal/httpapi/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/ingest/ ./internal/httpapi/ -race -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -3012,7 +3080,17 @@ Add to `tus_proxy.go`:
 // would be truthful, and an unnecessary retry is always cheaper than a false
 // success.
 func (s *Server) fenceCompletedUpload(w http.ResponseWriter, r *http.Request, uploadID string) bool {
-	if s.ingest == nil || uploadID == "" {
+	if s.ingest == nil {
+		return false
+	}
+	// Before the startup inventory finishes we cannot tell a rowless orphan
+	// from an upload we have not inventoried yet, so nothing is forwarded.
+	if !s.ingest.Ready() {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "server is still recovering queued uploads")
+		return true
+	}
+	if uploadID == "" {
 		return false
 	}
 	job, err := s.store.GetUploadJob(r.Context(), uploadID)
@@ -3030,7 +3108,12 @@ func (s *Server) fenceCompletedUpload(w http.ResponseWriter, r *http.Request, up
 		return false // still uploading; let the PATCH through
 	}
 
-	if err := s.ingest.EnsureDurable(r.Context(), uploadID); err == nil {
+	// Bound the wait with the same budget the hook uses. A proxied HEAD or
+	// PATCH has no deadline of its own, and the operation it joins is bounded
+	// by the processing timeout, so without this the client could hang.
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.UploadDurabilityWait)
+	defer cancel()
+	if err := s.ingest.EnsureDurable(ctx, uploadID); err == nil {
 		return false // now durable; forwarding is safe
 	}
 	w.Header().Set("Retry-After", "5")
@@ -3059,8 +3142,14 @@ func (s *Server) handleTusDelete(w http.ResponseWriter, r *http.Request, uploadI
 		writeError(w, http.StatusConflict, "upload already completed and cannot be cancelled")
 		return
 	}
-	if err := s.store.RequestCancellation(r.Context(), uploadID, store.NowMicros()); err != nil && err != store.ErrNotClaimed {
-		writeError(w, http.StatusInternalServerError, "could not record cancellation")
+	if err := s.store.RequestCancellation(r.Context(), uploadID, store.NowMicros()); err != nil {
+		if !errors.Is(err, store.ErrNotClaimed) {
+			writeError(w, http.StatusInternalServerError, "could not record cancellation")
+			return
+		}
+		// Promotion won the race between our read and this write. The upload is
+		// durable now, so the answer is the same as if we had seen it above.
+		writeError(w, http.StatusConflict, "upload already completed and cannot be cancelled")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -3113,14 +3202,14 @@ Do **not** enable tusd's `pre-terminate` hook. It would exist to stop a client f
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/httpapi/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/httpapi/ -race -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add backend/internal/httpapi/
-git commit -m "feat: fence completions and gate tus termination behind leases"
+git commit -m "feat: fence completions and refuse client terminations"
 ```
 
 ---
@@ -3170,7 +3259,6 @@ func drainQueue(t *testing.T, m *Manager) {
 func TestPublishDeletesSourceOnlyAfterCommit(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	m := New(st, proc, testOptions(t))
-	m.Start()
 	defer m.Stop()
 
 	payload := jpegFixture(t)
@@ -3200,17 +3288,22 @@ func TestTransientFailureNeverDeletesTheSource(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	opts := testOptions(t)
 	m := New(st, proc, opts)
-	m.Start()
 	defer m.Stop()
 
 	seedCompleteUpload(t, m, st, "u1", jpegFixture(t))
 	_ = m.EnsureDurable(context.Background(), "u1")
 
-	// Make the media volume unwritable so preparation fails transiently.
-	if err := os.Chmod(proc.OriginalsDir(), 0o500); err != nil {
-		t.Skipf("cannot simulate a read-only volume here: %v", err)
+	// Make preparation fail transiently. A regular file where the originals
+	// directory must be makes every create and rename fail with ENOTDIR, which
+	// works regardless of uid — chmod would not, because the test container
+	// runs as root and root bypasses directory permission bits.
+	originals := proc.OriginalsDir()
+	if err := os.RemoveAll(originals); err != nil {
+		t.Fatalf("clear originals: %v", err)
 	}
-	defer os.Chmod(proc.OriginalsDir(), 0o750)
+	if err := os.WriteFile(originals, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("block originals dir: %v", err)
+	}
 
 	_, _ = m.claimAndRunOnce()
 
@@ -3229,7 +3322,6 @@ func TestTransientFailureNeverDeletesTheSource(t *testing.T) {
 func TestChecksumMismatchDiscardsBeforeAnyArtifactExists(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	m := New(st, proc, testOptions(t))
-	m.Start()
 	defer m.Stop()
 
 	payload := jpegFixture(t)
@@ -3262,7 +3354,6 @@ func TestChecksumMismatchDiscardsBeforeAnyArtifactExists(t *testing.T) {
 func TestDuplicateResolutionValidatesTheSurvivingOriginal(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	m := New(st, proc, testOptions(t))
-	m.Start()
 	defer m.Stop()
 
 	payload := jpegFixture(t)
@@ -3494,7 +3585,7 @@ func (m *Manager) prepareAndPublish(ctx context.Context, job *store.UploadJob) e
 		return &clientRejection{reason: "unsupported_type", auditDetail: "rejected: unsupported or unrecognized file type"}
 	}
 
-	sum, err := media.SHA256File(sourcePath)
+	sum, err := media.SHA256FileContext(ctx, sourcePath)
 	if err != nil {
 		return fmt.Errorf("hash source: %w", err)
 	}
@@ -3586,11 +3677,9 @@ func (m *Manager) prepareAndPublish(ctx context.Context, job *store.UploadJob) e
 // media row is committed. This is the only path that may delete a source
 // after a successful publication.
 func (m *Manager) runCleanup(job *store.UploadJob) {
-	if !m.health.Healthy() {
-		slog.Warn("skipping cleanup while storage health is open", "operation", "cleanup", "upload_id", job.UploadID)
+	if !m.deletionAllowed(job) {
 		return
 	}
-
 	if job.ResultMediaID != "" && job.ResultMediaID != job.MediaID {
 		if !m.removeArtifactsIfUnowned(job) {
 			return
@@ -3601,13 +3690,28 @@ func (m *Manager) runCleanup(job *store.UploadJob) {
 
 // runDiscard terminates a rejected or cancelled upload.
 func (m *Manager) runDiscard(job *store.UploadJob) {
-	if !m.health.Healthy() {
+	if !m.deletionAllowed(job) {
 		return
 	}
 	if !m.removeArtifactsIfUnowned(job) {
 		return
 	}
 	m.finishBySourceRemoval(job, store.JobDiscarded, job.TerminalReason)
+}
+
+// deletionAllowed re-checks storage health against the filesystem rather than
+// reading the cached flag, because a volume that disappeared since the last
+// reconcile tick must not produce a cascade of deletions. On refusal the lease
+// is released so the job is retried in seconds instead of after the full lease
+// duration.
+func (m *Manager) deletionAllowed(job *store.UploadJob) bool {
+	if err := m.health.Check(m.lifetime); err != nil {
+		slog.Warn("refusing to delete while storage health is unproven",
+			"operation", "cleanup", "upload_id", job.UploadID, "error", err)
+		m.retryCleanup(job, err)
+		return false
+	}
+	return true
 }
 
 // removeArtifactsIfUnowned deletes this job's own artifacts only after proving
@@ -3659,14 +3763,18 @@ func (m *Manager) finishBySourceRemoval(job *store.UploadJob, status store.JobSt
 		m.retryCleanup(job, err)
 		return
 	}
-	// tusd's 204, 404, or 410 is a prompt to verify, not proof.
+	// tusd's 204, 404, or 410 is a prompt to verify, not proof. The data file
+	// is the proof: it holds the bytes. A lingering sidecar is tusd metadata
+	// we are not allowed to unlink ourselves, so it is logged for the janitor
+	// rather than blocking — otherwise a half-terminated upload would retry
+	// forever, hold its job open, and permanently block purge of its media row.
 	if _, err := os.Stat(dataPath); err == nil {
 		m.retryCleanup(job, errors.New("source still present after termination"))
 		return
 	}
 	if _, err := os.Stat(m.InfoPath(job.UploadID)); err == nil {
-		m.retryCleanup(job, errors.New("sidecar still present after termination"))
-		return
+		slog.Warn("tus sidecar outlived its data file; leaving it for the janitor",
+			"operation", "cleanup", "upload_id", job.UploadID)
 	}
 	if err := m.store.FinishJob(m.lifetime, job.UploadID, job.LeaseToken, status, reason, store.NowMicros()); err != nil {
 		slog.Error("failed to commit terminal state", "operation", "cleanup", "upload_id", job.UploadID, "error", err)
@@ -3771,25 +3879,25 @@ func (p *Processor) Derive(ctx context.Context, finalPath, id string, kind model
 
 A duplicate upload validates the authoritative original, records it as its `result_media_id`, and only then deletes its own source and prepared copy. If that authoritative row were purged in between, both copies would be gone. Admin bulk-purge and the retention sweep can both do exactly that today.
 
-In `backend/internal/httpapi/storage_cleanup.go`, guard `purgeMedia` before it stages anything:
+The guard belongs in the delete predicate rather than in a precheck, so it is evaluated in the same transaction that removes the row. In `backend/internal/store/purge.go`, extend the `DELETE` inside `PurgeTrashed`:
 
 ```go
-	if referenced, err := s.store.MediaIsReferencedByActiveJob(ctx, item.ID); err != nil {
-		return fmt.Errorf("check active job references: %w", err)
-	} else if referenced {
-		// An in-flight duplicate is about to depend on this original. Purging
-		// now would leave it with nothing to converge on.
-		slog.Info("deferring purge while an upload job still references this media",
-			"operation", "purge", "media_id", item.ID)
-		return nil
-	}
+		result, err := tx.ExecContext(ctx, `DELETE FROM media_items
+			WHERE id = ? AND stored_filename = ? AND status = 'trashed'
+			  AND NOT EXISTS (
+			      SELECT 1 FROM upload_jobs
+			       WHERE result_media_id = media_items.id
+			         AND status NOT IN ('complete', 'discarded')
+			  )`, item.ID, item.StoredFilename)
 ```
 
-Add a test in `backend/internal/httpapi/purge_test.go` proving a purge is skipped while a non-terminal job references the id and proceeds once that job reaches `complete`.
+No other change is needed: `PurgeTrashed` already returns only the IDs it actually deleted, and `purgeMedia` already calls `stage.Restore()` for every staged item missing from that set, so a deferred row keeps its files. `MediaIsReferencedByActiveJob` remains useful for tests and logging.
+
+Add a test in `backend/internal/httpapi/purge_test.go` proving a purge is skipped while a non-terminal job references the id, that the item's files are restored rather than lost, and that the purge succeeds once that job reaches `complete`.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/ingest/ ./internal/store/ ./internal/httpapi/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/ingest/ ./internal/store/ ./internal/httpapi/ -race -v`
 Expected: PASS. `TestTransientFailureNeverDeletesTheSource` is the regression test for the production incident — if it fails, stop and fix before continuing.
 
 - [ ] **Step 8: Commit**
@@ -3810,8 +3918,8 @@ git commit -m "feat: publish uploads transactionally and delete sources only aft
 - Modify: `backend/internal/httpapi/server.go` (add `/readyz`)
 
 **Interfaces:**
-- Consumes: `tussidecar.Parse`, `store.RequeueStartup`, `store.CreateUploadingJob`, `store.PromoteToPending`.
-- Produces: `func (m *Manager) startupRecovery()`, `func (m *Manager) reconcileOnce()`, `func (s *Server) handleReady(w http.ResponseWriter, r *http.Request)`.
+- Consumes: `tussidecar.Parse`, `store.RequeueStartup`, `store.CreateUploadingJob`, `Manager.EnsureDurable`.
+- Produces: `func (m *Manager) startupRecovery()`, `func (m *Manager) reconcileOnce()`, `func (m *Manager) sweepCancelled(idleFor time.Duration)`, `func (s *Store) ClaimCancelledForDiscard(...) (int64, error)`, `func (s *Store) ListStaleUploading(ctx context.Context, idleBefore int64, limit int) ([]string, error)`, and `func (s *Server) handleReady(w http.ResponseWriter, r *http.Request)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3908,11 +4016,59 @@ func TestCancelledUploadIsSweptIntoDiscard(t *testing.T) {
 		t.Fatalf("cancel: %v", err)
 	}
 
-	m.reconcileOnce()
+	// Sweep with a zero idle window; the production reconciler waits one
+	// interval so it cannot race an upload that is still being written.
+	m.sweepCancelled(0)
 
 	got, _ := st.GetUploadJob(context.Background(), "u1")
 	if got.Status != store.JobDiscarding {
 		t.Errorf("status = %q, want discarding", got.Status)
+	}
+}
+
+func TestAdoptsCompletedUploadWithNoSidecar(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+
+	// Exactly the residue the old ingest path left behind: it deleted the
+	// sidecar before its failure branch returned, so the complete data file
+	// survived alone.
+	payload := jpegFixture(t)
+	if err := os.WriteFile(m.DataPath("orphan"), payload, 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+
+	m.reconcileOnce()
+
+	job, err := st.GetUploadJob(context.Background(), "orphan")
+	if err != nil || job == nil {
+		t.Fatalf("a sidecar-less complete upload must still be adopted: %+v %v", job, err)
+	}
+	if job.Status != store.JobPending {
+		t.Errorf("status = %q, want pending", job.Status)
+	}
+}
+
+func TestUntrustworthySidecarIsLeftAlone(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+
+	payload := jpegFixture(t)
+	if err := os.WriteFile(m.DataPath("mixed"), payload, 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	// A sidecar naming a different upload must never supply this file's
+	// metadata: a checksum from the wrong upload would turn a good file into a
+	// deterministic rejection and get it discarded.
+	writeSidecarFor(t, m, "mixed", "someone-else", int64(len(payload)))
+
+	m.reconcileOnce()
+
+	if job, _ := st.GetUploadJob(context.Background(), "mixed"); job != nil {
+		t.Errorf("must not adopt from an untrusted sidecar: %+v", job)
+	}
+	if _, err := os.Stat(m.DataPath("mixed")); err != nil {
+		t.Error("the data file must be left untouched")
 	}
 }
 
@@ -3937,7 +4093,7 @@ func TestAbsentSourceNeverTerminalizesADurableJob(t *testing.T) {
 }
 ```
 
-Add `writeSidecar(t, m, id, size)` to `fixture_test.go`, writing a JSON sidecar whose `Storage.Path` is `m.DataPath(id)`.
+Add `writeSidecar(t, m, id, size)` to `fixture_test.go`, writing a JSON sidecar whose `ID` is `id` and whose `Storage.Path` and `Storage.InfoPath` are `m.DataPath(id)` and `m.InfoPath(id)`. Add `writeSidecarFor(t, m, fileID, declaredID, size)` alongside it, which writes the sidecar at `m.InfoPath(fileID)` but names `declaredID` inside — that is what the untrusted-sidecar test needs.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -3970,6 +4126,34 @@ func (s *Store) ClaimCancelledForDiscard(ctx context.Context, idleBefore, now in
 	}
 	return res.RowsAffected()
 }
+
+// ListStaleUploading returns admitted uploads that never reached the
+// durability barrier and have been quiet since idleBefore. Rows with
+// source_completed_at are excluded on purpose: those are durable, and their
+// files being unreadable is a mount problem, not a reason to give up on them.
+func (s *Store) ListStaleUploading(ctx context.Context, idleBefore int64, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT upload_id FROM upload_jobs
+		 WHERE status = 'uploading'
+		   AND source_completed_at IS NULL
+		   AND cancellation_requested_at IS NULL
+		   AND updated_at <= ?
+		 LIMIT ?`, idleBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list stale uploads: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan stale upload: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
 ```
 
 Then create `backend/internal/ingest/recover.go`:
@@ -3983,6 +4167,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -4005,11 +4190,12 @@ func (m *Manager) startupRecovery() {
 	m.Wake()
 }
 
-// reconcileOnce walks the upload directory and repairs what it can prove.
-// It never deletes: the only outcomes are adoption, promotion, and leaving
-// things exactly as they are.
+// reconcileOnce repairs what it can prove. It never deletes a file: the only
+// outcomes are adoption, promotion, resolving a row that has no bytes, and
+// leaving things exactly as they are.
 func (m *Manager) reconcileOnce() {
-	m.sweepCancelled()
+	m.sweepCancelled(m.opts.ReconcileInterval)
+	m.resolveRowsWithoutFiles()
 
 	entries, err := os.ReadDir(m.opts.UploadDir)
 	if err != nil {
@@ -4017,32 +4203,70 @@ func (m *Manager) reconcileOnce() {
 		return
 	}
 
+	// Both sidecars and bare data files are inventoried. The old code ran
+	// `defer cleanupTusInfoFile(...)` before its failure branch, so every
+	// upload it failed to ingest left a complete data file with no sidecar
+	// at all. Scanning only `.info` entries would strand exactly the files
+	// this feature exists to rescue.
+	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".info") {
+		if entry.IsDir() {
 			continue
 		}
 		uploadID := strings.TrimSuffix(entry.Name(), ".info")
 		if !isSafeUploadID(uploadID) {
+			continue // skips tusd lock files and our own dot-prefixed temporaries
+		}
+		if _, done := seen[uploadID]; done {
 			continue
 		}
-		if err := m.reconcileOne(uploadID, filepath.Join(m.opts.UploadDir, entry.Name())); err != nil {
+		seen[uploadID] = struct{}{}
+
+		if err := m.reconcileOne(uploadID); err != nil {
 			slog.Warn("reconcile failed", "operation", "reconcile", "upload_id", uploadID, "error", err)
 		}
 	}
 }
 
 // sweepCancelled moves cancelled uploads that have gone quiet into discard,
-// where the ordinary worker path reclaims their bytes.
-func (m *Manager) sweepCancelled() {
-	idleBefore := store.NowMicros() - m.opts.ReconcileInterval.Microseconds()
-	if _, err := m.store.ClaimCancelledForDiscard(m.lifetime, idleBefore, store.NowMicros()); err != nil {
+// where the ordinary worker path reclaims their bytes. idleFor is a parameter
+// so tests can sweep immediately.
+func (m *Manager) sweepCancelled(idleFor time.Duration) {
+	idleBefore := store.NowMicros() - idleFor.Microseconds()
+	swept, err := m.store.ClaimCancelledForDiscard(m.lifetime, idleBefore, store.NowMicros())
+	if err != nil {
 		slog.Warn("cancellation sweep failed", "operation", "reconcile", "error", err)
 		return
 	}
-	m.Wake()
+	if swept > 0 {
+		m.Wake()
+	}
 }
 
-func (m *Manager) reconcileOne(uploadID, infoPath string) error {
+// resolveRowsWithoutFiles closes out admitted uploads that never produced any
+// bytes — a create whose client vanished, or a partial the retention janitor
+// removed. Rows that reached the durability barrier are deliberately excluded:
+// their absence may be a faulted mount, and they retry indefinitely instead.
+func (m *Manager) resolveRowsWithoutFiles() {
+	idleBefore := store.NowMicros() - m.opts.ReconcileInterval.Microseconds()
+	ids, err := m.store.ListStaleUploading(m.lifetime, idleBefore, 200)
+	if err != nil {
+		slog.Warn("could not list stale uploads", "operation", "reconcile", "error", err)
+		return
+	}
+	for _, id := range ids {
+		if m.UploadPathsExist(id) {
+			continue
+		}
+		// Record the same intent a user cancellation would and let the
+		// ordinary sweep terminalize it, rather than inventing a second path.
+		if err := m.store.RequestCancellation(m.lifetime, id, store.NowMicros()); err != nil && !errors.Is(err, store.ErrNotClaimed) {
+			slog.Warn("could not resolve upload with no bytes", "operation", "reconcile", "upload_id", id, "error", err)
+		}
+	}
+}
+
+func (m *Manager) reconcileOne(uploadID string) error {
 	job, err := m.store.GetUploadJob(m.lifetime, uploadID)
 	if err != nil {
 		return err
@@ -4064,43 +4288,61 @@ func (m *Manager) reconcileOne(uploadID, infoPath string) error {
 		}
 	}
 
-	info, err := tussidecar.Parse(infoPath)
-	if err != nil {
-		if errors.Is(err, tussidecar.ErrMalformed) {
-			// A malformed sidecar is "unknown", never "safe to delete".
-			return m.adoptByDataFileAlone(uploadID, job)
-		}
-		return err
-	}
-
 	stat, err := os.Stat(m.DataPath(uploadID))
-	if err != nil {
+	if err != nil || !stat.Mode().IsRegular() {
 		return nil // nothing observable; absence is never actionable here
 	}
-	if !stat.Mode().IsRegular() || stat.Size() != info.Size {
-		return nil // still uploading; the incomplete-retention policy owns it
-	}
 
-	// The row already exists but never passed the durability barrier: a crash
+	// A row already exists but never passed the durability barrier: a crash
 	// inside the pre-finish window, or a client that stopped retrying after a
-	// 503. Nothing else in the system will ever revisit it, so promote it here.
+	// 503. EnsureDurable re-validates the size against expected_size, fsyncs,
+	// and promotes, so nothing else in the system needs to revisit it.
 	if job != nil {
 		return m.EnsureDurable(m.lifetime, uploadID)
 	}
-	return m.adopt(uploadID, info.Size, info.MetaData)
+
+	info, sidecarPresent := m.trustedSidecar(uploadID)
+	switch {
+	case info != nil:
+		if stat.Size() != info.Size {
+			return nil // still uploading; the incomplete-retention policy owns it
+		}
+		return m.adopt(uploadID, info.Size, info.MetaData)
+	case sidecarPresent:
+		// A sidecar we cannot trust means "unknown", never "safe to act on".
+		// Adopting at the observed size could publish a partial upload, and a
+		// checksum recovered from the wrong sidecar could turn a good file
+		// into a deterministic rejection.
+		slog.Warn("tus sidecar does not describe its own upload; leaving both files untouched",
+			"operation", "reconcile", "upload_id", uploadID)
+		return nil
+	default:
+		// No sidecar at all. tusd cannot resume such an upload, so the file is
+		// either residue from the old ingest path or a stray. Adopt it at its
+		// observed size; with no metadata there is no declared checksum to
+		// mismatch, so the worst case is an unsupported-type rejection.
+		return m.adopt(uploadID, stat.Size(), nil)
+	}
 }
 
-func (m *Manager) adoptByDataFileAlone(uploadID string, job *store.UploadJob) error {
-	stat, err := os.Stat(m.DataPath(uploadID))
-	if err != nil || !stat.Mode().IsRegular() || stat.Size() == 0 {
-		return nil
+// trustedSidecar returns the sidecar only when it demonstrably describes this
+// upload. The second result reports whether a sidecar file existed at all,
+// which is what distinguishes "cannot be trusted" from "absent".
+func (m *Manager) trustedSidecar(uploadID string) (*tussidecar.Info, bool) {
+	infoPath := m.InfoPath(uploadID)
+	if _, err := os.Stat(infoPath); err != nil {
+		return nil, false
 	}
-	if job != nil {
-		return m.EnsureDurable(m.lifetime, uploadID)
+	info, err := tussidecar.Parse(infoPath)
+	if err != nil {
+		return nil, true
 	}
-	// Without metadata we cannot know the declared size, so we adopt the file
-	// at its observed size rather than discarding a possibly complete upload.
-	return m.adopt(uploadID, stat.Size(), nil)
+	if info.ID != uploadID ||
+		filepath.Clean(info.StoragePath) != filepath.Clean(m.DataPath(uploadID)) ||
+		(info.StorageInfoPath != "" && filepath.Clean(info.StorageInfoPath) != filepath.Clean(infoPath)) {
+		return nil, true
+	}
+	return info, true
 }
 
 func (m *Manager) adopt(uploadID string, size int64, metadata map[string]string) error {
@@ -4115,11 +4357,12 @@ func (m *Manager) adopt(uploadID string, size int64, metadata map[string]string)
 	if err := m.store.CreateUploadingJob(m.lifetime, job); err != nil {
 		return err
 	}
-	if err := m.store.PromoteToPending(m.lifetime, uploadID, store.NowMicros()); err != nil {
+	// Promote through the same barrier the live path uses, so an adopted
+	// upload is fsynced and size-checked exactly like any other.
+	if err := m.EnsureDurable(m.lifetime, uploadID); err != nil {
 		return err
 	}
 	slog.Info("adopted completed upload", "operation", "reconcile", "upload_id", uploadID, "media_id", job.MediaID)
-	m.Wake()
 	return nil
 }
 
@@ -4184,7 +4427,7 @@ Use whatever JSON helper `respond.go` already provides instead of `writeJSON` if
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/ingest/ ./internal/httpapi/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/ingest/ ./internal/httpapi/ -race -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -4343,6 +4586,7 @@ func (s *Server) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	results := make(map[string]uploadStatusEntry, len(req.UploadIDs))
+	recovering := s.ingest != nil && !s.ingest.Ready()
 	for _, id := range req.UploadIDs {
 		if _, seen := results[id]; seen {
 			continue
@@ -4352,7 +4596,13 @@ func (s *Server) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "could not read upload state")
 			return
 		}
-		results[id] = publicUploadState(job)
+		// During the startup inventory an unknown id may simply not have been
+		// adopted yet, so say so rather than declaring it lost.
+		if job == nil && recovering {
+			results[id] = uploadStatusEntry{State: "recovering"}
+			continue
+		}
+		results[id] = s.publicUploadState(r.Context(), job)
 	}
 	writeJSON(w, http.StatusOK, uploadStatusResponse{Results: results})
 }
@@ -4360,7 +4610,7 @@ func (s *Server) handleUploadStatus(w http.ResponseWriter, r *http.Request) {
 // publicUploadState maps internal queue states onto the small vocabulary the
 // browser understands, without leaking queue mechanics. Core failures report
 // "processing" because they retry indefinitely and will eventually publish.
-func publicUploadState(job *store.UploadJob) uploadStatusEntry {
+func (s *Server) publicUploadState(ctx context.Context, job *store.UploadJob) uploadStatusEntry {
 	if job == nil {
 		return uploadStatusEntry{State: "unknown"}
 	}
@@ -4374,10 +4624,11 @@ func publicUploadState(job *store.UploadJob) uploadStatusEntry {
 		return uploadStatusEntry{State: "processing"}
 	case store.JobCleanup, store.JobComplete:
 		// Publication already committed; source cleanup must not delay it.
+		state := "published"
 		if job.ResultMediaID != "" && job.ResultMediaID != job.MediaID {
-			return uploadStatusEntry{State: "duplicate", MediaID: job.ResultMediaID}
+			state = "duplicate"
 		}
-		return uploadStatusEntry{State: "published", MediaID: job.ResultMediaID}
+		return uploadStatusEntry{State: state, MediaID: s.visibleMediaID(ctx, job.ResultMediaID)}
 	case store.JobDiscarding, store.JobDiscarded:
 		switch job.TerminalReason {
 		case "unsupported_type", "checksum_mismatch":
@@ -4389,12 +4640,25 @@ func publicUploadState(job *store.UploadJob) uploadStatusEntry {
 		return uploadStatusEntry{State: "processing"}
 	}
 }
+
+// visibleMediaID returns the id only when the item is publicly viewable.
+// Awaiting approval or trashed media must not be addressable through an
+// upload receipt.
+func (s *Server) visibleMediaID(ctx context.Context, mediaID string) string {
+	if mediaID == "" {
+		return ""
+	}
+	if _, err := s.store.GetVisibleByID(ctx, mediaID, ""); err != nil {
+		return ""
+	}
+	return mediaID
+}
 ```
 
-Register it in `server.go` with its own limiter so status polling cannot drain the public gallery bucket:
+Register it as a sibling of the public group, not inside it. chi's `Mux.With` on an inline group copies the parent's middleware chain before appending, so registering inside `pub` would stack `publicRateLimit` *and* the new limiter — status polling would still drain the gallery bucket, which is the exact outcome this is meant to prevent:
 
 ```go
-		pub.With(s.uploadStatusRateLimit).Post("/uploads/status", s.handleUploadStatus)
+		api.With(s.uploadStatusRateLimit).Post("/uploads/status", s.handleUploadStatus)
 ```
 
 Add `uploadStatusLimiter` to `Server`, built from `cfg.UploadStatusRateLimitPerMinute` exactly like `publicLimiter`, and a `uploadStatusRateLimit` middleware mirroring `publicRateLimit`.
@@ -4418,7 +4682,7 @@ This is intentional: the endpoint's old behavior is exactly what made a pre-upgr
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
-Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/httpapi/ -race -v`
+Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/httpapi/ -race -v`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
@@ -4516,7 +4780,7 @@ recorded old image pair.
 
 Run:
 ```bash
-docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine sh -c "go build ./cmd/server && go vet ./... && go test ./... -race"
+docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 sh -c "go build ./cmd/server && go vet ./... && go test ./... -race"
 docker compose config >/dev/null
 ```
 Expected: build succeeds, vet is silent, all tests pass, compose config parses.
