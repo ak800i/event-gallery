@@ -13,15 +13,16 @@ func testOptions(t *testing.T) Options {
 	t.Helper()
 	uploadDir := t.TempDir()
 	return Options{
-		Workers:           2,
-		DurabilityWorkers: 2,
-		ProcessingTimeout: time.Minute,
-		MaxBackoff:        time.Minute,
-		ReconcileInterval: 50 * time.Millisecond,
-		JobRetention:      time.Hour,
-		UploadDir:         uploadDir,
-		MinFreeBytes:      0,
-		Terminator:        &unlinkTerminator{dir: uploadDir},
+		Workers:             2,
+		DurabilityWorkers:   2,
+		ProcessingTimeout:   time.Minute,
+		MaxBackoff:          time.Minute,
+		ReconcileInterval:   50 * time.Millisecond,
+		JobRetention:        time.Hour,
+		IncompleteRetention: 48 * time.Hour,
+		UploadDir:           uploadDir,
+		MinFreeBytes:        0,
+		Terminator:          &unlinkTerminator{dir: uploadDir},
 	}
 }
 

@@ -22,6 +22,33 @@ const unobservableReason = "unobservable"
 // cannot hold the tick open. What is left is picked up by the next pass.
 const maxStaleUploadsPerPass = 200
 
+// defaultAdoptionQuietPeriod applies when incomplete-upload retention is
+// disabled. Retention zero switches off *deleting* idle partials; it must not
+// also switch off the evidence that a sidecar-less file has stopped growing,
+// because that would make adoption less careful the more careful the operator
+// asked the system to be.
+const defaultAdoptionQuietPeriod = 48 * time.Hour
+
+// sidecarEvidence classifies what the `.info` file next to a data file proves.
+// Absent and untrusted are deliberately separate: tussidecar's contract is
+// that a sidecar it cannot parse means "unknown", never "safe to delete", and
+// collapsing the two makes an I/O fault look like the old ingest path's
+// deliberately removed sidecar.
+type sidecarEvidence int
+
+const (
+	sidecarTrusted   sidecarEvidence = iota // parses and describes this upload
+	sidecarAbsent                           // ENOENT: nothing is there to consult
+	sidecarUntrusted                        // present, but unreadable, malformed, or naming another upload
+)
+
+// adoptionObservation is one look at a data file that has no row and no
+// sidecar to vouch for it.
+type adoptionObservation struct {
+	size    int64
+	modTime time.Time
+}
+
 // startupRecovery makes interrupted work claimable and adopts any completed
 // upload the previous process never queued, then opens the readiness gate.
 // Readiness is withheld if the inventory could not be read at all: admitting
@@ -103,6 +130,7 @@ func (m *Manager) reconcileOnce() error {
 			slog.Warn("reconcile failed", "operation", "reconcile", "upload_id", uploadID, "error", err)
 		}
 	}
+	m.forgetAdoptionCandidates(seen)
 	return nil
 }
 
@@ -220,47 +248,105 @@ func (m *Manager) reconcileOne(uploadID string) error {
 		return m.EnsureDurable(m.lifetime, uploadID)
 	}
 
-	info, identityMismatch := m.trustedSidecar(uploadID)
-	switch {
-	case info != nil:
+	info, evidence := m.trustedSidecar(uploadID)
+	switch evidence {
+	case sidecarTrusted:
 		if dataStat.Size() != info.Size {
 			return nil // still uploading; the incomplete-retention policy owns it
 		}
 		return m.adopt(uploadID, info.Size, info.MetaData)
-	case identityMismatch:
-		// A sidecar naming a different upload must not supply this file's
-		// metadata: a checksum from the wrong upload would turn a good file
-		// into a deterministic rejection and get it discarded.
-		slog.Warn("tus sidecar does not describe its own upload; leaving both files untouched",
+	case sidecarUntrusted:
+		// Either a sidecar naming a different upload -- whose metadata must
+		// not be applied here, since a checksum from the wrong upload would
+		// turn a good file into a deterministic rejection and get it discarded
+		// -- or one that could not be read or parsed, which proves nothing at
+		// all. Both are "unknown", and nothing is done to an unknown.
+		slog.Warn("tus sidecar cannot be trusted for its own upload; leaving both files untouched",
 			"operation", "reconcile", "upload_id", uploadID)
 		return nil
 	default:
-		// No sidecar, or one that cannot be parsed at all. tusd cannot resume
-		// such an upload, so the file is residue, most often from the old
-		// ingest path, which deleted the sidecar before its failure branch
-		// returned. Adopt at the observed size; with no metadata there is no
-		// declared checksum to mismatch.
+		// No sidecar at all. tusd cannot resume such an upload, so the file is
+		// residue, most often from the old ingest path, which deleted the
+		// sidecar before its failure branch returned. There is no row and no
+		// sidecar, so the observed size is the only number in play and
+		// adopting at it would make every later guard circular -- see
+		// adoptionWitnessed for what has to be established first.
+		if !m.adoptionWitnessed(uploadID, dataStat) {
+			return nil
+		}
 		return m.adopt(uploadID, dataStat.Size(), nil)
 	}
 }
 
+// adoptionWitnessed reports whether a data file with no row and no sidecar has
+// produced independent evidence that it is finished.
+//
+// Nothing can prove such a file complete -- that is precisely what the missing
+// sidecar took away -- so the standard here is the one the system already
+// applies to files of unknown standing: an idle partial older than
+// TUS_INCOMPLETE_RETENTION_HOURS is one the retention policy would delete
+// outright. A file that clears that bar and is byte-for-byte unchanged across
+// two consecutive passes is therefore being treated *less* destructively by
+// adoption -- which preserves its bytes as a gallery original before removing
+// the source -- than by the policy that already governs it. What this rules
+// out is the case the policy never sanctioned: a transfer still in progress,
+// or bytes a faulted mount has only just handed back, being published at
+// whatever length one pass happened to see and then deleted.
+//
+// The two-pass comparison mirrors the incomplete-upload janitor's re-read
+// immediately before its DELETE, and for the same reason: one look at a file
+// on a shared volume is a sample, not a state.
+func (m *Manager) adoptionWitnessed(uploadID string, dataStat os.FileInfo) bool {
+	observed := adoptionObservation{size: dataStat.Size(), modTime: dataStat.ModTime()}
+
+	m.adoptMu.Lock()
+	previous, seenBefore := m.adoptWitness[uploadID]
+	m.adoptWitness[uploadID] = observed
+	m.adoptMu.Unlock()
+
+	quiet := m.opts.IncompleteRetention
+	if quiet <= 0 {
+		quiet = defaultAdoptionQuietPeriod
+	}
+	if time.Since(observed.modTime) < quiet {
+		return false
+	}
+	return seenBefore && previous.size == observed.size && previous.modTime.Equal(observed.modTime)
+}
+
+// forgetAdoptionCandidates drops observations for uploads this pass did not
+// see, so the witness cannot grow without bound and a file that leaves and
+// returns has to earn its evidence again.
+func (m *Manager) forgetAdoptionCandidates(seen map[string]struct{}) {
+	m.adoptMu.Lock()
+	defer m.adoptMu.Unlock()
+	for id := range m.adoptWitness {
+		if _, still := seen[id]; !still {
+			delete(m.adoptWitness, id)
+		}
+	}
+}
+
 // trustedSidecar returns the sidecar only when it demonstrably describes this
-// upload. The second result flags the one case where the data file must be
-// left alone: a parseable sidecar naming a different upload. A missing or
-// unreadable sidecar is reported as absent, because tusd cannot resume such an
-// upload and stranding the bytes would be worse than adopting them.
-func (m *Manager) trustedSidecar(uploadID string) (info *tussidecar.Info, identityMismatch bool) {
+// upload, along with what its absence or unreadability proves.
+func (m *Manager) trustedSidecar(uploadID string) (*tussidecar.Info, sidecarEvidence) {
 	infoPath := m.InfoPath(uploadID)
 	parsed, err := tussidecar.Parse(infoPath)
 	if err != nil {
-		return nil, false
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, sidecarAbsent
+		}
+		// Malformed, oversize, or unreadable. tussidecar's contract is that
+		// this means "unknown": an EACCES or a short read on a shared volume
+		// is a fault, not the deliberate removal the old ingest path did.
+		return nil, sidecarUntrusted
 	}
 	if parsed.ID != uploadID ||
 		filepath.Clean(parsed.StoragePath) != filepath.Clean(m.DataPath(uploadID)) ||
 		(parsed.StorageInfoPath != "" && filepath.Clean(parsed.StorageInfoPath) != filepath.Clean(infoPath)) {
-		return nil, true
+		return nil, sidecarUntrusted
 	}
-	return parsed, false
+	return parsed, sidecarTrusted
 }
 
 func (m *Manager) adopt(uploadID string, size int64, metadata map[string]string) error {

@@ -42,15 +42,16 @@ func main() {
 // types, so a transposed pair compiles and then misbehaves silently.
 func ingestOptions(cfg *config.Config, term ingest.SourceTerminator) ingest.Options {
 	return ingest.Options{
-		Workers:           cfg.MediaProcessingWorkers,
-		DurabilityWorkers: cfg.UploadDurabilityWorkers,
-		ProcessingTimeout: cfg.MediaProcessingTimeout,
-		MaxBackoff:        cfg.UploadRetryMaxBackoff,
-		ReconcileInterval: cfg.IngestReconcileInterval,
-		JobRetention:      cfg.UploadJobRetention,
-		UploadDir:         cfg.TusUploadDir,
-		MinFreeBytes:      cfg.IngestMinFreeBytes,
-		Terminator:        term,
+		Workers:             cfg.MediaProcessingWorkers,
+		DurabilityWorkers:   cfg.UploadDurabilityWorkers,
+		ProcessingTimeout:   cfg.MediaProcessingTimeout,
+		MaxBackoff:          cfg.UploadRetryMaxBackoff,
+		ReconcileInterval:   cfg.IngestReconcileInterval,
+		JobRetention:        cfg.UploadJobRetention,
+		IncompleteRetention: cfg.TusIncompleteRetention,
+		UploadDir:           cfg.TusUploadDir,
+		MinFreeBytes:        cfg.IngestMinFreeBytes,
+		Terminator:          term,
 	}
 }
 

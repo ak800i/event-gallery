@@ -29,9 +29,14 @@ type Options struct {
 	MaxBackoff        time.Duration
 	ReconcileInterval time.Duration
 	JobRetention      time.Duration
-	UploadDir         string
-	MinFreeBytes      int64
-	Terminator        SourceTerminator
+	// IncompleteRetention is the incomplete-upload retention policy the
+	// janitor enforces. The reconciler reads it as the age at which a file of
+	// unknown standing has stopped being an upload in progress; see
+	// adoptionWitnessed.
+	IncompleteRetention time.Duration
+	UploadDir           string
+	MinFreeBytes        int64
+	Terminator          SourceTerminator
 }
 
 // Manager owns the durable ingest queue. Its workers run on lifetime, a
@@ -51,6 +56,12 @@ type Manager struct {
 	wake     chan struct{}
 	wg       sync.WaitGroup
 	ready    atomic.Bool
+
+	// adoptWitness carries one reconcile pass's observation of each data file
+	// that has neither a row nor a sidecar to vouch for it, so the next pass
+	// can tell a finished file from one that is still changing.
+	adoptMu      sync.Mutex
+	adoptWitness map[string]adoptionObservation
 
 	durability *durabilityRegistry
 }
@@ -72,11 +83,12 @@ func New(st *store.Store, proc *media.Processor, opts Options) *Manager {
 		opts.ReconcileInterval = 15 * time.Second
 	}
 	m := &Manager{
-		store:     st,
-		processor: proc,
-		health:    NewHealthGate(st, proc, 8),
-		opts:      opts,
-		wake:      make(chan struct{}, 1),
+		store:        st,
+		processor:    proc,
+		health:       NewHealthGate(st, proc, 8),
+		opts:         opts,
+		wake:         make(chan struct{}, 1),
+		adoptWitness: make(map[string]adoptionObservation),
 	}
 	m.lifetime, m.cancel = context.WithCancel(context.Background())
 	m.durability = newDurabilityRegistry(m)

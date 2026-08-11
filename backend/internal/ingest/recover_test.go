@@ -171,27 +171,220 @@ func TestSweepNeverReversesADurableCompletion(t *testing.T) {
 	}
 }
 
-func TestAdoptsCompletedUploadWithNoSidecar(t *testing.T) {
+// ageFile backdates a file's mtime so the reconciler's quiet period applies to
+// it without the test waiting out wall-clock time.
+func ageFile(t *testing.T, path string, age time.Duration) {
+	t.Helper()
+	when := time.Now().Add(-age)
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatalf("backdate %s: %v", path, err)
+	}
+}
+
+// This is the residue the old ingest path left behind: it deleted the sidecar
+// before its failure branch returned, so a complete data file survived alone.
+// Rescuing it is the whole reason the sidecar-less branch exists, and the
+// witness that authorises it must not shut that rescue down.
+func TestAdoptsCompletedUploadWithNoSidecarOnceItIsQuiescent(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	m := New(st, proc, testOptions(t))
 	defer m.Stop()
 
-	// Exactly the residue the old ingest path left behind: it deleted the
-	// sidecar before its failure branch returned, so the complete data file
-	// survived alone.
 	payload := jpegFixture(t)
 	if err := os.WriteFile(m.DataPath("orphan"), payload, 0o600); err != nil {
 		t.Fatalf("write data: %v", err)
+	}
+	ageFile(t, m.DataPath("orphan"), 72*time.Hour)
+
+	m.reconcileOnce()
+	if job, _ := st.GetUploadJob(context.Background(), "orphan"); job != nil {
+		t.Fatalf("a single observation is not a witness that the file is finished: %+v", job)
 	}
 
 	m.reconcileOnce()
 
 	job, err := st.GetUploadJob(context.Background(), "orphan")
 	if err != nil || job == nil {
-		t.Fatalf("a sidecar-less complete upload must still be adopted: %+v %v", job, err)
+		t.Fatalf("residue older than the retention policy and unchanged across passes must be adopted: %+v %v", job, err)
 	}
 	if job.Status != store.JobPending {
 		t.Errorf("status = %q, want pending", job.Status)
+	}
+}
+
+// THE PROPERTY. With no row and no sidecar the observed size is the only
+// number in play, so adopting at it makes every later guard circular: the
+// durability barrier compares the size against itself, a nil metadata map
+// leaves no declared checksum to mismatch, a truncated JPEG still sniffs as
+// image/jpeg, and a thumbnail that fails to decode is not fatal. The job
+// publishes, reaches cleanup, and the tus DELETE destroys the guest's only
+// copy of a partial upload that was presented to them as a success.
+func TestFreshRowlessPartialIsNeitherPublishedNorDeleted(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+	defer m.Stop()
+
+	payload := jpegFixture(t)
+	truncated := payload[:len(payload)/2]
+	if err := os.WriteFile(m.DataPath("partial1"), truncated, 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+
+	// Two passes and then a full drain: whatever reconciliation admitted, the
+	// queue is given every chance to carry it all the way to cleanup.
+	m.reconcileOnce()
+	m.reconcileOnce()
+	drainQueue(t, m)
+
+	if job, _ := st.GetUploadJob(context.Background(), "partial1"); job != nil {
+		t.Errorf("a partial adopted on its own observed size: %+v", job)
+	}
+	requireSourceIntact(t, m, "partial1", truncated)
+	if n := countMediaRows(t, st); n != 0 {
+		t.Errorf("%d truncated uploads were published into the gallery", n)
+	}
+}
+
+// countMediaRows is the publication side of the property: a source may only be
+// deleted after a media row exists, so proving no row exists proves no
+// deletion was ever authorised.
+func countMediaRows(t *testing.T, st *store.Store) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM media_items`).Scan(&n); err != nil {
+		t.Fatalf("count media rows: %v", err)
+	}
+	return n
+}
+
+// The same file, aged past the retention policy but still growing between
+// passes. Age alone is not the witness: a resumed transfer whose sidecar was
+// lost would otherwise be adopted at whatever length one pass happened to see.
+func TestSidecarLessSourceThatChangedBetweenPassesIsNotAdopted(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+	defer m.Stop()
+
+	payload := jpegFixture(t)
+	if err := os.WriteFile(m.DataPath("growing"), payload[:10], 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	ageFile(t, m.DataPath("growing"), 72*time.Hour)
+
+	m.reconcileOnce()
+
+	if err := os.WriteFile(m.DataPath("growing"), payload[:20], 0o600); err != nil {
+		t.Fatalf("extend data: %v", err)
+	}
+	ageFile(t, m.DataPath("growing"), 72*time.Hour)
+
+	m.reconcileOnce()
+
+	if job, _ := st.GetUploadJob(context.Background(), "growing"); job != nil {
+		t.Errorf("a file that changed between passes must not be adopted: %+v", job)
+	}
+}
+
+// tussidecar's own contract: a sidecar that cannot be parsed is "unknown",
+// never "safe to delete". An absent sidecar is the old-path residue shape; one
+// that is present but unreadable is a fault, and reading a fault as an absence
+// is what turns a partial into a published-then-deleted upload.
+func TestUnparseableSidecarIsNotTreatedAsAnAbsentOne(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+	defer m.Stop()
+
+	payload := jpegFixture(t)
+	truncated := payload[:len(payload)/2]
+	if err := os.WriteFile(m.DataPath("garbled"), truncated, 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+	if err := os.WriteFile(m.InfoPath("garbled"), []byte(`{"ID":"garb`), 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	ageFile(t, m.DataPath("garbled"), 72*time.Hour)
+	ageFile(t, m.InfoPath("garbled"), 72*time.Hour)
+
+	m.reconcileOnce()
+	m.reconcileOnce()
+	m.reconcileOnce()
+	drainQueue(t, m)
+
+	if job, _ := st.GetUploadJob(context.Background(), "garbled"); job != nil {
+		t.Errorf("an unreadable sidecar is not evidence of anything: %+v", job)
+	}
+	requireSourceIntact(t, m, "garbled", truncated)
+	if _, err := os.Stat(m.InfoPath("garbled")); err != nil {
+		t.Errorf("the sidecar must be left where it is: %v", err)
+	}
+}
+
+// The unobservable-reappear branch deletes the row and falls through to the
+// sidecar switch in the same pass, so the bypass is reachable without waiting
+// for a terminal row to expire. A faulted mount that returns is also the case
+// most likely to read a short or unreadable sidecar back.
+func TestReturningBytesAreNotAdoptedOnTheirOwnObservedSize(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+	defer m.Stop()
+
+	payload := jpegFixture(t)
+	job := &store.UploadJob{UploadID: "hidden2", MediaID: "media-hidden2", OriginalFilename: "a.jpg", ExpectedSize: int64(len(payload))}
+	if err := st.CreateUploadingJob(context.Background(), job); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	backdateJob(t, st, "hidden2", time.Hour)
+	m.reconcileOnce()
+	if got := jobStatus(t, st, "hidden2"); got != store.JobDiscarded {
+		t.Fatalf("precondition: status = %q, want discarded", got)
+	}
+
+	// The mount returns, but only part of the upload came back with it.
+	truncated := payload[:len(payload)/2]
+	if err := os.WriteFile(m.DataPath("hidden2"), truncated, 0o600); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+
+	m.reconcileOnce()
+	drainQueue(t, m)
+
+	if got, _ := st.GetUploadJob(context.Background(), "hidden2"); got != nil && got.Status != store.JobUploading {
+		t.Errorf("returned bytes were adopted at whatever length the mount handed back: %+v", got)
+	}
+	requireSourceIntact(t, m, "hidden2", truncated)
+}
+
+// The classification itself, because the three verdicts are what the branch
+// above switches on and two of them lead to opposite treatments of the same
+// bytes.
+func TestSidecarEvidenceSeparatesAbsentFromUnreadable(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+	defer m.Stop()
+
+	writeSidecar(t, m, "whole", 4)
+	if err := os.WriteFile(m.InfoPath("garbled"), []byte(`{"ID":"garb`), 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	writeSidecarMeta(t, m, "mixed", "someone-else", 4, nil)
+
+	for _, tc := range []struct {
+		uploadID string
+		want     sidecarEvidence
+		why      string
+	}{
+		{"whole", sidecarTrusted, "a self-describing sidecar is the only one that may supply metadata"},
+		{"nothing-here", sidecarAbsent, "ENOENT is the old ingest path's deliberately removed sidecar"},
+		{"garbled", sidecarUntrusted, "a sidecar that cannot be parsed proves nothing, and must not read as an absence"},
+		{"mixed", sidecarUntrusted, "a sidecar naming another upload must not supply this file's metadata"},
+	} {
+		info, got := m.trustedSidecar(tc.uploadID)
+		if got != tc.want {
+			t.Errorf("%s: evidence = %d, want %d: %s", tc.uploadID, got, tc.want, tc.why)
+		}
+		if (info != nil) != (tc.want == sidecarTrusted) {
+			t.Errorf("%s: info = %+v, which does not match verdict %d", tc.uploadID, info, got)
+		}
 	}
 }
 
