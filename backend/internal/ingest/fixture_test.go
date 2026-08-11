@@ -16,12 +16,22 @@ import (
 	"event-gallery/backend/internal/store"
 )
 
+// The fixture image is deliberately non-square, and its long edge exceeds the
+// fixture processor's thumbnail bound. A square image would let a width/height
+// transposition through, and an image smaller than the bound would let a
+// derivation that reports the scaled thumbnail's size as the original's
+// through, because the two would be equal.
+const (
+	jpegFixtureWidth  = 400
+	jpegFixtureHeight = 200
+)
+
 // jpegFixture returns a tiny but genuinely valid JPEG, so the processing path
 // runs against content Sniff recognises and the thumbnailer can decode.
 func jpegFixture(t *testing.T) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2, 2)), nil); err != nil {
+	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, jpegFixtureWidth, jpegFixtureHeight)), nil); err != nil {
 		t.Fatalf("encode jpeg: %v", err)
 	}
 	return buf.Bytes()

@@ -290,9 +290,9 @@ func (m *Manager) deletionAllowed(job *store.UploadJob) bool {
 // sql.ErrNoRows, and any other error means ownership is unknown — in which
 // case nothing may be deleted. Returns false when the caller should stop.
 func (m *Manager) removeArtifactsIfUnowned(job *store.UploadJob) bool {
-	owner, err := m.store.GetByID(m.lifetime, job.MediaID, "")
+	_, err := m.store.GetByID(m.lifetime, job.MediaID, "")
 	switch {
-	case errors.Is(err, sql.ErrNoRows) || (err == nil && owner == nil):
+	case errors.Is(err, sql.ErrNoRows):
 		m.removeArtifacts(job)
 		return true
 	case err != nil:
@@ -372,8 +372,10 @@ func (m *Manager) finishBySourceRemoval(job *store.UploadJob, status store.JobSt
 	// old ingest path left behind, and it is the shape this feature adopts, so
 	// without this branch every recovered upload would spin in cleanup forever
 	// and hold disk it no longer needs. Unlinking is safe here for the same
-	// reason the orphan sidecar is: the media row is already committed, so this
-	// is not the only copy — and tusd does not know the file exists.
+	// reason the orphan sidecar is: nothing reaches this function until the
+	// source is already condemned — cleanup only after the publication
+	// transaction committed, discard only after a terminal decision was
+	// recorded — and tusd cannot address the file either way.
 	if !dataGone && sidecarGone {
 		slog.Warn("removing tus data file that tusd can no longer address",
 			"operation", "cleanup", "upload_id", job.UploadID)

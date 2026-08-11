@@ -61,6 +61,21 @@ func stallStore(t *testing.T, st *store.Store) (release func()) {
 	return func() { once.Do(func() { conn.Close() }) }
 }
 
+// awaitParkedQuery blocks until a query is waiting for the stalled pool's only
+// connection, so a test acts on a call that is genuinely inside the driver
+// rather than on one that has not reached it yet.
+func awaitParkedQuery(t *testing.T, st *store.Store) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if st.DB().Stats().WaitCount > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("no query ever parked on the stalled pool")
+}
+
 // awaitInFlight blocks until the registry has an operation registered for
 // uploadID, so a test can act on a genuinely running operation rather than
 // racing its registration.

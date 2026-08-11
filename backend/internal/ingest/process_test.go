@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"event-gallery/backend/internal/store"
 )
@@ -77,8 +78,9 @@ func TestPublishDeletesSourceOnlyAfterCommit(t *testing.T) {
 	}
 	// Everything derived from the stored original has to reach the row, or the
 	// gallery renders an item with no thumbnail and no dimensions.
-	if item.Width != 2 || item.Height != 2 || !item.HasThumbnail {
-		t.Errorf("derived metadata missing: %dx%d thumbnail=%v", item.Width, item.Height, item.HasThumbnail)
+	if item.Width != jpegFixtureWidth || item.Height != jpegFixtureHeight || !item.HasThumbnail {
+		t.Errorf("derived metadata missing: %dx%d thumbnail=%v, want %dx%d with a thumbnail",
+			item.Width, item.Height, item.HasThumbnail, jpegFixtureWidth, jpegFixtureHeight)
 	}
 	if _, err := os.Stat(proc.ThumbnailPath(item.ID)); err != nil {
 		t.Errorf("a row claiming a thumbnail must have one on disk: %v", err)
@@ -381,6 +383,48 @@ func (failingTerminator) Terminate(context.Context, string) error {
 	return errors.New("tusd is unreachable")
 }
 
+// clobberingTerminator reports success but leaves the upload directory
+// replaced by a regular file, so every later stat beneath it fails with
+// ENOTDIR rather than ENOENT.
+type clobberingTerminator struct{ dir string }
+
+func (c clobberingTerminator) Terminate(context.Context, string) error {
+	if err := os.RemoveAll(c.dir); err != nil {
+		return err
+	}
+	return os.WriteFile(c.dir, []byte("blocker"), 0o600)
+}
+
+// Only ENOENT proves absence. A stat that could not answer must be retried:
+// reading ambiguity as "the source is gone" would terminalize a job whose
+// bytes are merely unreadable, which is the whole class of mistake this
+// feature exists to prevent.
+func TestAmbiguousStatIsNotProofOfAbsence(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	opts := testOptions(t)
+	opts.Terminator = clobberingTerminator{dir: opts.UploadDir}
+	m := New(st, proc, opts)
+	defer m.Stop()
+
+	seedCompleteUpload(t, m, st, "u1", jpegFixture(t))
+	_ = m.EnsureDurable(context.Background(), "u1")
+
+	drainQueue(t, m)
+
+	job, _ := st.GetUploadJob(context.Background(), "u1")
+	if job.Status != store.JobCleanup {
+		t.Errorf("status = %q, want cleanup: a stat that could not answer is not an answer", job.Status)
+	}
+	if job.CleanupFailures != 1 {
+		t.Errorf("cleanup_failures = %d, want 1", job.CleanupFailures)
+	}
+	// Naming the source path proves the ambiguous stat is what stopped it,
+	// rather than the terminate call or either directory fsync.
+	if !strings.Contains(job.LastError, m.DataPath("u1")) {
+		t.Errorf("last_error = %q, want the failed stat of %q", job.LastError, m.DataPath("u1"))
+	}
+}
+
 // The janitor claims an abandoned upload to discarding and then fails to reach
 // tusd. Nothing else ever revisits that row — RequeueStartup clears the lease
 // but leaves the status — so the discard stage has to adopt it, or the upload
@@ -435,6 +479,41 @@ func TestClaimAndRunOnceStopsWhenTheLifetimeEnds(t *testing.T) {
 		t.Errorf("status = %q, want pending: a cancelled manager must claim nothing", got)
 	}
 	requireSourceIntact(t, m, "u1", payload)
+}
+
+// The guard above only covers a cancellation that already happened. The claim
+// itself must also run on the lifetime, or a worker parked in the driver when
+// Stop arrives holds Stop open until the database answers — which is exactly
+// the wait main is trying to avoid before it closes the database.
+func TestClaimRunsOnTheLifetimeContext(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+
+	seedCompleteUpload(t, m, st, "u1", jpegFixture(t))
+	if err := m.EnsureDurable(context.Background(), "u1"); err != nil {
+		t.Fatalf("durable: %v", err)
+	}
+
+	release := stallStore(t, st)
+	defer release()
+
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		_, _ = m.claimAndRunOnce()
+	}()
+	// Waiting for the claim to park in the driver is what makes this
+	// discriminating: cancelling before it starts would be answered by the
+	// guard above, and would pass on context.Background() too.
+	awaitParkedQuery(t, st)
+
+	m.Stop()
+
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the claim outlived the lifetime: a cancelled manager must not keep waiting on the database")
+	}
 }
 
 func TestPublicationRecordsTheUploadAudit(t *testing.T) {
