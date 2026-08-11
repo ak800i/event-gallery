@@ -648,6 +648,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"event-gallery/backend/internal/models"
 )
 
 // JobStatus mirrors the CHECK constraint on upload_jobs.status.
@@ -1820,12 +1822,6 @@ package ingest
 
 import (
 	"context"
-	"testing"
-	"time"
-)
-
-import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1913,8 +1909,11 @@ package ingest
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"math"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -2006,13 +2005,17 @@ func (m *Manager) leaseDuration() time.Duration {
 	return m.opts.ProcessingTimeout + m.opts.ReconcileInterval
 }
 
-// Start runs the startup inventory synchronously and then launches the pool.
-// Readiness is therefore true the moment Start returns, which is what the
-// rollout requires: every valid pre-upgrade sidecar is adopted before the app
-// reports ready. Callers should already be serving HTTP so /healthz and the
-// gallery stay available while this runs.
+// Start runs the startup inventory and then launches the pool. It is
+// deliberately synchronous: readiness is true the moment it returns, which is
+// what the rollout requires — every valid pre-upgrade sidecar is adopted
+// before the app reports ready. Callers must already be serving HTTP, since
+// the inventory fsyncs every recovered source (see main.go, which runs this in
+// a goroutine after the listener starts).
 func (m *Manager) Start() {
 	m.startupRecovery()
+	if m.lifetime.Err() != nil {
+		return // Stop() arrived during the inventory; do not launch workers
+	}
 
 	for i := 0; i < m.opts.Workers; i++ {
 		m.wg.Add(1)
@@ -2538,12 +2541,25 @@ func freeBytes(string) (int64, error) { return math.MaxInt64, nil }
 
 Run `go get golang.org/x/sys@latest` inside the toolchain container if that module is not already required.
 
-- [ ] **Step 8: Run the tests to verify they pass**
+- [ ] **Step 8: Provide the termination seam the manager depends on**
+
+`Options.Terminator` is typed `ingest.SourceTerminator`, and the harness in Step 1 passes `srv`, so `*Server` must satisfy that interface now — not in Task 10 — or this package will not build. The app already has the implementation: `terminateTusUpload` in `storage_cleanup.go` issues the internal DELETE and treats 204, 404, and 410 as success. Expose it in `tus_proxy.go`:
+
+```go
+// Terminate implements ingest.SourceTerminator. Both the incomplete-upload
+// janitor and the ingest workers remove tus files through this one path, so
+// tusd always cleans up its own sidecar and lock state.
+func (s *Server) Terminate(ctx context.Context, uploadID string) error {
+	return s.terminateTusUpload(ctx, uploadID)
+}
+```
+
+- [ ] **Step 9: Run the tests to verify they pass**
 
 Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/httpapi/ ./internal/ingest/ -race -v`
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add backend/internal/httpapi/ backend/internal/ingest/
@@ -3156,11 +3172,15 @@ func (s *Server) handleTusDelete(w http.ResponseWriter, r *http.Request, uploadI
 }
 ```
 
-In `handleTusProxy`, before forwarding, extract the upload id from the path and route. The DELETE branch is unconditional and comes first, so an id this code cannot parse still never reaches tusd:
+In `handleTusProxy`, before forwarding, route by method. DELETE runs the completion fence **first**: if the bytes are already complete, the fence promotes them and `handleTusDelete`'s re-read then answers 409, so a cancellation can never destroy a complete upload. This matters because a saturated durability executor answers 503 without scheduling anything, and the current client exhausts its five fixed retries and cancels — which would otherwise delete the guest's only complete copy. The DELETE branch is also unconditional, so an id this code cannot parse still never reaches tusd:
 
 ```go
 	if r.Method == http.MethodDelete {
-		s.handleTusDelete(w, r, tusUploadIDFromPath(r.URL.Path))
+		uploadID := tusUploadIDFromPath(r.URL.Path)
+		if s.fenceCompletedUpload(w, r, uploadID) {
+			return
+		}
+		s.handleTusDelete(w, r, uploadID)
 		return
 	}
 	uploadID := tusUploadIDFromPath(r.URL.Path)
@@ -3185,20 +3205,9 @@ func tusUploadIDFromPath(p string) string {
 }
 ```
 
-- [ ] **Step 4: Provide the single termination implementation**
+- [ ] **Step 4: Note on termination**
 
-The app already has exactly the code needed: `terminateTusUpload` in `storage_cleanup.go` issues the internal DELETE and already treats 204, 404, and 410 as success. Expose it as the seam the ingest manager consumes, in `tus_proxy.go`:
-
-```go
-// Terminate implements ingest.SourceTerminator. Both the incomplete-upload
-// janitor and the ingest workers remove tus files through this one path, so
-// tusd always cleans up its own sidecar and lock state.
-func (s *Server) Terminate(ctx context.Context, uploadID string) error {
-	return s.terminateTusUpload(ctx, uploadID)
-}
-```
-
-Do **not** enable tusd's `pre-terminate` hook. It would exist to stop a client from terminating an upload, but `handleTusProxy` now refuses every client DELETE before parsing, so no client request can reach tusd's terminate path at all. Enabling it would instead break the existing janitor, whose DELETEs carry no queue state, and would add a hook, a forwarded header, and an authorization scheme with no threat left to defend against.
+The `Terminate` seam was added in Task 8 because the test harness needs it. Do **not** enable tusd's `pre-terminate` hook. It would exist to stop a client from terminating an upload, but `handleTusProxy` now refuses every client DELETE before parsing, so no client request can reach tusd's terminate path at all. Enabling it would instead break the existing janitor, whose DELETEs carry no queue state, and would add a hook, a forwarded header, and an authorization scheme with no threat left to defend against.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -3224,7 +3233,7 @@ git commit -m "feat: fence completions and refuse client terminations"
 
 **Interfaces:**
 - Consumes: `media.Processor.PrepareOriginal`, `media.Processor.VerifyOriginal`, `store.ClaimNextJob`, `store.FinishJob`, `Options.Terminator`.
-- Produces: `func (s *Store) PublishMedia(ctx context.Context, uploadID, leaseToken string, item *models.MediaItem, now int64) (resultMediaID string, isDuplicate bool, err error)`, `func (s *Store) RecordArtifactIdentity(...) error`, `func (s *Store) RecordPrepared(...) error`, `func (s *Store) MediaIsReferencedByActiveJob(ctx context.Context, mediaID string) (bool, error)`, and `func (m *Manager) claimAndRunOnce() (bool, error)`.
+- Produces: `func (s *Store) PublishMedia(ctx context.Context, uploadID, leaseToken string, item *models.MediaItem, now int64) (resultMediaID string, isDuplicate bool, err error)`, `func (s *Store) RecordArtifactIdentity(...) error`, `func (s *Store) RecordPrepared(...) error`, `func (s *Store) MediaIsReferencedByActiveJob(ctx context.Context, mediaID string) (bool, error)`, `func (s *Store) ReviveForPublication(ctx context.Context, uploadID, leaseToken string, now int64) error`, and `func (m *Manager) claimAndRunOnce() (bool, error)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3493,9 +3502,15 @@ func (m *Manager) claimAndRunOnce() (bool, error) {
 		from, to store.JobStatus
 		run      func(*store.UploadJob)
 	}{
-		{store.JobPending, store.JobProcessing, m.runProcessing},
+		// Cleanup and discard come first. They are one stat plus one HTTP
+		// DELETE, and they are what returns disk to the pool; processing is a
+		// whole-file copy. Running them last would mean that under sustained
+		// load every tus source is retained for the entire burst on top of its
+		// permanent copy, and INGEST_MIN_FREE_BYTES would start refusing new
+		// uploads because of work already finished.
 		{store.JobCleanup, store.JobCleanup, m.runCleanup},
 		{store.JobDiscarding, store.JobDiscarding, m.runDiscard},
+		{store.JobPending, store.JobProcessing, m.runProcessing},
 		// Reclaims work abandoned by an expired lease without waiting for a
 		// restart. The claim's own lease_until filter makes this a no-op while
 		// another worker still owns the job.
@@ -3516,6 +3531,17 @@ func (m *Manager) claimAndRunOnce() (bool, error) {
 }
 
 func (m *Manager) runProcessing(job *store.UploadJob) {
+	// Publishing into a media volume we cannot prove is mounted would write the
+	// original somewhere the real volume cannot see, and that new file would
+	// then satisfy the health gate and authorize deleting the tus source.
+	if err := m.health.Check(m.lifetime); err != nil {
+		next := store.NowMicros() + m.backoffFor(job.ProcessingFailures).Microseconds()
+		if err := m.store.ReleaseForRetry(m.lifetime, job.UploadID, job.LeaseToken, store.JobPending, next, "processing_failures", truncateError(err)); err != nil {
+			slog.Error("failed to reschedule after health failure", "operation", "processing", "upload_id", job.UploadID, "error", err)
+		}
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(m.lifetime, m.opts.ProcessingTimeout)
 	defer cancel()
 
@@ -3693,10 +3719,38 @@ func (m *Manager) runDiscard(job *store.UploadJob) {
 	if !m.deletionAllowed(job) {
 		return
 	}
+	if !m.safeToDiscardSource(job) {
+		return
+	}
 	if !m.removeArtifactsIfUnowned(job) {
 		return
 	}
 	m.finishBySourceRemoval(job, store.JobDiscarded, job.TerminalReason)
+}
+
+// safeToDiscardSource is the last guard before a discard destroys bytes.
+// Content the processor deterministically rejected is safe to remove. Anything
+// else reaching discard should have an absent or incomplete source — a
+// complete one means the reason we discarded it was wrong, most plausibly a
+// faulted upload volume that made a live upload look like it had no bytes.
+// Rather than delete it, hand it back for promotion.
+func (m *Manager) safeToDiscardSource(job *store.UploadJob) bool {
+	switch job.TerminalReason {
+	case "unsupported_type", "checksum_mismatch":
+		return true
+	}
+	stat, err := os.Stat(m.DataPath(job.UploadID))
+	if err != nil || stat.Size() != job.ExpectedSize {
+		return true // absent or incomplete: nothing complete can be lost
+	}
+
+	slog.Warn("refusing to discard a complete source; returning it for publication",
+		"operation", "discard", "upload_id", job.UploadID)
+	if err := m.store.ReviveForPublication(m.lifetime, job.UploadID, job.LeaseToken, store.NowMicros()); err != nil {
+		slog.Error("failed to revive upload", "operation", "discard", "upload_id", job.UploadID, "error", err)
+	}
+	m.Wake()
+	return false
 }
 
 // deletionAllowed re-checks storage health against the filesystem rather than
@@ -3763,18 +3817,32 @@ func (m *Manager) finishBySourceRemoval(job *store.UploadJob, status store.JobSt
 		m.retryCleanup(job, err)
 		return
 	}
-	// tusd's 204, 404, or 410 is a prompt to verify, not proof. The data file
-	// is the proof: it holds the bytes. A lingering sidecar is tusd metadata
-	// we are not allowed to unlink ourselves, so it is logged for the janitor
-	// rather than blocking — otherwise a half-terminated upload would retry
-	// forever, hold its job open, and permanently block purge of its media row.
+	// tusd's 204, 404, or 410 is a prompt to verify, not proof.
 	if _, err := os.Stat(dataPath); err == nil {
 		m.retryCleanup(job, errors.New("source still present after termination"))
 		return
 	}
-	if _, err := os.Stat(m.InfoPath(job.UploadID)); err == nil {
-		slog.Warn("tus sidecar outlived its data file; leaving it for the janitor",
+	// A sidecar can outlive its data file if tusd crashed between the two
+	// unlinks. tusd will not remove it — its own GetUpload fails without the
+	// data file — and neither will the janitor, so the app removes it here.
+	// This is the one file the app unlinks directly, and it is safe precisely
+	// because it holds no bytes: the rule it bends exists to protect data.
+	infoPath := m.InfoPath(job.UploadID)
+	if _, err := os.Stat(infoPath); err == nil {
+		slog.Warn("removing tus sidecar that outlived its data file",
 			"operation", "cleanup", "upload_id", job.UploadID)
+		if err := os.Remove(infoPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			m.retryCleanup(job, fmt.Errorf("remove orphan sidecar: %w", err))
+			return
+		}
+		if err := media.FsyncDir(m.opts.UploadDir); err != nil {
+			m.retryCleanup(job, err)
+			return
+		}
+		if _, err := os.Stat(infoPath); err == nil {
+			m.retryCleanup(job, errors.New("sidecar still present after removal"))
+			return
+		}
 	}
 	if err := m.store.FinishJob(m.lifetime, job.UploadID, job.LeaseToken, status, reason, store.NowMicros()); err != nil {
 		slog.Error("failed to commit terminal state", "operation", "cleanup", "upload_id", job.UploadID, "error", err)
@@ -3846,6 +3914,28 @@ func (s *Store) MediaIsReferencedByActiveJob(ctx context.Context, mediaID string
 		return false, fmt.Errorf("check active job references: %w", err)
 	}
 	return n > 0, nil
+}
+
+// ReviveForPublication returns a job that should not have been discarded to
+// 'uploading' and clears the cancellation intent, so the durability barrier
+// can promote it normally. This is the escape hatch for a discard that was
+// decided on evidence which later turned out to be wrong.
+func (s *Store) ReviveForPublication(ctx context.Context, uploadID, leaseToken string, now int64) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET status = 'uploading',
+		       cancellation_requested_at = NULL,
+		       terminal_reason = '',
+		       lease_token = NULL,
+		       lease_until = NULL,
+		       next_attempt_at = ?,
+		       updated_at = ?
+		 WHERE upload_id = ? AND lease_token = ?`,
+		now, now, uploadID, leaseToken)
+	if err != nil {
+		return fmt.Errorf("revive upload job: %w", err)
+	}
+	return requireOneRow(res)
 }
 ```
 
@@ -4457,6 +4547,18 @@ git commit -m "feat: adopt orphaned completed uploads and gate upload routes on 
 Create `backend/internal/httpapi/uploads_status_test.go`:
 
 ```go
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"event-gallery/backend/internal/store"
+)
+
 // postStatus posts a batch and returns the decoded results map.
 func postStatus(t *testing.T, h *testHarness, ids []string) map[string]uploadStatusEntry {
 	t.Helper()
@@ -4553,6 +4655,7 @@ Create `backend/internal/httpapi/uploads_status.go`:
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -4708,7 +4811,7 @@ git commit -m "feat: expose batched upload status and neutralize the legacy chec
 
 - [ ] **Step 1: Wire the manager into main**
 
-In `backend/cmd/server/main.go`, after the store, processor, and server are built. The server is constructed first because it is also the `SourceTerminator`:
+In `backend/cmd/server/main.go`, after the store, processor, and server are built. The server is constructed first because it is also the `SourceTerminator`, and the manager is attached and the listener started **before** `Start()`, because `Start()` runs the whole startup inventory synchronously:
 
 ```go
 	ingestManager := ingest.New(st, processor, ingest.Options{
@@ -4723,8 +4826,18 @@ In `backend/cmd/server/main.go`, after the store, processor, and server are buil
 		MinFreeBytes:      cfg.IngestMinFreeBytes,
 		Terminator:        srv,
 	})
-	ingestManager.Start()
 	srv.SetIngest(ingestManager)
+```
+
+Then, **after** the existing `go httpServer.ListenAndServe()` line:
+
+```go
+	// Started only once the listener is up. The inventory fsyncs every
+	// recovered source, and the first boot after this upgrade has the largest
+	// backlog of them; blocking the listener would fail the container
+	// healthcheck and keep the tunnel down. Upload routes answer 503 until
+	// Ready() flips, which is the correct backpressure for that window.
+	go ingestManager.Start()
 ```
 
 `ingestManager.Stop()` must run during graceful shutdown, after the HTTP server stops accepting requests and **before** the database is closed — `Stop` waits for in-flight durability commits, and closing the database first would fail them. With `defer sqlDB.Close()` registered earlier, a later `defer ingestManager.Stop()` gives exactly that order.

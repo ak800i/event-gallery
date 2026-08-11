@@ -387,12 +387,18 @@ Before any JPEG, PNG, GIF, or WebP full decode, the processor calls
 thumbnailing above `IMAGE_MAX_SOURCE_PIXELS`. Skips are logged as
 deterministic derivative outcomes and publish the original anyway.
 
-`prepared_at` plus `stored_filename` and `authoritative_sha256` also form a
-recovery identity. If a crash loses the `prepared_at` commit, the next worker
-validates the deterministic final by persisted filename, size, and hash and
-backfills the marker rather than re-copying or deleting. A fully synced
-temporary whose rename was lost is promoted the same way. A temporary is
-removed only after another valid copy exists, or after conclusive mismatch.
+`stored_filename` and `authoritative_sha256` form a recovery identity: on any
+retry the deterministic final is reused when its size and hash match, and a
+mismatch is an error rather than a silent overwrite, so a crash between the
+rename and the `prepared_at` commit costs one verification instead of a
+re-copy. A leftover temporary is removed only after another valid copy exists,
+or after conclusive mismatch.
+
+No recovery path reconstructs a job from its prepared artifacts alone. It is
+not needed: the source is deleted only by cleanup, which runs after
+publication has committed, so a job that still needs its source always still
+has it. A source that disappears for any other reason is a missing source and
+retries indefinitely.
 
 ### Transactional publication
 
@@ -638,12 +644,10 @@ passes a stage.
   rather than deleted.
 - A partial upload keeps its row, resumes through HEAD and PATCH, and is
   governed only by the incomplete-retention policy.
-- Crash injection after the temporary is fsynced and its parent directory is
-  fsynced but before rename, then remove the source: recovery validates and
-  promotes the temporary and publishes it.
-- Crash injection after final rename and directory fsync but before the
-  `prepared_at` commit, then remove the source: recovery validates the final
-  from persisted filename and hash, backfills the marker, and publishes.
+- A crash between the final rename and the `prepared_at` commit costs only a
+  re-verification: the next attempt reuses the matching original instead of
+  re-copying it, and a mismatched existing original is an error rather than an
+  overwrite.
 - An emptied upload mount deletes nothing and loses nothing: `pending` jobs
   stay retryable, rows without `source_completed_at` terminalize without any
   tus termination being issued, and when the mount returns every complete
