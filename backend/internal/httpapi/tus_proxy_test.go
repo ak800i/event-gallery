@@ -588,6 +588,34 @@ func TestNoForwardedRequestCarriesAMethodOverride(t *testing.T) {
 	}
 }
 
+func TestADuplicateMethodOverrideStillNeverReachesTusd(t *testing.T) {
+	h := newTestHarness(t)
+	fake, received := newFakeTusd(t)
+	h.withTusTarget(t, fake.URL)
+	seedUploadingJobSized(t, h, testUploadID, 100)
+
+	// Header.Get reads only the first value, so an empty first copy slips past
+	// the handler's refusal. tusd's own Get would read the same empty string,
+	// but only because Del removes every value under the key -- this is the one
+	// shape where the director strip, not the refusal, is the guard that holds.
+	req := httptest.NewRequest(http.MethodPost, "/api/tus/"+testUploadID, nil)
+	req.Header.Add("X-HTTP-Method-Override", "")
+	req.Header.Add("X-HTTP-Method-Override", http.MethodDelete)
+	serveRequest(h, req)
+
+	if len(*received) == 0 {
+		t.Fatal("the request never reached tusd, so the director was not exercised")
+	}
+	for _, got := range *received {
+		if v := got.Header.Values("X-HTTP-Method-Override"); len(v) != 0 {
+			t.Errorf("tusd was handed X-HTTP-Method-Override: %q", v)
+		}
+	}
+	if job := loadJob(t, h, testUploadID); job.CancellationRequestedAt != nil {
+		t.Error("a forwarded POST must not record cancellation intent")
+	}
+}
+
 func TestConcurrentDeleteAndCompletionKeepsTheUpload(t *testing.T) {
 	h := newTestHarness(t)
 	var forwarded atomic.Int64
