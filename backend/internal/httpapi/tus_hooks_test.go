@@ -392,18 +392,41 @@ func postPreFinish(t *testing.T, h *testHarness, upload tusHookUpload) tusHookRe
 
 // A pre-finish rejection cannot use RejectUpload: tusd honours that field only
 // at pre-create, and the bytes are already written by now. The only channel
-// left is an embedded response inside a 2xx envelope, and it must be a
+// left is an embedded response inside a 2xx envelope. A transient refusal is a
 // retryable 503 — the upload is not wrong, it is merely not committed yet.
 func assertPreFinishRetryable(t *testing.T, resp tusHookResponse) {
 	t.Helper()
 	if resp.HTTPResponse == nil {
 		t.Fatalf("expected an embedded client response, got %+v", resp)
 	}
+	if resp.RejectUpload {
+		t.Error("pre-finish cannot reject an upload that is already written")
+	}
 	if resp.HTTPResponse.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503 so the client retries", resp.HTTPResponse.StatusCode)
 	}
 	if resp.HTTPResponse.Header["Retry-After"] == "" {
 		t.Errorf("backpressure must carry Retry-After, got %+v", resp.HTTPResponse.Header)
+	}
+}
+
+// A deterministic refusal is the other half: a 4xx with no Retry-After, which
+// is the only thing that ever tells the client to stop. Relaying it as 503
+// would make an upload that can never complete retry forever.
+func assertPreFinishFinal(t *testing.T, resp tusHookResponse) {
+	t.Helper()
+	if resp.HTTPResponse == nil {
+		t.Fatalf("expected an embedded client response, got %+v", resp)
+	}
+	if resp.RejectUpload {
+		t.Error("pre-finish cannot reject an upload that is already written")
+	}
+	status := resp.HTTPResponse.StatusCode
+	if status < 400 || status > 499 {
+		t.Errorf("status = %d, want 4xx so the client stops retrying", status)
+	}
+	if resp.HTTPResponse.Header["Retry-After"] != "" {
+		t.Errorf("a final refusal must not invite a retry, got %+v", resp.HTTPResponse.Header)
 	}
 }
 
@@ -459,6 +482,8 @@ func TestPreFinishCommitsBeforeAllowingCompletion(t *testing.T) {
 	assertSourceSurvives(t, h, id)
 }
 
+// An upload that is not whole can never become whole: tusd has already
+// written every byte it is going to write for this upload.
 func TestPreFinishRefusesToCommitAnUploadThatIsNotWhole(t *testing.T) {
 	cases := map[string]func(h *testHarness, id string, size int64) tusHookUpload{
 		"offset behind size": func(h *testHarness, id string, size int64) tusHookUpload {
@@ -486,7 +511,7 @@ func TestPreFinishRefusesToCommitAnUploadThatIsNotWhole(t *testing.T) {
 
 			resp := postPreFinish(t, h, build(h, id, int64(len(payload))))
 
-			assertPreFinishRetryable(t, resp)
+			assertPreFinishFinal(t, resp)
 			assertUploadJobStatus(t, h, id, store.JobUploading)
 			assertSourceSurvives(t, h, id)
 		})
@@ -527,15 +552,16 @@ func TestPreFinishRefusesAnUploadItCannotIdentify(t *testing.T) {
 
 			resp := postPreFinish(t, h, build(h, id, int64(len(payload))))
 
-			assertPreFinishRetryable(t, resp)
+			assertPreFinishFinal(t, resp)
 			assertUploadJobStatus(t, h, id, store.JobUploading)
 			assertSourceSurvives(t, h, id)
 		})
 	}
 }
 
-// A cancelled upload fails the promotion closed. The client is told to retry
-// rather than told it succeeded, and nothing is deleted here either.
+// A cancelled upload will never promote, so the client must be told to stop
+// rather than to retry an upload the app has already given up on. Nothing is
+// deleted here either.
 func TestPreFinishDoesNotReportSuccessForACancelledUpload(t *testing.T) {
 	h := newTestHarness(t)
 	payload := []byte("durable bytes")
@@ -546,7 +572,7 @@ func TestPreFinishDoesNotReportSuccessForACancelledUpload(t *testing.T) {
 
 	resp := postPreFinish(t, h, completedUpload(h, id, int64(len(payload))))
 
-	assertPreFinishRetryable(t, resp)
+	assertPreFinishFinal(t, resp)
 	assertUploadJobStatus(t, h, id, store.JobUploading)
 	assertSourceSurvives(t, h, id)
 }
@@ -589,8 +615,28 @@ func TestPreFinishRefusesAnIdThatEscapesTheUploadDirectory(t *testing.T) {
 
 	resp := postPreFinish(t, h, completedUpload(h, escaping, int64(len(payload))))
 
-	assertPreFinishRetryable(t, resp)
+	assertPreFinishFinal(t, resp)
 	assertUploadJobStatus(t, h, escaping, store.JobUploading)
+}
+
+// Refusals that say nothing about the upload itself must stay retryable, or
+// the split would turn ordinary backpressure into a lost file.
+func TestPreFinishRelaysATransientRefusalAsBackpressure(t *testing.T) {
+	h := newTestHarness(t)
+	payload := []byte("durable bytes")
+	id := admitUpload(t, h, payload)
+
+	// A manager that is shutting down starts no new work. The upload is not
+	// wrong, so the client must be told to come back, not to give up.
+	stopping := ingest.New(h.store, h.proc, ingest.Options{UploadDir: h.cfg.TusUploadDir})
+	stopping.Stop()
+	h.server.SetIngest(stopping)
+
+	resp := postPreFinish(t, h, completedUpload(h, id, int64(len(payload))))
+
+	assertPreFinishRetryable(t, resp)
+	assertUploadJobStatus(t, h, id, store.JobUploading)
+	assertSourceSurvives(t, h, id)
 }
 
 // safeUploadID is the guard that keeps a hook payload from selecting a path

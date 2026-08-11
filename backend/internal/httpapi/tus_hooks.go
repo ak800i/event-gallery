@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"path"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"event-gallery/backend/internal/ingest"
 	"event-gallery/backend/internal/store"
 )
 
@@ -66,18 +68,31 @@ type tusHookResponse struct {
 	ChangeFileInfo *tusHookChangeFileInfo `json:"ChangeFileInfo,omitempty"`
 }
 
-func rejectHook(w http.ResponseWriter, status int, message string) {
-	resp := tusHookResponse{
-		RejectUpload: true,
+// clientStatusHook answers the hook itself with 2xx — the only way tusd v2.10
+// relays a chosen status, since a non-2xx body becomes an opaque 500 at the
+// browser — and embeds the response the client must see. reject asks tusd to
+// abort the upload, which it honours for pre-create only. A non-positive
+// retryAfterSeconds omits the header, which is what separates a final refusal
+// from backpressure.
+func clientStatusHook(w http.ResponseWriter, reject bool, status int, message string, retryAfterSeconds int) {
+	header := map[string]string{"Content-Type": "application/json"}
+	if retryAfterSeconds > 0 {
+		header["Retry-After"] = strconv.Itoa(retryAfterSeconds)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(tusHookResponse{
+		RejectUpload: reject,
 		HTTPResponse: &tusHookHTTPResponse{
 			StatusCode: status,
 			Body:       `{"error":"` + message + `"}`,
-			Header:     map[string]string{"Content-Type": "application/json"},
+			Header:     header,
 		},
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK) // 2XX so tusd applies our RejectUpload instruction.
-	_ = json.NewEncoder(w).Encode(resp)
+	})
+}
+
+func rejectHook(w http.ResponseWriter, status int, message string) {
+	clientStatusHook(w, true, status, message, 0)
 }
 
 func allowHook(w http.ResponseWriter) {
@@ -86,25 +101,10 @@ func allowHook(w http.ResponseWriter) {
 	_ = json.NewEncoder(w).Encode(tusHookResponse{})
 }
 
-// retryHook relays backpressure at admission time. tusd honors RejectUpload
-// only for pre-create, and only when the hook itself answers 2xx and embeds
-// the real response — a non-2xx here would become an opaque 500 at the browser
-// instead of a retryable 503.
+// retryHook relays backpressure at admission time, where RejectUpload still
+// means something: tusd honors it for pre-create only.
 func retryHook(w http.ResponseWriter, retryAfterSeconds int, message string) {
-	resp := tusHookResponse{
-		RejectUpload: true,
-		HTTPResponse: &tusHookHTTPResponse{
-			StatusCode: http.StatusServiceUnavailable,
-			Body:       `{"error":"` + message + `"}`,
-			Header: map[string]string{
-				"Content-Type": "application/json",
-				"Retry-After":  strconv.Itoa(retryAfterSeconds),
-			},
-		},
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	clientStatusHook(w, true, http.StatusServiceUnavailable, message, retryAfterSeconds)
 }
 
 // handleTusHook is the single endpoint tusd calls for every hook event
@@ -226,60 +226,82 @@ func (s *Server) handlePreFinishHook(w http.ResponseWriter, r *http.Request, req
 	ctx := r.Context()
 
 	upload := req.Event.Upload
+	// Every refusal is logged: behind a generic client status, the server log
+	// is the only trace a traversing id or a misconfigured backend leaves.
+	retry := func(reason string) {
+		slog.Warn("pre-finish cannot commit the upload yet",
+			"operation", "pre_finish", "upload_id", upload.ID, "reason", reason)
+		preFinishRetry(w, reason)
+	}
+	final := func(reason string) {
+		slog.Warn("pre-finish refused an upload it can never commit",
+			"operation", "pre_finish", "upload_id", upload.ID, "reason", reason)
+		preFinishFinal(w, http.StatusBadRequest, reason)
+	}
+
 	if s.ingest == nil {
-		preFinishRetry(w, "ingest is not ready")
+		retry("ingest is not ready")
 		return
 	}
-	if upload.ID == "" || !safeUploadID(upload.ID) {
-		preFinishRetry(w, "invalid upload id")
+	if !safeUploadID(upload.ID) {
+		final("invalid upload id")
 		return
 	}
 	if upload.Storage.Type != "filestore" {
-		preFinishRetry(w, "unsupported storage backend")
+		final("unsupported storage backend")
 		return
 	}
 	// The hook must be talking about the path we derive, not one it chose.
 	if filepath.Clean(upload.Storage.Path) != filepath.Clean(s.ingest.DataPath(upload.ID)) {
-		preFinishRetry(w, "unexpected storage path")
+		final("unexpected storage path")
 		return
 	}
 	if upload.Size <= 0 || upload.Offset != upload.Size {
-		preFinishRetry(w, "upload is not complete")
+		final("upload is not complete")
 		return
 	}
 
 	switch err := s.ingest.EnsureDurable(ctx, upload.ID); {
 	case err == nil:
 		allowHook(w)
+	case errors.Is(err, ingest.ErrDurabilityFinal):
+		// The row has left the lifecycle, or the source is not the file we
+		// admitted. Relaying this as backpressure would make the client retry
+		// an upload that can never complete, on a five-second cadence, forever.
+		slog.Warn("durability barrier refused the upload for good",
+			"operation", "pre_finish", "upload_id", upload.ID, "error", err)
+		preFinishFinal(w, http.StatusConflict, "upload can no longer be completed")
 	default:
-		// Saturation or an expired budget is backpressure. The detached
-		// operation continues, so the retry will usually find it already done.
+		// Saturation, shutdown or an expired budget is backpressure. The
+		// detached operation continues, so the retry will usually find it
+		// already done.
 		slog.Warn("durability barrier did not complete within the request budget",
 			"operation", "pre_finish", "upload_id", upload.ID, "error", err)
 		preFinishRetry(w, "upload is still being persisted, please retry")
 	}
 }
 
-// preFinishRetry is the only failure response pre-finish has. tusd ignores
-// RejectUpload for this hook — the upload is already written and cannot be
-// rejected here — and merges HTTPResponse into the final PATCH response. So
-// every failure is reported as retryable backpressure, and it is the
-// completion fence, not this status, that stops a false success. Nothing is
-// lost either way: an upload we refuse to promote is picked up later by
-// reconciliation.
+// preFinishRetryAfterSeconds paces a client whose upload we could not commit
+// inside its request budget.
+const preFinishRetryAfterSeconds = 5
+
+// preFinishRetry reports a transient refusal. tusd ignores RejectUpload for
+// this hook — the upload is already written and cannot be rejected here — and
+// merges HTTPResponse into the final PATCH response, so the embedded 503 is
+// what makes the browser back off and come back. Nothing is lost meanwhile:
+// an upload we could not promote in time is picked up by reconciliation.
 func preFinishRetry(w http.ResponseWriter, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(tusHookResponse{
-		HTTPResponse: &tusHookHTTPResponse{
-			StatusCode: http.StatusServiceUnavailable,
-			Body:       `{"error":"` + message + `"}`,
-			Header: map[string]string{
-				"Content-Type": "application/json",
-				"Retry-After":  "5",
-			},
-		},
-	})
+	clientStatusHook(w, false, http.StatusServiceUnavailable, message, preFinishRetryAfterSeconds)
+}
+
+// preFinishFinal reports a refusal no retry can change, and is the terminal
+// state the single-503 design lacked: without it a permanently truncated
+// source, or a row reconciliation has discarded, leaves the client retrying
+// on a five-second cadence with nothing that could ever tell it to stop. It
+// carries no Retry-After, and no RejectUpload, which tusd honours at
+// pre-create only.
+func preFinishFinal(w http.ResponseWriter, status int, message string) {
+	clientStatusHook(w, false, status, message, 0)
 }
 
 // safeUploadID rejects anything that could escape the upload directory.

@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"event-gallery/backend/internal/media"
 	"event-gallery/backend/internal/store"
 )
 
@@ -74,6 +77,33 @@ func awaitInFlight(t *testing.T, m *Manager, uploadID string) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("no durability operation was ever registered for %s", uploadID)
+}
+
+// awaitClosing blocks until the registry has been marked closed, so a test can
+// act in the exact window where a new operation would race wg.Wait.
+func awaitClosing(t *testing.T, m *Manager) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		m.durability.mu.Lock()
+		closing := m.durability.closing
+		m.durability.mu.Unlock()
+		if closing {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the registry never marked itself closed")
+}
+
+// swapFsync replaces the barrier's sync calls for one test. The fakes run at
+// exactly the points the real calls do, which is what lets a test observe the
+// ordering rather than merely the fact that a sync happened.
+func swapFsync(t *testing.T, file, dir func(string) error) {
+	t.Helper()
+	origFile, origDir := fsyncFile, fsyncDir
+	fsyncFile, fsyncDir = file, dir
+	t.Cleanup(func() { fsyncFile, fsyncDir = origFile, origDir })
 }
 
 func TestEnsureDurableCommitsPending(t *testing.T) {
@@ -178,8 +208,12 @@ func TestEnsureDurableRefusesCancelledUpload(t *testing.T) {
 	if err := st.RequestCancellation(context.Background(), "u1", store.NowMicros()); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
-	if err := m.EnsureDurable(context.Background(), "u1"); err == nil {
+	err := m.EnsureDurable(context.Background(), "u1")
+	if err == nil {
 		t.Fatal("promotion must fail closed after cancellation")
+	}
+	if !errors.Is(err, ErrDurabilityFinal) {
+		t.Errorf("error = %v, want final: a cancelled upload will never promote, so retrying is pointless", err)
 	}
 }
 
@@ -194,8 +228,12 @@ func TestEnsureDurableRefusesDiscardingUpload(t *testing.T) {
 	if err := st.ClaimUploadingForDiscard(context.Background(), "u1", store.NowMicros()); err != nil {
 		t.Fatalf("claim for discard: %v", err)
 	}
-	if err := m.EnsureDurable(context.Background(), "u1"); err == nil {
+	err := m.EnsureDurable(context.Background(), "u1")
+	if err == nil {
 		t.Fatal("a discarding upload must never be reported durable")
+	}
+	if !errors.Is(err, ErrDurabilityFinal) {
+		t.Errorf("error = %v, want final", err)
 	}
 	if got := jobStatus(t, st, "u1"); got != store.JobDiscarding {
 		t.Errorf("status = %q, want discarding", got)
@@ -207,8 +245,12 @@ func TestEnsureDurableRefusesUnknownUpload(t *testing.T) {
 	m := New(st, proc, testOptions(t))
 	defer m.Stop()
 
-	if err := m.EnsureDurable(context.Background(), "never-admitted"); err == nil {
+	err := m.EnsureDurable(context.Background(), "never-admitted")
+	if err == nil {
 		t.Fatal("an upload with no row must not be reported durable")
+	}
+	if !errors.Is(err, ErrDurabilityFinal) {
+		t.Errorf("error = %v, want final: no retry can conjure a row we never admitted", err)
 	}
 }
 
@@ -244,8 +286,12 @@ func TestEnsureDurableRefusesSourceThatDoesNotMatchTheAdmittedSize(t *testing.T)
 			seedCompleteUpload(t, m, st, "u1", []byte("payload"))
 			corrupt(t, m, "u1")
 
-			if err := m.EnsureDurable(context.Background(), "u1"); err == nil {
+			err := m.EnsureDurable(context.Background(), "u1")
+			if err == nil {
 				t.Fatal("a source that is not the admitted file must not be promoted")
+			}
+			if !errors.Is(err, ErrDurabilityFinal) {
+				t.Errorf("error = %v, want final: the source will not repair itself, so the client must stop", err)
 			}
 			if got := jobStatus(t, st, "u1"); got != store.JobUploading {
 				t.Errorf("status = %q, want uploading: a refused barrier commits nothing", got)
@@ -334,8 +380,13 @@ func TestEnsureDurableJoinsTheOperationAlreadyInFlight(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		go func() { results <- m.EnsureDurable(context.Background(), "u1") }()
 	}
-	// Let the joiners park on the running operation before it can finish.
+	// Let the joiners park on the running operation before it can finish. A
+	// caller that failed to join would already have been refused with
+	// ErrDurabilityBusy, so an empty channel here is what proves they joined.
 	time.Sleep(50 * time.Millisecond)
+	if len(results) != 0 {
+		t.Fatalf("%d caller(s) returned before the operation finished; they queued instead of joining", len(results))
+	}
 	release()
 
 	for i := 0; i < 3; i++ {
@@ -375,6 +426,9 @@ func TestEnsureDurableReportsBusyWhenTheExecutorIsSaturated(t *testing.T) {
 	err := m.EnsureDurable(context.Background(), "u2")
 	if !errors.Is(err, ErrDurabilityBusy) {
 		t.Fatalf("second upload error = %v, want ErrDurabilityBusy", err)
+	}
+	if errors.Is(err, ErrDurabilityFinal) {
+		t.Error("saturation is transient: the client must be told to retry, not to give up")
 	}
 
 	release()
@@ -442,8 +496,12 @@ func TestDetachedDurabilityWorkIsBounded(t *testing.T) {
 
 	seedCompleteUpload(t, m, st, "u1", []byte("payload"))
 
-	if err := m.EnsureDurable(context.Background(), "u1"); err == nil {
+	err := m.EnsureDurable(context.Background(), "u1")
+	if err == nil {
 		t.Fatal("an operation past its own budget must not report success")
+	}
+	if errors.Is(err, ErrDurabilityFinal) {
+		t.Errorf("error = %v, want transient: an expired budget says nothing about the upload", err)
 	}
 	if got := jobStatus(t, st, "u1"); got != store.JobUploading {
 		t.Errorf("status = %q, want uploading", got)
@@ -488,5 +546,184 @@ func TestStopReleasesAParkedCallerWithoutReportingSuccess(t *testing.T) {
 	release()
 	if got := jobStatus(t, st, "u1"); got != store.JobUploading {
 		t.Errorf("status = %q, want uploading: shutdown committed nothing", got)
+	}
+}
+
+// Once the shutdown wait has begun, starting an operation would take the
+// WaitGroup from zero to one underneath a parked Wait — which is a panic on
+// main's shutdown goroutine — and would run makeDurable against a store the
+// caller is about to close.
+func TestEnsureDurableRefusesToStartOnceShutdownHasBegun(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	opts := testOptions(t)
+	opts.DurabilityWorkers = 2
+	m := New(st, proc, opts)
+	defer m.Stop()
+
+	seedCompleteUpload(t, m, st, "u1", []byte("payload"))
+	seedCompleteUpload(t, m, st, "u2", []byte("payload"))
+
+	release := stallStore(t, st)
+	defer release()
+
+	parked := make(chan error, 1)
+	go func() { parked <- m.EnsureDurable(context.Background(), "u1") }()
+	awaitInFlight(t, m, "u1")
+
+	waited := make(chan struct{})
+	go func() {
+		m.durability.wait()
+		close(waited)
+	}()
+	awaitClosing(t, m)
+
+	err := m.EnsureDurable(context.Background(), "u2")
+	if !errors.Is(err, ErrDurabilityClosing) {
+		t.Fatalf("error = %v, want ErrDurabilityClosing", err)
+	}
+	if errors.Is(err, ErrDurabilityFinal) {
+		t.Error("a refusal during shutdown is transient: the next process will accept the retry")
+	}
+
+	// Refusing new work must not strand the caller already waiting on one.
+	release()
+	select {
+	case err := <-parked:
+		if err != nil {
+			t.Fatalf("the operation already in flight must still finish: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("shutdown stranded a caller parked on a running operation")
+	}
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("wait never returned")
+	}
+	if got := jobStatus(t, st, "u1"); got != store.JobPending {
+		t.Errorf("u1 status = %q, want pending", got)
+	}
+	if got := jobStatus(t, st, "u2"); got != store.JobUploading {
+		t.Errorf("u2 status = %q, want uploading: a refused caller commits nothing", got)
+	}
+}
+
+// Durability is the ordering, not the calls. A row that commits before its
+// bytes reach the platter is exactly the loss this barrier exists to prevent,
+// and it is invisible until the machine dies — so it is asserted here.
+func TestMakeDurableSyncsTheSourceBeforeItCommits(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+	defer m.Stop()
+
+	seedCompleteUpload(t, m, st, "u1", []byte("payload"))
+
+	var synced []string
+	statusAtDirSync := store.JobStatus("never synced")
+	swapFsync(t,
+		func(path string) error {
+			synced = append(synced, path)
+			return media.FsyncFile(path)
+		},
+		func(path string) error {
+			if job, err := st.GetUploadJob(context.Background(), "u1"); err == nil && job != nil {
+				statusAtDirSync = job.Status
+			}
+			synced = append(synced, path)
+			return media.FsyncDir(path)
+		})
+
+	if err := m.EnsureDurable(context.Background(), "u1"); err != nil {
+		t.Fatalf("ensure durable: %v", err)
+	}
+
+	want := []string{m.DataPath("u1"), m.InfoPath("u1"), m.opts.UploadDir}
+	if !slices.Equal(synced, want) {
+		t.Errorf("synced %v, want %v", synced, want)
+	}
+	if statusAtDirSync != store.JobUploading {
+		t.Errorf("status while the upload directory was being synced = %q, want uploading: the row committed before the bytes were durable",
+			statusAtDirSync)
+	}
+}
+
+// PromoteToPending reports ErrNotClaimed both for a row another caller has
+// already committed and for one cancelled underneath us. Only the row itself
+// can tell them apart, and guessing wrong either fails a durable upload or
+// reports a cancelled one safe.
+func TestMakeDurableDistinguishesALostPromotionFromACancellation(t *testing.T) {
+	t.Run("another caller committed it", func(t *testing.T) {
+		st, proc := newIngestFixture(t)
+		m := New(st, proc, testOptions(t))
+		defer m.Stop()
+
+		seedCompleteUpload(t, m, st, "u1", []byte("payload"))
+		swapFsync(t, media.FsyncFile, func(path string) error {
+			// Commits inside the barrier's own window, so this operation's
+			// promotion loses the race it is supposed to tolerate.
+			_ = st.PromoteToPending(context.Background(), "u1", store.NowMicros())
+			return media.FsyncDir(path)
+		})
+
+		if err := m.EnsureDurable(context.Background(), "u1"); err != nil {
+			t.Fatalf("a commit someone else made is still a commit: %v", err)
+		}
+		if got := jobStatus(t, st, "u1"); got != store.JobPending {
+			t.Errorf("status = %q, want pending", got)
+		}
+	})
+
+	t.Run("it was cancelled", func(t *testing.T) {
+		st, proc := newIngestFixture(t)
+		m := New(st, proc, testOptions(t))
+		defer m.Stop()
+
+		seedCompleteUpload(t, m, st, "u1", []byte("payload"))
+		swapFsync(t, media.FsyncFile, func(path string) error {
+			_ = st.RequestCancellation(context.Background(), "u1", store.NowMicros())
+			return media.FsyncDir(path)
+		})
+
+		err := m.EnsureDurable(context.Background(), "u1")
+		if err == nil {
+			t.Fatal("a cancelled upload must not be reported durable")
+		}
+		if !errors.Is(err, ErrDurabilityFinal) {
+			t.Errorf("error = %v, want final", err)
+		}
+		if got := jobStatus(t, st, "u1"); got != store.JobUploading {
+			t.Errorf("status = %q, want uploading", got)
+		}
+	})
+}
+
+// The dangerous operation is here, not at the HTTP boundary: makeDurable
+// fsyncs and publishes whatever path the id resolves to. Task 10 adds a
+// caller whose id comes straight from the client's tus URL. Each case seeds a
+// real row and a real file at the resolved path, so without the containment
+// check the barrier would happily promote a file it has no business touching.
+func TestEnsureDurableRefusesAnIdThatEscapesTheUploadDirectory(t *testing.T) {
+	for _, escaping := range []string{"../escaped", "sub/nested"} {
+		t.Run(escaping, func(t *testing.T) {
+			st, proc := newIngestFixture(t)
+			m := New(st, proc, testOptions(t))
+			defer m.Stop()
+
+			if err := os.MkdirAll(filepath.Dir(m.DataPath(escaping)), 0o700); err != nil {
+				t.Fatalf("prepare the escaped location: %v", err)
+			}
+			seedCompleteUpload(t, m, st, escaping, []byte("outside the upload directory"))
+
+			err := m.EnsureDurable(context.Background(), escaping)
+			if err == nil {
+				t.Fatal("an id that resolves outside the upload directory must never be promoted")
+			}
+			if !errors.Is(err, ErrDurabilityFinal) {
+				t.Errorf("error = %v, want final", err)
+			}
+			if got := jobStatus(t, st, escaping); got != store.JobUploading {
+				t.Errorf("status = %q, want uploading", got)
+			}
+		})
 	}
 }

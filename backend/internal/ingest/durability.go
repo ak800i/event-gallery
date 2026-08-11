@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"event-gallery/backend/internal/media"
@@ -15,6 +16,23 @@ import (
 // ErrDurabilityBusy means the fixed executor is saturated. Callers must relay
 // backpressure to the browser, never report success.
 var ErrDurabilityBusy = errors.New("durability executor is saturated")
+
+// ErrDurabilityClosing means shutdown has begun, so no new operation may
+// start. It is as transient as a refusal gets: the next process accepts the
+// same retry.
+var ErrDurabilityClosing = errors.New("durability executor is shutting down")
+
+// ErrDurabilityFinal marks a deterministic refusal — the upload is not the one
+// we admitted, or its row has left the lifecycle. Retrying can only fail the
+// same way, so callers must tell the client to stop rather than to come back
+// in five seconds. Every other failure is transient by omission.
+var ErrDurabilityFinal = errors.New("upload can never be made durable")
+
+// Indirected so a test can assert the barrier syncs before it commits.
+var (
+	fsyncFile = media.FsyncFile
+	fsyncDir  = media.FsyncDir
+)
 
 type durabilityOp struct {
 	done chan struct{}
@@ -30,6 +48,7 @@ type durabilityRegistry struct {
 	inFlight map[string]*durabilityOp
 	slots    chan struct{}
 	wg       sync.WaitGroup
+	closing  bool
 }
 
 func newDurabilityRegistry(m *Manager) *durabilityRegistry {
@@ -45,8 +64,16 @@ func newDurabilityRegistry(m *Manager) *durabilityRegistry {
 }
 
 // wait blocks until every detached operation has finished, so shutdown cannot
-// close the database while a promotion is still committing.
-func (r *durabilityRegistry) wait() { r.wg.Wait() }
+// close the database while a promotion is still committing. It first closes
+// the registry under the same lock that guards wg.Add: without that, a hook
+// arriving now could take the counter from zero to one underneath this Wait,
+// which panics on the caller's shutdown goroutine.
+func (r *durabilityRegistry) wait() {
+	r.mu.Lock()
+	r.closing = true
+	r.mu.Unlock()
+	r.wg.Wait()
+}
 
 // EnsureDurable fsyncs a completed upload's source and commits its pending
 // row. Returning nil is the only thing that entitles tus to report success.
@@ -62,6 +89,10 @@ func (r *durabilityRegistry) ensure(ctx context.Context, uploadID string) error 
 	r.mu.Lock()
 	op, joined := r.inFlight[uploadID]
 	if !joined {
+		if r.closing {
+			r.mu.Unlock()
+			return ErrDurabilityClosing
+		}
 		select {
 		case r.slots <- struct{}{}:
 		default:
@@ -85,10 +116,13 @@ func (r *durabilityRegistry) ensure(ctx context.Context, uploadID string) error 
 
 func (r *durabilityRegistry) run(uploadID string, op *durabilityOp) {
 	defer func() {
+		// Both under one lock: dropping the map entry first leaves a caller
+		// arriving in that window with nothing to join and no free slot, so it
+		// would be refused as busy for no reason.
 		r.mu.Lock()
 		delete(r.inFlight, uploadID)
-		r.mu.Unlock()
 		<-r.slots
+		r.mu.Unlock()
 		close(op.done)
 		r.wg.Done()
 	}()
@@ -99,7 +133,8 @@ func (r *durabilityRegistry) run(uploadID string, op *durabilityOp) {
 
 	op.err = r.manager.makeDurable(ctx, uploadID)
 	if op.err != nil {
-		slog.Error("durability barrier failed", "operation", "durability", "upload_id", uploadID, "error", op.err)
+		slog.Error("durability barrier failed", "operation", "durability", "upload_id", uploadID,
+			"final", errors.Is(op.err, ErrDurabilityFinal), "error", op.err)
 		return
 	}
 	slog.Info("upload became durable", "operation", "durability", "upload_id", uploadID)
@@ -110,12 +145,19 @@ func (r *durabilityRegistry) run(uploadID string, op *durabilityOp) {
 // hashes, decodes, or deletes anything: that work belongs to the workers,
 // where it cannot delay or fail the client's request.
 func (m *Manager) makeDurable(ctx context.Context, uploadID string) error {
+	dataPath := m.DataPath(uploadID)
+	// This is the operation that fsyncs and publishes whatever the id resolves
+	// to, so containment is asserted here and not only at the HTTP boundary.
+	if filepath.Dir(dataPath) != filepath.Clean(m.opts.UploadDir) {
+		return fmt.Errorf("%w: upload id %q escapes the upload directory", ErrDurabilityFinal, uploadID)
+	}
+
 	job, err := m.store.GetUploadJob(ctx, uploadID)
 	if err != nil {
 		return err
 	}
 	if job == nil {
-		return fmt.Errorf("no upload job for %s", uploadID)
+		return fmt.Errorf("%w: no upload job for %s", ErrDurabilityFinal, uploadID)
 	}
 	switch job.Status {
 	case store.JobUploading:
@@ -123,32 +165,65 @@ func (m *Manager) makeDurable(ctx context.Context, uploadID string) error {
 	case store.JobDiscarding, store.JobDiscarded:
 		// Reporting success here would tell the browser its upload is safe
 		// while the discard worker is removing it.
-		return fmt.Errorf("upload %s is being discarded", uploadID)
+		return fmt.Errorf("%w: upload %s is being discarded", ErrDurabilityFinal, uploadID)
 	default:
 		return nil // already durable; nothing to do
 	}
 
-	dataPath := m.DataPath(uploadID)
 	stat, err := os.Stat(dataPath)
 	if err != nil {
-		return fmt.Errorf("stat completed source: %w", err)
+		return fmt.Errorf("%w: stat completed source: %w", ErrDurabilityFinal, err)
 	}
 	if !stat.Mode().IsRegular() {
-		return fmt.Errorf("source %s is not a regular file", dataPath)
+		return fmt.Errorf("%w: source %s is not a regular file", ErrDurabilityFinal, dataPath)
 	}
 	if stat.Size() != job.ExpectedSize {
-		return fmt.Errorf("source size %d, expected %d", stat.Size(), job.ExpectedSize)
+		return fmt.Errorf("%w: source size %d, expected %d", ErrDurabilityFinal, stat.Size(), job.ExpectedSize)
 	}
 
-	if err := media.FsyncFile(dataPath); err != nil {
+	if err := fsyncFile(dataPath); err != nil {
 		return err
 	}
-	if err := media.FsyncFile(m.InfoPath(uploadID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := fsyncFile(m.InfoPath(uploadID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := media.FsyncDir(m.opts.UploadDir); err != nil {
+	if err := fsyncDir(m.opts.UploadDir); err != nil {
 		return err
 	}
 
-	return m.store.PromoteToPending(ctx, uploadID, store.NowMicros())
+	if err := m.store.PromoteToPending(ctx, uploadID, store.NowMicros()); err != nil {
+		if errors.Is(err, store.ErrNotClaimed) {
+			return m.classifyLostPromotion(ctx, uploadID)
+		}
+		return err
+	}
+	return nil
+}
+
+// classifyLostPromotion decides what a promotion that matched no row means.
+// PromoteToPending reports the same ErrNotClaimed whether another caller has
+// already committed the row — which is a success — or the upload was cancelled
+// underneath us, which is final. Only the row itself can tell them apart.
+func (m *Manager) classifyLostPromotion(ctx context.Context, uploadID string) error {
+	job, err := m.store.GetUploadJob(ctx, uploadID)
+	if err != nil {
+		return err
+	}
+	if job == nil {
+		return fmt.Errorf("%w: upload job %s disappeared during promotion", ErrDurabilityFinal, uploadID)
+	}
+	switch job.Status {
+	case store.JobDiscarding, store.JobDiscarded:
+		return fmt.Errorf("%w: upload %s is being discarded", ErrDurabilityFinal, uploadID)
+	case store.JobUploading:
+		if job.CancellationRequestedAt != nil {
+			return fmt.Errorf("%w: upload %s was cancelled", ErrDurabilityFinal, uploadID)
+		}
+		// Still uploading, still not cancelled, yet the update matched nothing.
+		// Unexplained, so transient: never tell a client to give up on bytes
+		// that may still be committable.
+		return fmt.Errorf("promotion of upload %s matched no row", uploadID)
+	default:
+		return nil // pending or later: another caller committed it
+	}
 }
