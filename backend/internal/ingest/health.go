@@ -70,7 +70,8 @@ func (g *HealthGate) Check(ctx context.Context) error {
 func (g *HealthGate) setHealthy(now bool) {
 	if was := g.healthy.Swap(now); was != now {
 		if now {
-			slog.Warn("storage health circuit closed", "operation", "storage_health", "healthy", true)
+			// Info, not Warn: the first transition is a normal process start.
+			slog.Info("storage health circuit closed", "operation", "storage_health", "healthy", true)
 		} else {
 			slog.Error("storage health circuit opened; refusing uploads and all deletions",
 				"operation", "storage_health", "healthy", false,

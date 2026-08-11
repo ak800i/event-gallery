@@ -84,7 +84,8 @@ func TestStartStopIsClean(t *testing.T) {
 
 	m.Start()
 	m.Wake()
-	m.Wake() // must not block even when nothing is draining the channel
+	m.Wake() // workers are draining here; the no-drain case is covered by
+	// TestWakeDoesNotBlockWithNoWorkerDraining
 	m.Stop()
 }
 
