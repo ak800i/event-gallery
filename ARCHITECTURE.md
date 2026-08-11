@@ -136,11 +136,11 @@ Core tables:
 4. The app applies per-IP request, concurrent-PATCH, and bandwidth policies, then proxies to tusd. `pre-create` records an `uploading` job row, refusing the upload when the media volume or free space is unproven.
 5. tusd persists chunks and offsets, allowing HEAD-based resume after interruption.
 6. On the final PATCH, `pre-finish` fsyncs the completed source and its sidecar and promotes the job to `pending`. Only after that does tusd acknowledge the upload, so an acknowledged upload is one the server has committed to finishing.
-7. A worker claims the job under a lease, copies the source into media storage, and fsyncs it. The source is never moved or deleted.
+7. A worker claims the job under a lease, copies the source into media storage, and fsyncs it. Preparation only reads the source: nothing moves or deletes it while the job is being prepared.
 8. Images receive EXIF orientation/capture-time handling and JPEG thumbnails. Videos receive ffprobe metadata (including display rotation) and ffmpeg thumbnails.
 9. Publication is one transaction that inserts the media row and finishes the job; the SHA-256 uniqueness constraint settles duplicates. Only once it commits is the tus source removed.
 10. Checksum mismatch and unsupported content are terminal; everything else retries with capped exponential backoff, indefinitely. `POST /api/uploads/status` reports where each upload stands.
-10. With moderation off, the SPA polls and merges processed items without remounting. With moderation on, guest polling/backoff is a no-op and the uploader shows an awaiting-approval confirmation.
+11. With moderation off, the SPA polls and merges processed items without remounting. With moderation on, guest polling/backoff is a no-op and the uploader shows an awaiting-approval confirmation.
 
 Client-side hashing is optional optimization; server sniffing, hashing, and SQLite's unique SHA constraint are authoritative.
 
@@ -189,6 +189,16 @@ For a consistent backup:
 3. preserve deployment secrets/configuration and image revision separately;
 4. restart the stack.
 
+Restarts are not instant on a large backlog. The app runs its startup inventory
+before it begins waiting for signals, and that inventory fsyncs every recovered
+source, so a `SIGTERM` arriving while it runs is not acted on until it
+finishes -- and if that outlasts the 30s `stop_grace_period`, Docker kills the
+container instead. It costs nothing but time: recovery commits nothing partway
+through and simply repeats on the next boot. It is most likely on the first
+boot after upgrading, which has the largest backlog to adopt. Uploads are
+refused with a retryable 503 for that window (`/readyz`), while the gallery
+serves normally throughout.
+
 The tus upload volume is **not** transient. Once an upload completes, its
 source file is the application's only copy until the media row is committed, so
 a backup that omits this volume abandons queued work. Back up app data, media,
@@ -226,7 +236,7 @@ A larger multi-event service would separate API, object storage, metadata databa
 ## 8. Known gaps
 
 - Media filesystem changes and SQLite inserts are not one transaction, but the ordering makes that survivable: artifacts are written and fsynced before the row is inserted, and a startup reconciler plus the queue's retries resolve anything interrupted. An unreferenced artifact is removed by the same pass rather than left as a silent orphan.
-- Malformed or one-sided tus artifacts are retained for manual inspection rather than unlinked unsafely.
+- A one-sided tus artifact belonging to a condemned job -- a data file whose sidecar is gone, or a sidecar whose data file is gone -- is unlinked by the ingest cleanup stage, which runs only after publication has committed or a terminal decision has been recorded. Residue with no job row, and sidecars that cannot be parsed, are still retained for manual inspection rather than unlinked on a guess.
 - Purge recovery depends on valid manifests in the media `.purging` directory; corrupt stages are logged and left untouched.
 - `/healthz` does not verify media/upload mount writability, free space, ffmpeg, tusd reachability, or tunnel connectivity; `/readyz` covers only the first two.
 - Audit writes are best effort and are not an authoritative transaction log.
