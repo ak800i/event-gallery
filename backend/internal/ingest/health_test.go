@@ -7,6 +7,17 @@ import (
 	"testing"
 )
 
+func TestHealthGateStartsClosedBeforeAnyCheck(t *testing.T) {
+	st, proc := newIngestFixture(t)
+
+	// Deletions consult Healthy() directly. A gate that reported true before any
+	// check had run would let the first deletion through on an unmounted volume.
+	gate := NewHealthGate(st, proc, 5)
+	if gate.Healthy() {
+		t.Error("a freshly constructed gate must report unhealthy until a check proves the volume is mounted")
+	}
+}
+
 func TestHealthGateEmptyDatabaseIsHealthy(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	gate := NewHealthGate(st, proc, 5)
