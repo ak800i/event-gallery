@@ -101,8 +101,9 @@ func (m *Manager) leaseDuration() time.Duration {
 // deliberately synchronous: readiness is true the moment it returns, which is
 // what the rollout requires — every valid pre-upgrade sidecar is adopted
 // before the app reports ready. Callers must already be serving HTTP, since
-// the inventory fsyncs every recovered source (see main.go, which runs this in
-// a goroutine after the listener starts).
+// the inventory fsyncs every recovered source; main.go calls it directly --
+// never in a new goroutine -- after the listener starts, so that a shutdown
+// racing startup cannot observe an empty WaitGroup.
 func (m *Manager) Start() {
 	// Held for the whole of Start so Stop cannot observe an empty WaitGroup
 	// while recovery is still using the database.

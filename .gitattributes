@@ -1,0 +1,5 @@
+# The Windows checkout is CRLF (core.autocrlf), but `docker build` copies from
+# the working tree, and a `#!/bin/sh\r` shebang makes the container exit with
+# "no such file or directory". Pin shell scripts to LF so an image built on a
+# developer machine is the same one CI builds.
+*.sh text eol=lf

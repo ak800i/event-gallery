@@ -21,6 +21,7 @@ import (
 	"event-gallery/backend/internal/config"
 	"event-gallery/backend/internal/db"
 	"event-gallery/backend/internal/httpapi"
+	"event-gallery/backend/internal/ingest"
 	"event-gallery/backend/internal/media"
 	"event-gallery/backend/internal/staticui"
 	"event-gallery/backend/internal/store"
@@ -33,6 +34,23 @@ func main() {
 	if err := run(); err != nil {
 		slog.Error("server exited with error", "error", err)
 		os.Exit(1)
+	}
+}
+
+// ingestOptions translates configuration into the manager's options. It is a
+// standalone function only so the mapping can be tested: the fields repeat
+// types, so a transposed pair compiles and then misbehaves silently.
+func ingestOptions(cfg *config.Config, term ingest.SourceTerminator) ingest.Options {
+	return ingest.Options{
+		Workers:           cfg.MediaProcessingWorkers,
+		DurabilityWorkers: cfg.UploadDurabilityWorkers,
+		ProcessingTimeout: cfg.MediaProcessingTimeout,
+		MaxBackoff:        cfg.UploadRetryMaxBackoff,
+		ReconcileInterval: cfg.IngestReconcileInterval,
+		JobRetention:      cfg.UploadJobRetention,
+		UploadDir:         cfg.TusUploadDir,
+		MinFreeBytes:      cfg.IngestMinFreeBytes,
+		Terminator:        term,
 	}
 }
 
@@ -67,6 +85,17 @@ func run() error {
 		return err
 	}
 
+	// Constructed here, before StartCleanupLoops, on purpose. That call runs
+	// its first storage-cleanup pass immediately rather than waiting for the
+	// ticker, and the pass reaches purgeMedia, which reads s.ingest -- a field
+	// written below without synchronisation. The server is built first because
+	// it is also the SourceTerminator.
+	ingestManager := ingest.New(st, processor, ingestOptions(cfg, srv))
+	srv.SetIngest(ingestManager)
+	// Registered after `defer sqlDB.Close()`, so it runs before it: Stop waits
+	// for in-flight durability commits, and those need the database open.
+	defer ingestManager.Stop()
+
 	stop := make(chan struct{})
 	srv.StartCleanupLoops(stop)
 	defer func() {
@@ -93,6 +122,17 @@ func run() error {
 			errCh <- err
 		}
 	}()
+
+	// Started only once the listener is up. The inventory fsyncs every
+	// recovered source, and the first boot after this upgrade has the largest
+	// backlog of them; blocking the listener would fail the container
+	// healthcheck and keep the tunnel down. Upload routes answer 503 until
+	// Ready() flips, which is the correct backpressure for that window.
+	//
+	// Called synchronously, not with `go`: Start takes its WaitGroup slot on
+	// the calling goroutine, so a shutdown racing startup cannot see an empty
+	// group, return, and close the database while recovery is still running.
+	ingestManager.Start()
 
 	select {
 	case <-ctx.Done():
