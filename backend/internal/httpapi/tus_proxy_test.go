@@ -377,10 +377,14 @@ func TestFenceIsTerminalForACancelledUpload(t *testing.T) {
 
 func TestFenceRefusesWhenDurabilityIsSaturated(t *testing.T) {
 	h := newTestHarness(t)
+	// Saturate first. The parked manager runs a startup inventory, and a
+	// complete source with an 'uploading' row is precisely what that inventory
+	// promotes, so seeding the subject before it would remove the very state
+	// this test needs.
+	saturateDurability(t, h)
 	payload := []byte("complete bytes")
 	seedUploadingJobSized(t, h, testUploadID, int64(len(payload)))
 	writeSource(t, h, testUploadID, payload)
-	saturateDurability(t, h)
 
 	req := httptest.NewRequest(http.MethodHead, "/api/tus/"+testUploadID, nil)
 	rec := httptest.NewRecorder()
@@ -464,13 +468,15 @@ func TestDeleteOfACompleteUploadIsRefused(t *testing.T) {
 
 func TestDeleteDuringSaturatedDurabilityKeepsTheSource(t *testing.T) {
 	h := newTestHarness(t)
+	// This is the incident in miniature: the executor is saturated, so the
+	// client's final PATCH was answered 503, it exhausted its retries, and it
+	// is now cancelling an upload whose bytes are all on disk. The saturation
+	// is installed first because the parked manager's startup inventory would
+	// otherwise promote the very source the test needs left uncommitted.
+	saturateDurability(t, h)
 	payload := []byte("complete bytes")
 	seedUploadingJobSized(t, h, testUploadID, int64(len(payload)))
 	writeSource(t, h, testUploadID, payload)
-	// This is the incident in miniature: the executor is saturated, so the
-	// client's final PATCH was answered 503, it exhausted its retries, and it
-	// is now cancelling an upload whose bytes are all on disk.
-	saturateDurability(t, h)
 
 	rec := doRequest(h, http.MethodDelete, "/api/tus/"+testUploadID, nil)
 

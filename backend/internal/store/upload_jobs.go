@@ -283,6 +283,56 @@ func (s *Store) RequestCancellation(ctx context.Context, uploadID string, now in
 	return requireOneRow(res)
 }
 
+// ClaimCancelledForDiscard moves cancelled uploads that have been idle since
+// idleBefore into discard, under no lease, so the ordinary worker path
+// reclaims their bytes. Uploads that reached pending are untouched: a durable
+// completion is never reversed.
+func (s *Store) ClaimCancelledForDiscard(ctx context.Context, idleBefore, now int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET status = 'discarding',
+		       terminal_reason = CASE WHEN terminal_reason = '' THEN 'cancelled' ELSE terminal_reason END,
+		       next_attempt_at = ?,
+		       lease_token = NULL,
+		       lease_until = NULL,
+		       updated_at = ?
+		 WHERE status = 'uploading'
+		   AND cancellation_requested_at IS NOT NULL
+		   AND updated_at <= ?`, now, now, idleBefore)
+	if err != nil {
+		return 0, fmt.Errorf("sweep cancelled uploads: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// ListStaleUploading returns admitted uploads that never reached the
+// durability barrier and have been quiet since idleBefore. Rows with
+// source_completed_at are excluded on purpose: those are durable, and their
+// files being unreadable is a mount problem, not a reason to give up on them.
+func (s *Store) ListStaleUploading(ctx context.Context, idleBefore int64, limit int) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT upload_id FROM upload_jobs
+		 WHERE status = 'uploading'
+		   AND source_completed_at IS NULL
+		   AND cancellation_requested_at IS NULL
+		   AND updated_at <= ?
+		 LIMIT ?`, idleBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list stale uploads: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan stale upload: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // FinishJob commits a terminal or intermediate transition under the caller's lease.
 func (s *Store) FinishJob(ctx context.Context, uploadID, leaseToken string, status JobStatus, reason string, now int64) error {
 	terminal := status == JobComplete || status == JobDiscarded

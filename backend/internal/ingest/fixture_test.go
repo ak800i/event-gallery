@@ -3,9 +3,11 @@ package ingest
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"image"
 	"image/jpeg"
 	"image/png"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -61,6 +63,57 @@ func newIngestFixture(t *testing.T) (*store.Store, *media.Processor) {
 		t.Fatalf("ensure dirs: %v", err)
 	}
 	return store.New(sqlDB), proc
+}
+
+// writeSidecar writes the sidecar tusd's filestore would have written for a
+// well-formed upload of the given size.
+func writeSidecar(t *testing.T, m *Manager, uploadID string, size int64) {
+	t.Helper()
+	writeSidecarMeta(t, m, uploadID, uploadID, size, map[string]string{"filename": "a.jpg"})
+}
+
+// writeSidecarFor writes a sidecar at one upload's info path whose contents
+// describe a different upload, which is how a stale or misfiled sidecar looks
+// on disk.
+func writeSidecarFor(t *testing.T, m *Manager, fileID, declaredID string, size int64) {
+	t.Helper()
+	writeSidecarMeta(t, m, fileID, declaredID, size, map[string]string{"filename": "a.jpg"})
+}
+
+// writeSidecarMeta writes the full shape tussidecar.Parse demands. Storage.Type
+// is load-bearing: without it Parse fails, the sidecar reads as absent, and
+// tests meant to prove a sidecar was consulted would instead exercise the
+// no-sidecar branch.
+func writeSidecarMeta(t *testing.T, m *Manager, fileID, declaredID string, size int64, metadata map[string]string) {
+	t.Helper()
+	blob, err := json.Marshal(map[string]any{
+		"ID":             declaredID,
+		"Size":           size,
+		"SizeIsDeferred": false,
+		"MetaData":       metadata,
+		"Storage": map[string]string{
+			"Type":     "filestore",
+			"Path":     m.DataPath(fileID),
+			"InfoPath": m.InfoPath(fileID),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal sidecar: %v", err)
+	}
+	if err := os.WriteFile(m.InfoPath(fileID), blob, 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+}
+
+// backdateJob ages a row's activity timestamp so the reconciler's idle windows
+// apply to it, instead of the test depending on wall-clock delay.
+func backdateJob(t *testing.T, st *store.Store, uploadID string, age time.Duration) {
+	t.Helper()
+	_, err := st.DB().Exec(`UPDATE upload_jobs SET updated_at = ? WHERE upload_id = ?`,
+		store.NowMicros()-age.Microseconds(), uploadID)
+	if err != nil {
+		t.Fatalf("backdate %s: %v", uploadID, err)
+	}
 }
 
 func insertMediaRow(t *testing.T, st *store.Store, id, storedFilename, sha string) {

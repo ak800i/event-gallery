@@ -127,6 +127,7 @@ func (s *Server) Router() http.Handler {
 	r.Use(recoverPanic, s.requestLogger, securityHeaders)
 
 	r.Get("/healthz", s.handleHealth)
+	r.Get("/readyz", s.handleReady)
 
 	r.Route("/api", func(api chi.Router) {
 		api.Handle("/tus", http.HandlerFunc(s.handleTusProxy))
@@ -181,4 +182,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReady reports ingest readiness. /healthz stays a shallow liveness
+// check so the gallery and the tunnel start promptly; only upload routes wait
+// for the startup inventory.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if s.ingest == nil || !s.ingest.Ready() {
+		w.Header().Set("Retry-After", "5")
+		writeError(w, http.StatusServiceUnavailable, "ingest is still recovering queued uploads")
+		return
+	}
+	if !s.ingest.Health().Healthy() {
+		w.Header().Set("Retry-After", "30")
+		writeError(w, http.StatusServiceUnavailable, "media storage is unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }

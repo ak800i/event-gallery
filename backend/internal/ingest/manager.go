@@ -219,18 +219,6 @@ func (m *Manager) expireTerminalJobs() {
 	}
 }
 
-// TODO(task-12): temporary stub so the package compiles; the real reconcile
-// implementation replaces it.
-func (m *Manager) reconcileOnce() error { return nil }
-
-// The health gate starts closed, so something must prove the media volume is
-// mounted before uploads are admitted. Task 12's real implementation does the
-// same check as its first step.
-func (m *Manager) startupRecovery() {
-	_ = m.health.Check(m.lifetime)
-	m.ready.Store(true)
-}
-
 // DataPath and InfoPath are the only two paths tusd's filestore derives from
 // an upload id. Deriving them here keeps every absence check consistent.
 func (m *Manager) DataPath(uploadID string) string {
