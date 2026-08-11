@@ -185,6 +185,12 @@ func TestPreCreateGeneratesADistinctIDPerUpload(t *testing.T) {
 	}
 	first := postHook(t, h, req)
 	second := postHook(t, h, req)
+	// Assert admission before comparing: a colliding id fails the INSERT and
+	// comes back as backpressure with no ChangeFileInfo, and dereferencing that
+	// would panic the whole test binary instead of reporting this one failure.
+	if first.ChangeFileInfo == nil || second.ChangeFileInfo == nil {
+		t.Fatalf("both admissions must return an id, got %+v and %+v", first, second)
+	}
 	if first.ChangeFileInfo.ID == second.ChangeFileInfo.ID {
 		t.Fatalf("two admissions produced the same upload id %q", first.ChangeFileInfo.ID)
 	}
