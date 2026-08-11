@@ -52,8 +52,17 @@ func (s *Store) PurgeTrashed(ctx context.Context, items []models.MediaItem, acto
 	var changed []string
 	createdAt := formatTime(time.Now())
 	for _, item := range items {
+		// The NOT EXISTS clause is evaluated in the same transaction that
+		// removes the row, so a duplicate upload that has already resolved to
+		// this id — and is about to delete its own copy — cannot have the copy
+		// it kept purged underneath it.
 		result, err := tx.ExecContext(ctx, `DELETE FROM media_items
-			WHERE id = ? AND stored_filename = ? AND status = 'trashed'`, item.ID, item.StoredFilename)
+			WHERE id = ? AND stored_filename = ? AND status = 'trashed'
+			  AND NOT EXISTS (
+			      SELECT 1 FROM upload_jobs
+			       WHERE result_media_id = media_items.id
+			         AND status NOT IN ('complete', 'discarded')
+			  )`, item.ID, item.StoredFilename)
 		if err != nil {
 			return nil, fmt.Errorf("permanently delete %s: %w", item.ID, err)
 		}

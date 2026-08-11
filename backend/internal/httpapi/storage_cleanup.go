@@ -43,6 +43,16 @@ func (s *Server) purgeMedia(ctx context.Context, ids []string, actor string) ([]
 		items = append(items, *item)
 	}
 
+	// StageForPurge treats a missing original as success, so purging while the
+	// media volume is unproven would commit the row deletion and orphan the
+	// real file when the mount returns. The nil guard matters because the
+	// first storage-cleanup pass can run before main has attached the manager.
+	if s.ingest != nil {
+		if err := s.ingest.Health().Check(ctx); err != nil {
+			return nil, fmt.Errorf("refusing to purge while storage health is unproven: %w", err)
+		}
+	}
+
 	stages := make(map[string]*media.PurgeStage, len(items))
 	for _, item := range items {
 		stage, err := s.processor.StageForPurge(item)
