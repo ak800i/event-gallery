@@ -241,7 +241,9 @@ git commit -m "feat: add durable upload_jobs schema and synchronous=FULL"
 
 **Interfaces:**
 - Consumes: Task 1's schema (only conceptually).
-- Produces: on `config.Config` — `MediaProcessingWorkers int`, `MediaProcessingTimeout time.Duration`, `UploadDurabilityWait time.Duration`, `UploadDurabilityWorkers int`, `UploadRetryMaxBackoff time.Duration`, `IngestReconcileInterval time.Duration`, `IngestMinFreeBytes int64`, `UploadJobRetention time.Duration`, `UploadStatusRateLimitPerMinute int`, `ImageMaxSourcePixels int64`, `MediaToolMemoryBytes int64`, `MediaToolLogBytes int`.
+- Produces: on `config.Config` — `MediaProcessingWorkers int`, `MediaProcessingTimeout time.Duration`, `UploadDurabilityWait time.Duration`, `UploadDurabilityWorkers int`, `UploadRetryMaxBackoff time.Duration`, `IngestReconcileInterval time.Duration`, `IngestMinFreeBytes int64`, `UploadJobRetention time.Duration`, `UploadStatusRateLimitPerMinute int`.
+
+`IMAGE_MAX_SOURCE_PIXELS`, `HEIC_MAX_SOURCE_PIXELS`, `MEDIA_TOOL_MEMORY_BYTES`, and `MEDIA_TOOL_LOG_BYTES` are deliberately **not** added here. Their only consumers are derivative generation and the HEIC helper, which belong to plan 2; adding them now would ship four settings that nothing reads.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -326,9 +328,6 @@ Add to the `Config` struct:
 	IngestMinFreeBytes             int64
 	UploadJobRetention             time.Duration
 	UploadStatusRateLimitPerMinute int
-	ImageMaxSourcePixels           int64
-	MediaToolMemoryBytes           int64
-	MediaToolLogBytes              int
 ```
 
 Populate them in `Load()` **after** `MaxUploadBytes` is assigned, because the free-space default is derived from it. Note that `envInt` and `envInt64` in this file return `(value, error)` — they are not bare getters. Add a local helper next to them to keep the call sites readable:
@@ -374,15 +373,6 @@ Then, following the file's existing `if x, err := ...; err != nil` house style:
 		return nil, err
 	}
 	if cfg.UploadStatusRateLimitPerMinute, err = envInt("UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE", 6000); err != nil {
-		return nil, err
-	}
-	if cfg.ImageMaxSourcePixels, err = envInt64("IMAGE_MAX_SOURCE_PIXELS", 50_000_000); err != nil {
-		return nil, err
-	}
-	if cfg.MediaToolMemoryBytes, err = envInt64("MEDIA_TOOL_MEMORY_BYTES", 1<<30); err != nil {
-		return nil, err
-	}
-	if cfg.MediaToolLogBytes, err = envInt("MEDIA_TOOL_LOG_BYTES", 65536); err != nil {
 		return nil, err
 	}
 ```
@@ -648,8 +638,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"event-gallery/backend/internal/models"
 )
 
 // JobStatus mirrors the CHECK constraint on upload_jobs.status.
@@ -997,7 +985,7 @@ git commit -m "feat: add leased upload job store"
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `type Info struct { ID string; Size int64; Offset int64; SizeIsDeferred bool; MetaData map[string]string; StoragePath string; StorageInfoPath string }` and `func Parse(infoPath string) (*Info, error)`, plus `var ErrMalformed error`. `SizeIsDeferred` and `StorageInfoPath` exist because the janitor already validates both and must not lose that on the delete path.
+- Produces: `type Info struct { ID string; Size int64; SizeIsDeferred bool; MetaData map[string]string; StoragePath string; StorageInfoPath string }` and `func Parse(infoPath string) (*Info, error)`, plus `var ErrMalformed error`. `SizeIsDeferred` and `StorageInfoPath` exist because the janitor already validates both and must not lose that on the delete path.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1090,7 +1078,6 @@ var ErrMalformed = errors.New("malformed tus sidecar")
 type Info struct {
 	ID              string
 	Size            int64
-	Offset          int64
 	SizeIsDeferred  bool
 	MetaData        map[string]string
 	StoragePath     string
@@ -1100,7 +1087,6 @@ type Info struct {
 type rawInfo struct {
 	ID             string            `json:"ID"`
 	Size           int64             `json:"Size"`
-	Offset         int64             `json:"Offset"`
 	SizeIsDeferred bool              `json:"SizeIsDeferred"`
 	MetaData       map[string]string `json:"MetaData"`
 	Storage        struct {
@@ -1150,7 +1136,6 @@ func Parse(infoPath string) (*Info, error) {
 	return &Info{
 		ID:              raw.ID,
 		Size:            raw.Size,
-		Offset:          raw.Offset,
 		SizeIsDeferred:  raw.SizeIsDeferred,
 		MetaData:        raw.MetaData,
 		StoragePath:     raw.Storage.Path,
@@ -1802,7 +1787,7 @@ git commit -m "feat: add positive-evidence storage health gate"
 **Interfaces:**
 - Consumes: `store.Store`, `media.Processor`, `HealthGate`, `config.Config` values.
 - Produces:
-  - `type Options struct { Workers int; DurabilityWorkers int; ProcessingTimeout, DurabilityWait, MaxBackoff, ReconcileInterval, JobRetention time.Duration; UploadDir string; MinFreeBytes int64; Terminator SourceTerminator }`
+  - `type Options struct { Workers int; DurabilityWorkers int; ProcessingTimeout, MaxBackoff, ReconcileInterval, JobRetention time.Duration; UploadDir string; MinFreeBytes int64; Terminator SourceTerminator }` — the pre-finish response budget is not here: it belongs to the HTTP layer and is read from `cfg.UploadDurabilityWait`.
   - `type SourceTerminator interface { Terminate(ctx context.Context, uploadID string) error }`
   - `type Manager struct`
   - `func New(st *store.Store, proc *media.Processor, opts Options) *Manager` — creates the lifetime context.
@@ -1836,7 +1821,6 @@ func testOptions(t *testing.T) Options {
 		Workers:           2,
 		DurabilityWorkers: 2,
 		ProcessingTimeout: time.Minute,
-		DurabilityWait:    2 * time.Second,
 		MaxBackoff:        time.Minute,
 		ReconcileInterval: 50 * time.Millisecond,
 		JobRetention:      time.Hour,
@@ -1909,11 +1893,8 @@ package ingest
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"math"
-	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1933,7 +1914,6 @@ type Options struct {
 	Workers           int
 	DurabilityWorkers int
 	ProcessingTimeout time.Duration
-	DurabilityWait    time.Duration
 	MaxBackoff        time.Duration
 	ReconcileInterval time.Duration
 	JobRetention      time.Duration
@@ -2012,6 +1992,11 @@ func (m *Manager) leaseDuration() time.Duration {
 // the inventory fsyncs every recovered source (see main.go, which runs this in
 // a goroutine after the listener starts).
 func (m *Manager) Start() {
+	// Held for the whole of Start so Stop cannot observe an empty WaitGroup
+	// while recovery is still using the database.
+	m.wg.Add(1)
+	defer m.wg.Done()
+
 	m.startupRecovery()
 	if m.lifetime.Err() != nil {
 		return // Stop() arrived during the inventory; do not launch workers
@@ -2189,7 +2174,6 @@ Every hook path now depends on the manager, so the shared harness must build one
 		Workers:           cfg.MediaProcessingWorkers,
 		DurabilityWorkers: cfg.UploadDurabilityWorkers,
 		ProcessingTimeout: cfg.MediaProcessingTimeout,
-		DurabilityWait:    cfg.UploadDurabilityWait,
 		MaxBackoff:        cfg.UploadRetryMaxBackoff,
 		ReconcileInterval: cfg.IngestReconcileInterval,
 		JobRetention:      cfg.UploadJobRetention,
@@ -2463,7 +2447,7 @@ func (s *Server) SetIngest(m *ingest.Manager) { s.ingest = m }
 
 - [ ] **Step 7: Add the manager helpers this handler calls**
 
-Append to `backend/internal/ingest/manager.go`:
+Append to `backend/internal/ingest/manager.go`, adding `"fmt"`, `"os"`, and `"path/filepath"` to its imports — this is the first code in that file to need them:
 
 ```go
 // DataPath and InfoPath are the only two paths tusd's filestore derives from
@@ -2549,7 +2533,20 @@ Run `go get golang.org/x/sys@latest` inside the toolchain container if that modu
 // Terminate implements ingest.SourceTerminator. Both the incomplete-upload
 // janitor and the ingest workers remove tus files through this one path, so
 // tusd always cleans up its own sidecar and lock state.
+//
+// It refuses to remove a source that a pending or processing job still needs.
+// The janitor decides to delete an upload it saw as partial and then issues
+// the DELETE later; in between, that upload's final PATCH can complete and
+// commit. Without this check the janitor would destroy the only copy of an
+// upload the browser has already been told was durable.
 func (s *Server) Terminate(ctx context.Context, uploadID string) error {
+	job, err := s.store.GetUploadJob(ctx, uploadID)
+	if err != nil {
+		return err
+	}
+	if job != nil && (job.Status == store.JobPending || job.Status == store.JobProcessing) {
+		return fmt.Errorf("upload %s is queued for publication and must not be terminated", uploadID)
+	}
 	return s.terminateTusUpload(ctx, uploadID)
 }
 ```
@@ -2995,24 +2992,28 @@ func seedUploadingJob(t *testing.T, h *testHarness, uploadID string, size int64)
 	}
 }
 
+// Upload ids must be hex: safeUploadID rejects anything else, and
+// tusUploadIDFromPath would return "" so the handler would never see the job.
+const testUploadID = "a1b2c3"
+
 func TestFenceBlocksSuccessUntilDurable(t *testing.T) {
 	h := newTestHarness(t)
 	// A complete source whose row is still 'uploading' must never be reported
 	// as successful, because tusd would otherwise short-circuit an
 	// already-complete upload with a plain 204.
 	payload := []byte("complete bytes")
-	seedUploadingJob(t, h, "u1", int64(len(payload)))
-	if err := os.WriteFile(filepath.Join(h.cfg.TusUploadDir, "u1"), payload, 0o600); err != nil {
+	seedUploadingJob(t, h, testUploadID, int64(len(payload)))
+	if err := os.WriteFile(filepath.Join(h.cfg.TusUploadDir, testUploadID), payload, 0o600); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodHead, "/api/tus/u1", nil)
+	req := httptest.NewRequest(http.MethodHead, "/api/tus/"+testUploadID, nil)
 	rec := httptest.NewRecorder()
-	intercepted := h.server.fenceCompletedUpload(rec, req, "u1")
+	intercepted := h.server.fenceCompletedUpload(rec, req, testUploadID)
 
 	// Either the fence promoted the upload itself, or it answered 503. What it
 	// must never do is let the request through while the row says 'uploading'.
-	job, _ := h.store.GetUploadJob(context.Background(), "u1")
+	job, _ := h.store.GetUploadJob(context.Background(), testUploadID)
 	if !intercepted && job.Status == store.JobUploading {
 		t.Fatal("fence let an undurable complete upload through")
 	}
@@ -3028,12 +3029,12 @@ func TestFenceBlocksSuccessUntilDurable(t *testing.T) {
 
 func TestDeleteAfterDurabilityReturns409(t *testing.T) {
 	h := newTestHarness(t)
-	seedUploadingJob(t, h, "u1", 10)
-	if err := h.store.PromoteToPending(context.Background(), "u1", store.NowMicros()); err != nil {
+	seedUploadingJob(t, h, testUploadID, 10)
+	if err := h.store.PromoteToPending(context.Background(), testUploadID, store.NowMicros()); err != nil {
 		t.Fatalf("promote: %v", err)
 	}
 
-	rec := doRequest(h, http.MethodDelete, "/api/tus/u1", nil)
+	rec := doRequest(h, http.MethodDelete, "/api/tus/"+testUploadID, nil)
 
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409: a durable completion is never silently reversed", rec.Code)
@@ -3042,16 +3043,38 @@ func TestDeleteAfterDurabilityReturns409(t *testing.T) {
 
 func TestDeleteBeforeDurabilityRecordsCancellation(t *testing.T) {
 	h := newTestHarness(t)
-	seedUploadingJob(t, h, "u1", 10)
+	seedUploadingJob(t, h, testUploadID, 10)
 
-	rec := doRequest(h, http.MethodDelete, "/api/tus/u1", nil)
+	rec := doRequest(h, http.MethodDelete, "/api/tus/"+testUploadID, nil)
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", rec.Code)
 	}
-	job, _ := h.store.GetUploadJob(context.Background(), "u1")
+	job, _ := h.store.GetUploadJob(context.Background(), testUploadID)
 	if job.CancellationRequestedAt == nil {
 		t.Error("cancellation intent must be durable")
+	}
+}
+
+func TestDeleteOfACompleteUploadIsRefused(t *testing.T) {
+	h := newTestHarness(t)
+	payload := []byte("complete bytes")
+	seedUploadingJob(t, h, testUploadID, int64(len(payload)))
+	if err := os.WriteFile(filepath.Join(h.cfg.TusUploadDir, testUploadID), payload, 0o600); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	// The client gave up after backpressure and cancelled. The bytes are
+	// complete, so the fence must promote them rather than let the cancellation
+	// destroy the guest's only copy.
+	rec := doRequest(h, http.MethodDelete, "/api/tus/"+testUploadID, nil)
+
+	if rec.Code == http.StatusNoContent {
+		t.Fatal("a complete upload must not be cancellable")
+	}
+	job, _ := h.store.GetUploadJob(context.Background(), testUploadID)
+	if job.CancellationRequestedAt != nil {
+		t.Error("a complete upload must not record cancellation intent")
 	}
 }
 
@@ -3233,7 +3256,7 @@ git commit -m "feat: fence completions and refuse client terminations"
 
 **Interfaces:**
 - Consumes: `media.Processor.PrepareOriginal`, `media.Processor.VerifyOriginal`, `store.ClaimNextJob`, `store.FinishJob`, `Options.Terminator`.
-- Produces: `func (s *Store) PublishMedia(ctx context.Context, uploadID, leaseToken string, item *models.MediaItem, now int64) (resultMediaID string, isDuplicate bool, err error)`, `func (s *Store) RecordArtifactIdentity(...) error`, `func (s *Store) RecordPrepared(...) error`, `func (s *Store) MediaIsReferencedByActiveJob(ctx context.Context, mediaID string) (bool, error)`, `func (s *Store) ReviveForPublication(ctx context.Context, uploadID, leaseToken string, now int64) error`, and `func (m *Manager) claimAndRunOnce() (bool, error)`.
+- Produces: `func (s *Store) PublishMedia(ctx context.Context, uploadID, leaseToken string, item *models.MediaItem, now int64) (resultMediaID string, isDuplicate bool, err error)`, `func (s *Store) RecordArtifactIdentity(...) error`, `func (s *Store) RecordPrepared(...) error`, and `func (m *Manager) claimAndRunOnce() (bool, error)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3367,15 +3390,25 @@ func TestDuplicateResolutionValidatesTheSurvivingOriginal(t *testing.T) {
 
 	payload := jpegFixture(t)
 
+	// A second, intact row so the storage health sample stays positive.
+	// Without it the health gate trips first and this test would pass while
+	// never reaching the duplicate-validation code at all.
+	insertMediaRow(t, st, "keeper", "keeper.jpg", "keeper-hash")
+	if err := os.WriteFile(proc.OriginalPath("keeper.jpg"), []byte("keeper"), 0o600); err != nil {
+		t.Fatalf("write keeper: %v", err)
+	}
+
 	// Publish once.
 	seedCompleteUpload(t, m, st, "u1", payload)
 	_ = m.EnsureDurable(context.Background(), "u1")
 	drainQueue(t, m)
 
 	// Corrupt the surviving original, then upload the same bytes again.
+	// Corrupting rather than deleting keeps the health sample positive, so the
+	// failure is attributable to hash validation and nothing else.
 	first, _ := st.GetUploadJob(context.Background(), "u1")
-	if err := os.Remove(proc.OriginalPath(first.StoredFilename)); err != nil {
-		t.Fatalf("remove original: %v", err)
+	if err := os.WriteFile(proc.OriginalPath(first.StoredFilename), []byte("corrupt"), 0o600); err != nil {
+		t.Fatalf("corrupt original: %v", err)
 	}
 
 	seedCompleteUpload(t, m, st, "u2", payload)
@@ -3385,6 +3418,9 @@ func TestDuplicateResolutionValidatesTheSurvivingOriginal(t *testing.T) {
 	second, _ := st.GetUploadJob(context.Background(), "u2")
 	if second.Status != store.JobPending {
 		t.Errorf("status = %q, want pending: a corrupt authoritative original is an integrity fault, not a duplicate", second.Status)
+	}
+	if !strings.Contains(second.LastError, "integrity fault") {
+		t.Errorf("last_error = %q, want it to name the integrity fault (proves which branch ran)", second.LastError)
 	}
 	if _, err := os.Stat(m.DataPath("u2")); err != nil {
 		t.Error("the new copy's source must be retained while the old one is broken")
@@ -3401,7 +3437,7 @@ Expected: FAIL — publication is not implemented.
 
 - [ ] **Step 3: Add the publication transaction**
 
-Append to `backend/internal/store/upload_jobs.go`:
+Append to `backend/internal/store/upload_jobs.go`, and add `"event-gallery/backend/internal/models"` to its imports — this is the first code in that file to need it:
 
 ```go
 // PublishMedia inserts the media row and moves the job to cleanup in one
@@ -3531,19 +3567,22 @@ func (m *Manager) claimAndRunOnce() (bool, error) {
 }
 
 func (m *Manager) runProcessing(job *store.UploadJob) {
+	// The deadline starts at claim time, before the health check, so the
+	// attempt context always expires before the lease does.
+	ctx, cancel := context.WithTimeout(m.lifetime, m.opts.ProcessingTimeout)
+	defer cancel()
+
 	// Publishing into a media volume we cannot prove is mounted would write the
 	// original somewhere the real volume cannot see, and that new file would
-	// then satisfy the health gate and authorize deleting the tus source.
-	if err := m.health.Check(m.lifetime); err != nil {
+	// then satisfy the health gate's "one original exists" test and authorize
+	// deleting the tus source.
+	if err := m.health.Check(ctx); err != nil {
 		next := store.NowMicros() + m.backoffFor(job.ProcessingFailures).Microseconds()
 		if err := m.store.ReleaseForRetry(m.lifetime, job.UploadID, job.LeaseToken, store.JobPending, next, "processing_failures", truncateError(err)); err != nil {
 			slog.Error("failed to reschedule after health failure", "operation", "processing", "upload_id", job.UploadID, "error", err)
 		}
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(m.lifetime, m.opts.ProcessingTimeout)
-	defer cancel()
 
 	if err := m.prepareAndPublish(ctx, job); err != nil {
 		var rejection *clientRejection
@@ -3711,46 +3750,25 @@ func (m *Manager) runCleanup(job *store.UploadJob) {
 			return
 		}
 	}
+	// The media row is committed, so any temporary from an earlier attempt is
+	// provably redundant.
+	m.sweepTemporaries(job)
 	m.finishBySourceRemoval(job, store.JobComplete, "")
 }
 
-// runDiscard terminates a rejected or cancelled upload.
+// runDiscard terminates a rejected or cancelled upload. Both reasons are
+// decisions we honor, so no further guard is needed here: an upload whose bytes
+// were simply never observable never reaches this state — it is closed out as
+// 'unobservable' instead, which deletes nothing and stays reversible.
 func (m *Manager) runDiscard(job *store.UploadJob) {
 	if !m.deletionAllowed(job) {
-		return
-	}
-	if !m.safeToDiscardSource(job) {
 		return
 	}
 	if !m.removeArtifactsIfUnowned(job) {
 		return
 	}
+	m.sweepTemporaries(job)
 	m.finishBySourceRemoval(job, store.JobDiscarded, job.TerminalReason)
-}
-
-// safeToDiscardSource is the last guard before a discard destroys bytes.
-// Content the processor deterministically rejected is safe to remove. Anything
-// else reaching discard should have an absent or incomplete source — a
-// complete one means the reason we discarded it was wrong, most plausibly a
-// faulted upload volume that made a live upload look like it had no bytes.
-// Rather than delete it, hand it back for promotion.
-func (m *Manager) safeToDiscardSource(job *store.UploadJob) bool {
-	switch job.TerminalReason {
-	case "unsupported_type", "checksum_mismatch":
-		return true
-	}
-	stat, err := os.Stat(m.DataPath(job.UploadID))
-	if err != nil || stat.Size() != job.ExpectedSize {
-		return true // absent or incomplete: nothing complete can be lost
-	}
-
-	slog.Warn("refusing to discard a complete source; returning it for publication",
-		"operation", "discard", "upload_id", job.UploadID)
-	if err := m.store.ReviveForPublication(m.lifetime, job.UploadID, job.LeaseToken, store.NowMicros()); err != nil {
-		slog.Error("failed to revive upload", "operation", "discard", "upload_id", job.UploadID, "error", err)
-	}
-	m.Wake()
-	return false
 }
 
 // deletionAllowed re-checks storage health against the filesystem rather than
@@ -3793,6 +3811,24 @@ func (m *Manager) removeArtifacts(job *store.UploadJob) {
 	}
 	_ = os.Remove(m.processor.ThumbnailPath(job.MediaID))
 	_ = media.FsyncDir(m.processor.OriginalsDir())
+}
+
+// sweepTemporaries removes this job's leftover copies. A crash between the
+// copy and the rename leaves a full-size file in originals/, and because the
+// name is lease-scoped a retry writes a new one rather than reusing it. Left
+// alone they accumulate at upload size and eventually push the free-space
+// floor far enough to refuse new uploads.
+func (m *Manager) sweepTemporaries(job *store.UploadJob) {
+	matches, err := filepath.Glob(filepath.Join(m.processor.OriginalsDir(), ".ingest-"+job.MediaID+"-*-original.tmp"))
+	if err != nil {
+		return
+	}
+	for _, path := range matches {
+		_ = os.Remove(path)
+	}
+	if len(matches) > 0 {
+		_ = media.FsyncDir(m.processor.OriginalsDir())
+	}
 }
 
 // finishBySourceRemoval deletes the tus source and commits the terminal state.
@@ -3902,40 +3938,48 @@ func (s *Store) RecordPrepared(ctx context.Context, uploadID, leaseToken string)
 	return requireOneRow(res)
 }
 
-// MediaIsReferencedByActiveJob reports whether a non-terminal job depends on a
-// media row. Purging such a row would strip an in-flight duplicate of the
-// authoritative original it is about to rely on.
-func (s *Store) MediaIsReferencedByActiveJob(ctx context.Context, mediaID string) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM upload_jobs
-		 WHERE result_media_id = ? AND status NOT IN ('complete', 'discarded')`, mediaID).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("check active job references: %w", err)
-	}
-	return n > 0, nil
-}
+// MediaIsReferencedByActiveJob is deliberately not added: the purge guard lives
+// in PurgeTrashed's DELETE predicate, where it is evaluated in the same
+// transaction, and a second out-of-transaction copy of the same rule would only
+// invite someone to rely on it.
 
-// ReviveForPublication returns a job that should not have been discarded to
-// 'uploading' and clears the cancellation intent, so the durability barrier
-// can promote it normally. This is the escape hatch for a discard that was
-// decided on evidence which later turned out to be wrong.
-func (s *Store) ReviveForPublication(ctx context.Context, uploadID, leaseToken string, now int64) error {
+// ReviveForPublication is intentionally absent: nothing needs it. A job only
+// reaches 'discarding' through a deterministic client rejection or an explicit
+// user cancellation, and both of those are decisions we honor.
+
+// MarkUnobservable closes out an admitted upload whose bytes were never
+// observable — a create whose client vanished, or a partial the retention
+// janitor removed. It goes straight to a terminal state because there is
+// nothing to delete, and it carries a reason distinct from cancellation
+// precisely so it stays reversible: if the paths were merely hidden by a
+// faulted mount, reconciliation re-adopts them when they return.
+func (s *Store) MarkUnobservable(ctx context.Context, uploadID string, now int64) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE upload_jobs
-		   SET status = 'uploading',
-		       cancellation_requested_at = NULL,
-		       terminal_reason = '',
+		   SET status = 'discarded',
+		       terminal_reason = 'unobservable',
+		       terminal_at = ?,
 		       lease_token = NULL,
 		       lease_until = NULL,
-		       next_attempt_at = ?,
 		       updated_at = ?
-		 WHERE upload_id = ? AND lease_token = ?`,
-		now, now, uploadID, leaseToken)
+		 WHERE upload_id = ?
+		   AND status = 'uploading'
+		   AND source_completed_at IS NULL`, now, now, uploadID)
 	if err != nil {
-		return fmt.Errorf("revive upload job: %w", err)
+		return fmt.Errorf("mark upload unobservable: %w", err)
 	}
 	return requireOneRow(res)
+}
+
+// DeleteUploadJob removes a terminal row so its upload id can be adopted
+// afresh. Only used when bytes reappear for an 'unobservable' closure.
+func (s *Store) DeleteUploadJob(ctx context.Context, uploadID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM upload_jobs WHERE upload_id = ? AND status IN ('complete', 'discarded')`, uploadID)
+	if err != nil {
+		return fmt.Errorf("delete terminal upload job: %w", err)
+	}
+	return nil
 }
 ```
 
@@ -3981,16 +4025,38 @@ The guard belongs in the delete predicate rather than in a precheck, so it is ev
 			  )`, item.ID, item.StoredFilename)
 ```
 
-No other change is needed: `PurgeTrashed` already returns only the IDs it actually deleted, and `purgeMedia` already calls `stage.Restore()` for every staged item missing from that set, so a deferred row keeps its files. `MediaIsReferencedByActiveJob` remains useful for tests and logging.
+No other change is needed: `PurgeTrashed` already returns only the IDs it actually deleted, and `purgeMedia` already calls `stage.Restore()` for every staged item missing from that set, so a deferred row keeps its files.
+
+Also add the storage health check `purgeMedia` currently lacks, immediately before the staging loop, so a purge cannot commit a row deletion while the media volume is unproven — `StageForPurge`'s `moveIfExists` treats a missing original as success, which would otherwise orphan the real file when the mount returns:
+
+```go
+	if err := s.ingest.Health().Check(ctx); err != nil {
+		return nil, fmt.Errorf("refusing to purge while storage health is unproven: %w", err)
+	}
+```
 
 Add a test in `backend/internal/httpapi/purge_test.go` proving a purge is skipped while a non-terminal job references the id, that the item's files are restored rather than lost, and that the purge succeeds once that job reaches `complete`.
 
-- [ ] **Step 7: Run the tests to verify they pass**
+- [ ] **Step 7: Delete the source-consuming ingest path**
+
+`Processor.Process` is now unreachable in production — its only caller was `handlePostFinishHook`, deleted in Task 8 — and it is the function that caused the incident: it calls `moveFile(tempPath, finalPath)`, which consumes the guest's only copy. Leaving a tested, source-destroying entry point in `media` invites someone to reuse it. Delete, in `backend/internal/media/processor.go`:
+
+- `func (p *Processor) Process(...)`
+- `func (p *Processor) RemoveMedia(...)`
+- `func moveFile(...)`
+
+and in `backend/internal/httpapi/tus_hooks.go`, `func actorLabel(...)` — its callers went with the same handler; `recordUploadAudit` in the ingest package replaces it.
+
+In `backend/internal/media/processor_test.go`, delete `TestProcessor_ProcessImage`, `TestProcessor_ProcessAVIF`, and `TestProcessor_ProcessAVIF_RealFixture`. Their coverage of sniffing, hashing, and derivative generation now lives in the ingest tests and in `Derive`, against a path that never removes its input.
+
+Run `go build ./...` after deleting to confirm nothing else referenced them.
+
+- [ ] **Step 8: Run the tests to verify they pass**
 
 Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/ingest/ ./internal/store/ ./internal/httpapi/ -race -v`
 Expected: PASS. `TestTransientFailureNeverDeletesTheSource` is the regression test for the production incident — if it fails, stop and fix before continuing.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add backend/internal/ingest/ backend/internal/store/ backend/internal/media/processor.go
@@ -4009,7 +4075,7 @@ git commit -m "feat: publish uploads transactionally and delete sources only aft
 
 **Interfaces:**
 - Consumes: `tussidecar.Parse`, `store.RequeueStartup`, `store.CreateUploadingJob`, `Manager.EnsureDurable`.
-- Produces: `func (m *Manager) startupRecovery()`, `func (m *Manager) reconcileOnce()`, `func (m *Manager) sweepCancelled(idleFor time.Duration)`, `func (s *Store) ClaimCancelledForDiscard(...) (int64, error)`, `func (s *Store) ListStaleUploading(ctx context.Context, idleBefore int64, limit int) ([]string, error)`, and `func (s *Server) handleReady(w http.ResponseWriter, r *http.Request)`.
+- Produces: `func (m *Manager) startupRecovery()`, `func (m *Manager) reconcileOnce()`, `func (m *Manager) sweepCancelled(idleFor time.Duration)`, `func (s *Store) ClaimCancelledForDiscard(...) (int64, error)`, `func (s *Store) ListStaleUploading(ctx context.Context, idleBefore int64, limit int) ([]string, error)`, `func (s *Store) MarkUnobservable(ctx context.Context, uploadID string, now int64) error`, `func (s *Store) DeleteUploadJob(ctx context.Context, uploadID string) error`, and `func (s *Server) handleReady(w http.ResponseWriter, r *http.Request)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4337,6 +4403,10 @@ func (m *Manager) sweepCancelled(idleFor time.Duration) {
 // bytes — a create whose client vanished, or a partial the retention janitor
 // removed. Rows that reached the durability barrier are deliberately excluded:
 // their absence may be a faulted mount, and they retry indefinitely instead.
+//
+// The closure is marked 'unobservable' rather than cancelled. That distinction
+// is what makes it safe: it deletes nothing, and if the paths were merely
+// hidden, reconcileOne re-adopts them when they come back.
 func (m *Manager) resolveRowsWithoutFiles() {
 	idleBefore := store.NowMicros() - m.opts.ReconcileInterval.Microseconds()
 	ids, err := m.store.ListStaleUploading(m.lifetime, idleBefore, 200)
@@ -4348,9 +4418,7 @@ func (m *Manager) resolveRowsWithoutFiles() {
 		if m.UploadPathsExist(id) {
 			continue
 		}
-		// Record the same intent a user cancellation would and let the
-		// ordinary sweep terminalize it, rather than inventing a second path.
-		if err := m.store.RequestCancellation(m.lifetime, id, store.NowMicros()); err != nil && !errors.Is(err, store.ErrNotClaimed) {
+		if err := m.store.MarkUnobservable(m.lifetime, id, store.NowMicros()); err != nil && !errors.Is(err, store.ErrNotClaimed) {
 			slog.Warn("could not resolve upload with no bytes", "operation", "reconcile", "upload_id", id, "error", err)
 		}
 	}
@@ -4362,16 +4430,25 @@ func (m *Manager) reconcileOne(uploadID string) error {
 		return err
 	}
 	if job != nil {
-		switch job.Status {
-		case store.JobUploading:
+		switch {
+		case job.Status == store.JobUploading:
 			// May still need the durability barrier; handled below.
-		case store.JobComplete, store.JobDiscarded:
-			// Files reappeared for an upload we already finished and verified
-			// as gone. Adopting would collide on the primary key and
-			// republishing something the guest cancelled would be worse, so
-			// surface it and touch nothing.
+		case job.Status == store.JobDiscarded && job.TerminalReason == unobservableReason:
+			// The bytes were hidden, not gone — a faulted mount that has now
+			// returned. Closing the row out deleted nothing, so drop it and
+			// adopt the upload afresh rather than stranding a complete file.
+			slog.Info("bytes returned for an unobservable upload; re-adopting",
+				"operation", "reconcile", "upload_id", uploadID)
+			if err := m.store.DeleteUploadJob(m.lifetime, uploadID); err != nil {
+				return err
+			}
+			job = nil
+		case job.Status == store.JobComplete || job.Status == store.JobDiscarded:
+			// Finished and verified as gone, then something reappeared.
+			// Republishing content the guest cancelled would be worse than
+			// leaving it, so surface it and touch nothing.
 			slog.Warn("tus files present for a terminal upload job; leaving them untouched",
-				"operation", "reconcile", "upload_id", uploadID, "status", job.Status)
+				"operation", "reconcile", "upload_id", uploadID, "status", job.Status, "reason", job.TerminalReason)
 			return nil
 		default:
 			return nil // pending or later: the workers own it
@@ -4383,56 +4460,64 @@ func (m *Manager) reconcileOne(uploadID string) error {
 		return nil // nothing observable; absence is never actionable here
 	}
 
-	// A row already exists but never passed the durability barrier: a crash
-	// inside the pre-finish window, or a client that stopped retrying after a
-	// 503. EnsureDurable re-validates the size against expected_size, fsyncs,
-	// and promotes, so nothing else in the system needs to revisit it.
 	if job != nil {
+		// Every upload currently being transferred has an 'uploading' row and
+		// a partial file, so this must not fire for them: it would burn a
+		// durability slot every tick and inject 503s into live uploads that
+		// join the doomed operation.
+		if stat.Size() != job.ExpectedSize {
+			return nil
+		}
+		// Complete but never past the barrier: a crash inside the pre-finish
+		// window, or a client that stopped retrying after a 503.
 		return m.EnsureDurable(m.lifetime, uploadID)
 	}
 
-	info, sidecarPresent := m.trustedSidecar(uploadID)
+	info, identityMismatch := m.trustedSidecar(uploadID)
 	switch {
 	case info != nil:
 		if stat.Size() != info.Size {
 			return nil // still uploading; the incomplete-retention policy owns it
 		}
 		return m.adopt(uploadID, info.Size, info.MetaData)
-	case sidecarPresent:
-		// A sidecar we cannot trust means "unknown", never "safe to act on".
-		// Adopting at the observed size could publish a partial upload, and a
-		// checksum recovered from the wrong sidecar could turn a good file
-		// into a deterministic rejection.
+	case identityMismatch:
+		// A sidecar naming a different upload must not supply this file's
+		// metadata: a checksum from the wrong upload would turn a good file
+		// into a deterministic rejection and get it discarded.
 		slog.Warn("tus sidecar does not describe its own upload; leaving both files untouched",
 			"operation", "reconcile", "upload_id", uploadID)
 		return nil
 	default:
-		// No sidecar at all. tusd cannot resume such an upload, so the file is
-		// either residue from the old ingest path or a stray. Adopt it at its
-		// observed size; with no metadata there is no declared checksum to
-		// mismatch, so the worst case is an unsupported-type rejection.
+		// No sidecar, or one that cannot be parsed at all. tusd cannot resume
+		// such an upload, so the file is residue, most often from the old
+		// ingest path, which deleted the sidecar before its failure branch
+		// returned. Adopt at the observed size; with no metadata there is no
+		// declared checksum to mismatch.
 		return m.adopt(uploadID, stat.Size(), nil)
 	}
 }
 
+// unobservableReason marks a row closed out because its bytes were never
+// visible. Unlike a cancellation it deletes nothing, so it stays reversible.
+const unobservableReason = "unobservable"
+
 // trustedSidecar returns the sidecar only when it demonstrably describes this
-// upload. The second result reports whether a sidecar file existed at all,
-// which is what distinguishes "cannot be trusted" from "absent".
-func (m *Manager) trustedSidecar(uploadID string) (*tussidecar.Info, bool) {
+// upload. The second result flags the one case where the data file must be
+// left alone: a parseable sidecar naming a different upload. A missing or
+// unreadable sidecar is reported as absent, because tusd cannot resume such an
+// upload and stranding the bytes would be worse than adopting them.
+func (m *Manager) trustedSidecar(uploadID string) (info *tussidecar.Info, identityMismatch bool) {
 	infoPath := m.InfoPath(uploadID)
-	if _, err := os.Stat(infoPath); err != nil {
+	parsed, err := tussidecar.Parse(infoPath)
+	if err != nil {
 		return nil, false
 	}
-	info, err := tussidecar.Parse(infoPath)
-	if err != nil {
+	if parsed.ID != uploadID ||
+		filepath.Clean(parsed.StoragePath) != filepath.Clean(m.DataPath(uploadID)) ||
+		(parsed.StorageInfoPath != "" && filepath.Clean(parsed.StorageInfoPath) != filepath.Clean(infoPath)) {
 		return nil, true
 	}
-	if info.ID != uploadID ||
-		filepath.Clean(info.StoragePath) != filepath.Clean(m.DataPath(uploadID)) ||
-		(info.StorageInfoPath != "" && filepath.Clean(info.StorageInfoPath) != filepath.Clean(infoPath)) {
-		return nil, true
-	}
-	return info, true
+	return parsed, false
 }
 
 func (m *Manager) adopt(uploadID string, size int64, metadata map[string]string) error {
@@ -4818,7 +4903,6 @@ In `backend/cmd/server/main.go`, after the store, processor, and server are buil
 		Workers:           cfg.MediaProcessingWorkers,
 		DurabilityWorkers: cfg.UploadDurabilityWorkers,
 		ProcessingTimeout: cfg.MediaProcessingTimeout,
-		DurabilityWait:    cfg.UploadDurabilityWait,
 		MaxBackoff:        cfg.UploadRetryMaxBackoff,
 		ReconcileInterval: cfg.IngestReconcileInterval,
 		JobRetention:      cfg.UploadJobRetention,
@@ -4869,7 +4953,6 @@ In `docker-compose.yml`, add to the `app` service environment:
       INGEST_RECONCILE_INTERVAL_SECONDS: "${INGEST_RECONCILE_INTERVAL_SECONDS:-15}"
       UPLOAD_JOB_RETENTION_DAYS: "${UPLOAD_JOB_RETENTION_DAYS:-30}"
       UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE: "${UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE:-6000}"
-      IMAGE_MAX_SOURCE_PIXELS: "${IMAGE_MAX_SOURCE_PIXELS:-50000000}"
 ```
 
 - [ ] **Step 4: Correct the backup documentation**
@@ -4914,7 +4997,7 @@ Checked against the spec before handing off:
 - **Covered:** SQLite queue and migration (Task 1), configuration (Task 2), leased claims and retry scheduling (Tasks 3, 7), shared sidecar parsing (Task 4), fsync-ordered preparation that preserves the source (Task 5), storage health gate (Task 6), pre-create admission with backpressure envelopes (Task 8), blocking pre-finish durability barrier (Task 9), completion fence and cancellation (Task 10), deterministic preparation, transactional publication, duplicate validation, cleanup, and the purge guard (Task 11), recovery and readiness (Task 12), status API and legacy shim (Task 13), wiring and rollout (Task 14).
 - **Deferred by design to plans 2 and 3:** the `heif-preview` helper, `has_preview` population, `GET /api/media/{id}/preview`, `PREVIEW_MAX_DIMENSION`, `HEIC_MAX_SOURCE_PIXELS`, `HEIC_CONVERSION_MAX_FAILURES`, the `conversion_failures` budget's consumer, `MEDIA_TOOL_MEMORY_BYTES` enforcement, the Uppy retry wrapper, status-driven gallery refresh, and the `tus_battle.py` completion oracle. The schema column and config values land here so plan 2 is purely additive.
 - **Known follow-up inside this plan:** Task 11 leaves `conversion_failures` unused; that is intentional and plan 2 consumes it.
-- **Naming consistency verified:** `EnsureDurable`, `PromoteToPending`, `ClaimNextJob`, `ReleaseForRetry`, `FinishJob`, `PublishMedia`, `RecordArtifactIdentity`, `RecordPrepared`, `MediaIsReferencedByActiveJob`, `ClaimCancelledForDiscard`, `PrepareOriginal`, `VerifyOriginal`, `Terminate`, and `DataPath`/`InfoPath` are used identically everywhere they appear.
+- **Naming consistency verified:** `EnsureDurable`, `PromoteToPending`, `ClaimNextJob`, `ReleaseForRetry`, `FinishJob`, `PublishMedia`, `RecordArtifactIdentity`, `RecordPrepared`, `MarkUnobservable`, `DeleteUploadJob`, `ClaimCancelledForDiscard`, `ListStaleUploading`, `PrepareOriginal`, `VerifyOriginal`, `Terminate`, and `DataPath`/`InfoPath` are used identically everywhere they appear.
 - **Existing-store contracts honored:** `GetBySHA256`, `GetByID`, and `GetVisibleByID` all report absence as `sql.ErrNoRows`, and `media.Sniff` reports unrecognized content as `*media.ErrUnsupportedType`. Every call site in this plan handles those explicitly.
 
 ## Execution Handoff
