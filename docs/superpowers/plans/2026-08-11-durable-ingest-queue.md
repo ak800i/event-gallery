@@ -2071,9 +2071,16 @@ func (m *Manager) runReconciler() {
 			if err := m.health.Check(m.lifetime); err != nil {
 				slog.Warn("storage health check failed", "operation", "reconcile", "error", err)
 			}
-			if err := m.reconcileOnce(); err == nil && m.ready.CompareAndSwap(false, true) {
-				// Recovers from a startup inventory that could not be read.
-				slog.Info("ingest ready", "operation", "reconcile")
+			if m.Ready() {
+				if err := m.reconcileOnce(); err != nil {
+					slog.Warn("reconcile pass failed", "operation", "reconcile", "error", err)
+				}
+			} else {
+				// Startup did not complete. Retry the whole prerequisite,
+				// including the lease reset: opening readiness without it would
+				// leave interrupted jobs holding pre-crash leases for a full
+				// lease duration.
+				m.startupRecovery()
 			}
 			m.expireTerminalJobs()
 		}
@@ -2108,8 +2115,15 @@ Add temporary no-op stubs so the package compiles; Tasks 9, 11 and 12 replace th
 
 ```go
 func (m *Manager) claimAndRunOnce() (bool, error) { return false, nil }
-func (m *Manager) startupRecovery()               { m.ready.Store(true) }
 func (m *Manager) reconcileOnce() error           { return nil }
+
+// The health gate starts closed, so something must prove the media volume is
+// mounted before uploads are admitted. Task 12's real implementation does the
+// same check as its first step.
+func (m *Manager) startupRecovery() {
+	_ = m.health.Check(m.lifetime)
+	m.ready.Store(true)
+}
 ```
 
 Also add the registry placeholder in `durability.go` (fully implemented in Task 9):
@@ -2147,8 +2161,13 @@ git commit -m "feat: add ingest manager lifecycle and worker pool"
 
 **Files:**
 - Modify: `backend/internal/httpapi/tus_hooks.go`
+- Modify: `backend/internal/httpapi/tus_proxy.go`
+- Modify: `backend/internal/httpapi/storage_cleanup.go`
 - Modify: `backend/internal/httpapi/server.go`
 - Modify: `backend/internal/httpapi/testharness_test.go`
+- Modify: `backend/internal/ingest/manager.go`
+- Modify: `backend/internal/store/upload_jobs.go`
+- Create: `backend/internal/ingest/freespace_unix.go`, `backend/internal/ingest/freespace_other.go`
 - Test: `backend/internal/httpapi/tus_hooks_test.go`
 
 **Interfaces:**
@@ -2611,7 +2630,7 @@ Expected: PASS.
 - [ ] **Step 10: Commit**
 
 ```bash
-git add backend/internal/httpapi/ backend/internal/ingest/
+git add backend/internal/httpapi/ backend/internal/ingest/ backend/internal/store/upload_jobs.go
 git commit -m "feat: admit uploads through pre-create with a durable job row"
 ```
 
@@ -3906,35 +3925,84 @@ func (m *Manager) finishBySourceRemoval(job *store.UploadJob, status store.JobSt
 		m.retryCleanup(job, err)
 		return
 	}
-	// tusd's 204, 404, or 410 is a prompt to verify, not proof.
-	if _, err := os.Stat(dataPath); err == nil {
-		m.retryCleanup(job, errors.New("source still present after termination"))
+
+	// Only ENOENT proves absence. Treating EIO or EACCES as "gone" would be the
+	// same mistake that caused the incident.
+	dataGone, err := pathIsAbsent(dataPath)
+	if err != nil {
+		m.retryCleanup(job, err)
 		return
 	}
-	// A sidecar can outlive its data file if tusd crashed between the two
-	// unlinks. tusd will not remove it — its own GetUpload fails without the
-	// data file — and neither will the janitor, so the app removes it here.
-	// This is the one file the app unlinks directly, and it is safe precisely
-	// because it holds no bytes: the rule it bends exists to protect data.
 	infoPath := m.InfoPath(job.UploadID)
-	if _, err := os.Stat(infoPath); err == nil {
+	sidecarGone, err := pathIsAbsent(infoPath)
+	if err != nil {
+		m.retryCleanup(job, err)
+		return
+	}
+
+	// tusd resolves an upload through its sidecar, so if the sidecar is gone it
+	// answers 404 and never touches the data file. That is exactly the shape the
+	// old ingest path left behind, and it is the shape this feature adopts, so
+	// without this branch every recovered upload would spin in cleanup forever
+	// and hold disk it no longer needs. Unlinking is safe here for the same
+	// reason the orphan sidecar is: the media row is already committed, so this
+	// is not the only copy — and tusd does not know the file exists.
+	if !dataGone && sidecarGone {
+		slog.Warn("removing tus data file that tusd can no longer address",
+			"operation", "cleanup", "upload_id", job.UploadID)
+		if err := os.Remove(dataPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			m.retryCleanup(job, fmt.Errorf("remove orphan data file: %w", err))
+			return
+		}
+		dataGone = true
+	}
+
+	// A sidecar can also outlive its data file if tusd crashed between the two
+	// unlinks. tusd will not remove it — its own GetUpload fails without the
+	// data file — and neither will the janitor, so the app does it here.
+	if dataGone && !sidecarGone {
 		slog.Warn("removing tus sidecar that outlived its data file",
 			"operation", "cleanup", "upload_id", job.UploadID)
 		if err := os.Remove(infoPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			m.retryCleanup(job, fmt.Errorf("remove orphan sidecar: %w", err))
 			return
 		}
-		if err := media.FsyncDir(m.opts.UploadDir); err != nil {
-			m.retryCleanup(job, err)
-			return
-		}
-		if _, err := os.Stat(infoPath); err == nil {
-			m.retryCleanup(job, errors.New("sidecar still present after removal"))
+	}
+
+	if !dataGone {
+		m.retryCleanup(job, errors.New("source still present after termination"))
+		return
+	}
+
+	// One final verification of both paths across a directory fsync.
+	if err := media.FsyncDir(m.opts.UploadDir); err != nil {
+		m.retryCleanup(job, err)
+		return
+	}
+	for _, path := range []string{dataPath, infoPath} {
+		absent, err := pathIsAbsent(path)
+		if err != nil || !absent {
+			m.retryCleanup(job, fmt.Errorf("%s is not verifiably gone", path))
 			return
 		}
 	}
+
 	if err := m.store.FinishJob(m.lifetime, job.UploadID, job.LeaseToken, status, reason, store.NowMicros()); err != nil {
 		slog.Error("failed to commit terminal state", "operation", "cleanup", "upload_id", job.UploadID, "error", err)
+	}
+}
+
+// pathIsAbsent distinguishes "proven gone" from "could not tell". Only ENOENT
+// counts as absence; every other error is ambiguity and must be retried.
+func pathIsAbsent(path string) (bool, error) {
+	_, err := os.Stat(path)
+	switch {
+	case err == nil:
+		return false, nil
+	case errors.Is(err, os.ErrNotExist):
+		return true, nil
+	default:
+		return false, err
 	}
 }
 
@@ -4355,7 +4423,14 @@ func TestAbsentSourceNeverTerminalizesADurableJob(t *testing.T) {
 }
 ```
 
-Add `writeSidecar(t, m, id, size)` to `fixture_test.go`, writing a JSON sidecar whose `ID` is `id` and whose `Storage.Path` and `Storage.InfoPath` are `m.DataPath(id)` and `m.InfoPath(id)`. Add `writeSidecarFor(t, m, fileID, declaredID, size)` alongside it, which writes the sidecar at `m.InfoPath(fileID)` but names `declaredID` inside — that is what the untrusted-sidecar test needs.
+Add `writeSidecar(t, m, id, size)` to `fixture_test.go`. It must write the full shape `tussidecar.Parse` requires, matching the existing janitor fixture in `storage_cleanup_test.go`:
+
+```json
+{"ID":"<id>","Size":<size>,"SizeIsDeferred":false,"MetaData":{"filename":"a.jpg"},
+ "Storage":{"Type":"filestore","Path":"<m.DataPath(id)>","InfoPath":"<m.InfoPath(id)>"}}
+```
+
+`Storage.Type` is load-bearing: without it `Parse` fails, `trustedSidecar` reports "absent", and `reconcileOne` falls into the adopt-at-observed-size branch — which would invert `TestPartialUploadIsLeftAlone` and `TestUntrustworthySidecarIsLeftAlone` into passing for the wrong reason. Add `writeSidecarFor(t, m, fileID, declaredID, size)` alongside it, identical except that the `ID` field names `declaredID` while the file is written at `m.InfoPath(fileID)`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -4457,8 +4532,9 @@ func (m *Manager) startupRecovery() {
 		slog.Error("startup inventory failed; ingest stays not ready", "operation", "startup_recovery", "error", err)
 		return
 	}
-	m.ready.Store(true)
-	slog.Info("ingest ready", "operation", "startup_recovery")
+	if m.ready.CompareAndSwap(false, true) {
+		slog.Info("ingest ready", "operation", "startup_recovery")
+	}
 	m.Wake()
 }
 
@@ -4736,7 +4812,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/internal/ingest/ backend/internal/httpapi/server.go
+git add backend/internal/ingest/ backend/internal/store/upload_jobs.go backend/internal/httpapi/server.go
 git commit -m "feat: adopt orphaned completed uploads and gate upload routes on readiness"
 ```
 
