@@ -2,16 +2,21 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
+	"event-gallery/backend/internal/ingest"
 	"event-gallery/backend/internal/ratelimit"
 	"event-gallery/backend/internal/store"
 )
@@ -74,15 +79,38 @@ func newTusReverseProxy(targetURL, hookSecret string, trustedProxies []netip.Pre
 	return &tusReverseProxy{proxy: proxy, hookSecret: hookSecret}, nil
 }
 
-// handleTusProxy forwards all tus protocol requests (POST to create, PATCH
-// to send chunks, HEAD to resume, DELETE to abort) to the internal tusd
-// instance, applying per-IP concurrency and bandwidth limits to the
-// data-carrying PATCH requests and blocking new uploads once the admin has
-// set an upload expiry in the past.
+// handleTusProxy forwards tus protocol requests (POST to create, PATCH to
+// send chunks, HEAD to resume) to the internal tusd instance, applying per-IP
+// concurrency and bandwidth limits to the data-carrying PATCH requests and
+// blocking new uploads once the admin has set an upload expiry in the past.
+//
+// DELETE is the exception: it is answered here and never forwarded, because
+// tusd's terminate would remove a guest's only copy of their file.
 func (s *Server) handleTusProxy(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r, s.cfg.TrustedProxyCIDRs)
 	if !s.publicLimiter.Allow(ip) {
 		writeError(w, http.StatusTooManyRequests, "rate limit exceeded, please slow down")
+		return
+	}
+
+	uploadID := tusUploadIDFromPath(r.URL.Path)
+
+	// Unconditional, and before anything trusts the id: refusing every client
+	// DELETE here is what makes terminating a durable upload from a browser
+	// structurally impossible rather than merely disallowed.
+	if r.Method == http.MethodDelete {
+		// The fence runs first. A client that gave up under backpressure sends
+		// this DELETE with all of its bytes already on disk; committing them
+		// here is what turns the cancellation into a 409 instead of a deleted
+		// file.
+		if s.fenceCompletedUpload(w, r, uploadID) {
+			return
+		}
+		s.handleTusDelete(w, r, uploadID)
+		return
+	}
+
+	if (r.Method == http.MethodHead || r.Method == http.MethodPatch) && s.fenceCompletedUpload(w, r, uploadID) {
 		return
 	}
 
@@ -108,6 +136,125 @@ func (s *Server) handleTusProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.tusProxy.proxy.ServeHTTP(w, r)
+}
+
+// fenceRetryAfterSeconds paces a client whose upload we could not commit
+// inside its request budget.
+const fenceRetryAfterSeconds = 5
+
+func fenceRetry(w http.ResponseWriter, message string) {
+	w.Header().Set("Retry-After", strconv.Itoa(fenceRetryAfterSeconds))
+	writeError(w, http.StatusServiceUnavailable, message)
+}
+
+// fenceCompletedUpload stops the proxy from reporting success that the
+// database has not recorded. tusd answers an already-complete upload with a
+// plain 204 without re-running pre-finish, so without this a client that was
+// told 503 could retry and be told success while the row is still 'uploading'.
+// It returns true once it has written a response, meaning the request must not
+// be forwarded.
+//
+// It fails closed: if we cannot read the row, we do not know whether success
+// would be truthful, and an unnecessary retry is always cheaper than a false
+// success.
+func (s *Server) fenceCompletedUpload(w http.ResponseWriter, r *http.Request, uploadID string) bool {
+	if s.ingest == nil {
+		return false
+	}
+	// Before the startup inventory finishes we cannot tell a rowless orphan
+	// from an upload we have not inventoried yet, so nothing is forwarded.
+	if !s.ingest.Ready() {
+		fenceRetry(w, "server is still recovering queued uploads")
+		return true
+	}
+	if uploadID == "" {
+		return false
+	}
+	job, err := s.store.GetUploadJob(r.Context(), uploadID)
+	if err != nil {
+		slog.Warn("completion fence could not read the upload row", "operation", "fence", "upload_id", uploadID, "error", err)
+		fenceRetry(w, "upload state is temporarily unavailable, please retry")
+		return true
+	}
+	if job == nil || job.Status != store.JobUploading {
+		return false
+	}
+
+	stat, err := os.Stat(s.ingest.DataPath(uploadID))
+	if err != nil || !stat.Mode().IsRegular() || stat.Size() != job.ExpectedSize {
+		return false // still uploading; let the transfer continue
+	}
+
+	// Bound the wait with the same budget the hook uses. A proxied HEAD or
+	// PATCH has no deadline of its own, and the operation it joins is bounded
+	// by the processing timeout, so without this the client could hang.
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.UploadDurabilityWait)
+	defer cancel()
+	switch err := s.ingest.EnsureDurable(ctx, uploadID); {
+	case err == nil:
+		return false // now durable; forwarding is safe
+	case errors.Is(err, ingest.ErrDurabilityFinal):
+		// Nothing about this upload can change, so backpressure would leave the
+		// browser retrying every five seconds forever. 410 and never 409, 423
+		// or 429: @uppy/tus installs its own onShouldRetry, which retries all
+		// three, so none of them is terminal at the client.
+		slog.Warn("completion fence refused an upload that can never commit",
+			"operation", "fence", "upload_id", uploadID, "error", err)
+		writeError(w, http.StatusGone, "upload can no longer be completed")
+		return true
+	default:
+		slog.Warn("completion fence could not commit the upload in time",
+			"operation", "fence", "upload_id", uploadID, "error", err)
+		fenceRetry(w, "upload is still being persisted, please retry")
+		return true
+	}
+}
+
+// handleTusDelete consumes a public DELETE as cancellation intent. Recording
+// intent is all it does: removing the source belongs to the janitor, which
+// first claims the row to discarding.
+func (s *Server) handleTusDelete(w http.ResponseWriter, r *http.Request, uploadID string) {
+	if uploadID == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	job, err := s.store.GetUploadJob(r.Context(), uploadID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read upload state")
+		return
+	}
+	if job == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if job.Status != store.JobUploading {
+		writeError(w, http.StatusConflict, "upload already completed and cannot be cancelled")
+		return
+	}
+	if err := s.store.RequestCancellation(r.Context(), uploadID, store.NowMicros()); err != nil {
+		if !errors.Is(err, store.ErrNotClaimed) {
+			writeError(w, http.StatusInternalServerError, "could not record cancellation")
+			return
+		}
+		// The row moved on between our read and this write — a promotion the
+		// fence or the pre-finish hook committed. The answer is the same as if
+		// we had seen it above.
+		writeError(w, http.StatusConflict, "upload already completed and cannot be cancelled")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// tusUploadIDFromPath returns the final path segment of /api/tus/<id>.
+func tusUploadIDFromPath(p string) string {
+	id := path.Base(strings.TrimSuffix(p, "/"))
+	if id == "tus" || id == "." || id == "/" {
+		return ""
+	}
+	if !safeUploadID(id) {
+		return ""
+	}
+	return id
 }
 
 // Terminate implements ingest.SourceTerminator. Both the incomplete-upload
