@@ -16,7 +16,8 @@
 - Go server stays `CGO_ENABLED=0`.
 - Every `INTEGER` timestamp in the new `upload_jobs` table is signed UTC Unix **microseconds**. Existing `media_items` timestamps stay TEXT RFC3339Nano — do not change them.
 - A source file may be deleted only after a `media_items` row for that content is committed, or after durable discard intent from deterministic client rejection or user cancellation. Nothing else authorizes deletion, ever.
-- Absence of a file is never sufficient evidence to delete a row or another copy.
+- Absence of a file is never sufficient evidence to delete a row or another copy. Only `ENOENT` counts as absence; every other stat error is ambiguity and must be retried.
+- Known limitation, accepted: on a **first** boot with an empty gallery and the media filesystem not actually mounted, the health gate has nothing to sample and is trivially healthy, so the first uploads would be written beneath the mount point. There are no existing photos to lose, and the condition is immediately visible to an operator. Guarding it would require per-volume identity markers, which were deliberately cut. Once one row exists the gate protects normally, and `SampleStoredFilenames` orders by rowid so a freshly written original can never certify its own volume.
 - The app never issues a tus termination for a job whose data path it has not just observed to exist.
 - Transient failures retry indefinitely with capped backoff. There is no failure count that causes deletion.
 - Timing inequality that must hold: `75s app budget < 90s hook timeout < 100s edge window`.
@@ -60,7 +61,7 @@ Plans 2 and 3 depend on this one. Do not start them until this plan's tasks all 
 **Modified files**
 
 - `backend/internal/db/db.go` — add `synchronous=FULL` to the DSN.
-- `backend/internal/config/config.go` — 12 new settings.
+- `backend/internal/config/config.go` — nine new settings.
 - `backend/internal/httpapi/tus_hooks.go` — rewrite `pre-create`, add the blocking `pre-finish` barrier, demote `post-finish` to a wake signal.
 - `backend/internal/httpapi/tus_proxy.go` — completion fence on HEAD/PATCH, DELETE as cancellation intent.
 - `backend/internal/httpapi/server.go` — hold the manager, add `/readyz`, register the status route.
@@ -247,7 +248,7 @@ git commit -m "feat: add durable upload_jobs schema and synchronous=FULL"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `backend/internal/config/config_test.go`. Note the existing `clearEnv(t)` helper and the two settings `Load()` requires — without them `Load()` fails validation before it ever reaches the new fields. Also add the twelve new keys to `clearEnv`'s list so these tests cannot be polluted by the developer's shell.
+Append to `backend/internal/config/config_test.go`. Note the existing `clearEnv(t)` helper and the two settings `Load()` requires — without them `Load()` fails validation before it ever reaches the new fields. Also add the nine new keys to `clearEnv`'s list so these tests cannot be polluted by the developer's shell.
 
 ```go
 func TestLoad_IngestDefaults(t *testing.T) {
@@ -1660,9 +1661,11 @@ Append to `backend/internal/store/upload_jobs.go`:
 
 ```go
 // SampleStoredFilenames returns up to limit stored filenames, used to prove a
-// media volume is actually mounted before anything is deleted.
+// media volume is actually mounted before anything is deleted. Ordered by
+// rowid so the sample is the oldest rows: an original this run just wrote must
+// never be the evidence that authorizes deleting its own source.
 func (s *Store) SampleStoredFilenames(ctx context.Context, limit int) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT stored_filename FROM media_items LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT stored_filename FROM media_items ORDER BY rowid LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sample stored filenames: %w", err)
 	}
@@ -2174,7 +2177,81 @@ git commit -m "feat: add ingest manager lifecycle and worker pool"
 - Consumes: `store.CreateUploadingJob`, `ingest.Manager.Ready()`, `ingest.HealthGate.Healthy()`.
 - Produces: `pre-create` returns `ChangeFileInfo.ID`; adds `retryHook(w, retryAfterSeconds, message)`; adds `Server.ingest *ingest.Manager` and `func (s *Server) SetIngest(m *ingest.Manager)`.
 
-- [ ] **Step 1: Give the test harness an ingest manager**
+- [ ] **Step 1: Provide the termination seam the harness depends on**
+
+This comes first because Step 2 wires `Terminator: srv` into the test harness, and `Options.Terminator` is typed `ingest.SourceTerminator`. Until `*Server` satisfies that interface the `httpapi` package does not compile, so every later checkpoint in this task would report a type error instead of the behavioral failure it describes.
+
+The implementation already exists: `terminateTusUpload` in `storage_cleanup.go` issues the internal DELETE and treats 204, 404, and 410 as success. Expose it in `tus_proxy.go`:
+
+```go
+// Terminate implements ingest.SourceTerminator. Both the incomplete-upload
+// janitor and the ingest workers remove tus files through this one path, so
+// tusd always cleans up its own sidecar and lock state.
+//
+// It refuses to remove a source that a pending or processing job still needs.
+func (s *Server) Terminate(ctx context.Context, uploadID string) error {
+	job, err := s.store.GetUploadJob(ctx, uploadID)
+	if err != nil {
+		return err
+	}
+	if job != nil && (job.Status == store.JobPending || job.Status == store.JobProcessing) {
+		return fmt.Errorf("upload %s is queued for publication and must not be terminated", uploadID)
+	}
+	return s.terminateTusUpload(ctx, uploadID)
+}
+```
+
+Now route the janitor through it. In `backend/internal/httpapi/storage_cleanup.go`, replace `s.terminateTusUpload(ctx, candidate.id)` with:
+
+```go
+		// Claim the row before deleting. A status read followed by a DELETE is a
+		// race: the janitor decides an upload is an abandoned partial, and
+		// between that decision and tusd acting on it the final PATCH can
+		// complete and commit `pending`. The conditional claim cannot lose that
+		// race — whichever transition commits first, the other sees zero rows.
+		if err := s.store.ClaimUploadingForDiscard(ctx, candidate.id, store.NowMicros()); err != nil &&
+			!errors.Is(err, store.ErrNotClaimed) {
+			slog.Warn("could not claim incomplete upload for removal", "upload_id", candidate.id, "error", err)
+			continue
+		} else if errors.Is(err, store.ErrNotClaimed) && s.uploadJobExists(ctx, candidate.id) {
+			continue // it completed while we were deciding; leave it to ingest
+		}
+		if err := s.Terminate(ctx, candidate.id); err != nil {
+```
+
+with a small helper in the same file:
+
+```go
+// uploadJobExists reports whether the queue is tracking this upload at all.
+// A rowless partial is legacy residue the janitor may still remove.
+func (s *Server) uploadJobExists(ctx context.Context, uploadID string) bool {
+	job, err := s.store.GetUploadJob(ctx, uploadID)
+	return err != nil || job != nil
+}
+```
+
+and the matching store method appended to `upload_jobs.go`:
+
+```go
+// ClaimUploadingForDiscard atomically moves a still-uploading row to discard,
+// so a caller about to delete its files cannot be overtaken by a completion.
+// It returns ErrNotClaimed when the row has already moved on.
+func (s *Store) ClaimUploadingForDiscard(ctx context.Context, uploadID string, now int64) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET status = 'discarding',
+		       terminal_reason = CASE WHEN terminal_reason = '' THEN 'cancelled' ELSE terminal_reason END,
+		       next_attempt_at = ?,
+		       updated_at = ?
+		 WHERE upload_id = ? AND status = 'uploading'`, now, now, uploadID)
+	if err != nil {
+		return fmt.Errorf("claim uploading for discard: %w", err)
+	}
+	return requireOneRow(res)
+}
+```
+
+- [ ] **Step 2: Give the test harness an ingest manager**
 
 Every hook path now depends on the manager, so the shared harness must build one or all of this task's tests fail on a nil dependency. In `backend/internal/httpapi/testharness_test.go`, add the new config fields and start a manager before returning:
 
@@ -2216,7 +2293,7 @@ Add `ingest *ingest.Manager` to `testHarness`, and import `event-gallery/backend
 
 `manager.Start()` runs the startup inventory, so `Ready()` becomes true and `pre-create` admits uploads instead of returning backpressure.
 
-- [ ] **Step 2: Retire the tests this task invalidates**
+- [ ] **Step 3: Retire the tests this task invalidates**
 
 Deleting `handlePostFinishHook` removes the behavior four tests assert. Delete them from `backend/internal/httpapi/tus_hooks_test.go`; Task 11's ingest tests replace their coverage at the layer that now owns it:
 
@@ -2233,7 +2310,7 @@ Keep `TestTusHook_PreCreate_RejectsOversized` and `TestTusHook_PreCreate_Rejects
 	}
 ```
 
-- [ ] **Step 3: Write the failing test**
+- [ ] **Step 4: Write the failing test**
 
 Append to `backend/internal/httpapi/tus_hooks_test.go`, following the file's existing `hookRequestBody` / `newRequestWithHeader` / `serveRequest` pattern:
 
@@ -2294,12 +2371,12 @@ func TestPreCreateRejectsDeferredSize(t *testing.T) {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they fail**
+- [ ] **Step 5: Run the tests to verify they fail**
 
 Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/httpapi/ -run PreCreate -v`
 Expected: FAIL — no `ChangeFileInfo` in the response.
 
-- [ ] **Step 5: Extend the hook response types**
+- [ ] **Step 6: Extend the hook response types**
 
 In `tus_hooks.go`, add to the response types and add a backpressure helper:
 
@@ -2338,7 +2415,7 @@ func retryHook(w http.ResponseWriter, retryAfterSeconds int, message string) {
 
 Add `"strconv"` to the imports.
 
-- [ ] **Step 6: Rewrite the pre-create handler**
+- [ ] **Step 7: Rewrite the pre-create handler**
 
 Replace `handlePreCreateHook` with:
 
@@ -2470,7 +2547,7 @@ and
 func (s *Server) SetIngest(m *ingest.Manager) { s.ingest = m }
 ```
 
-- [ ] **Step 7: Add the manager helpers this handler calls**
+- [ ] **Step 8: Add the manager helpers this handler calls**
 
 Append to `backend/internal/ingest/manager.go`, adding `"fmt"`, `"os"`, and `"path/filepath"` to its imports — this is the first code in that file to need them:
 
@@ -2550,84 +2627,16 @@ func freeBytes(string) (int64, error) { return math.MaxInt64, nil }
 
 Run `go get golang.org/x/sys@latest` inside the toolchain container if that module is not already required.
 
-- [ ] **Step 8: Provide the termination seam the manager depends on**
+- [ ] **Step 9: Note on termination**
 
-`Options.Terminator` is typed `ingest.SourceTerminator`, and the harness in Step 1 passes `srv`, so `*Server` must satisfy that interface now — not in Task 10 — or this package will not build. The app already has the implementation: `terminateTusUpload` in `storage_cleanup.go` issues the internal DELETE and treats 204, 404, and 410 as success. Expose it in `tus_proxy.go`:
+The `Terminate` seam and the janitor's claim were added in Step 1, because the harness needs them to compile. Do **not** additionally enable tusd's `pre-terminate` hook: it would exist to stop a client from terminating an upload, but `handleTusProxy` refuses every client DELETE before parsing, so no client request can reach tusd's terminate path at all. Enabling it would instead break the janitor and add a hook, a forwarded header, and an authorization scheme with no threat left to defend against.
 
-```go
-// Terminate implements ingest.SourceTerminator. Both the incomplete-upload
-// janitor and the ingest workers remove tus files through this one path, so
-// tusd always cleans up its own sidecar and lock state.
-//
-// It refuses to remove a source that a pending or processing job still needs.
-func (s *Server) Terminate(ctx context.Context, uploadID string) error {
-	job, err := s.store.GetUploadJob(ctx, uploadID)
-	if err != nil {
-		return err
-	}
-	if job != nil && (job.Status == store.JobPending || job.Status == store.JobProcessing) {
-		return fmt.Errorf("upload %s is queued for publication and must not be terminated", uploadID)
-	}
-	return s.terminateTusUpload(ctx, uploadID)
-}
-```
-
-Now route the janitor through it. In `backend/internal/httpapi/storage_cleanup.go`, replace `s.terminateTusUpload(ctx, candidate.id)` with:
-
-```go
-		// Claim the row before deleting. A status read followed by a DELETE is a
-		// race: the janitor decides an upload is an abandoned partial, and
-		// between that decision and tusd acting on it the final PATCH can
-		// complete and commit `pending`. The conditional claim cannot lose that
-		// race — whichever transition commits first, the other sees zero rows.
-		if err := s.store.ClaimUploadingForDiscard(ctx, candidate.id, store.NowMicros()); err != nil &&
-			!errors.Is(err, store.ErrNotClaimed) {
-			slog.Warn("could not claim incomplete upload for removal", "upload_id", candidate.id, "error", err)
-			continue
-		} else if errors.Is(err, store.ErrNotClaimed) && s.uploadJobExists(ctx, candidate.id) {
-			continue // it completed while we were deciding; leave it to ingest
-		}
-		if err := s.Terminate(ctx, candidate.id); err != nil {
-```
-
-with a small helper in the same file:
-
-```go
-// uploadJobExists reports whether the queue is tracking this upload at all.
-// A rowless partial is legacy residue the janitor may still remove.
-func (s *Server) uploadJobExists(ctx context.Context, uploadID string) bool {
-	job, err := s.store.GetUploadJob(ctx, uploadID)
-	return err != nil || job != nil
-}
-```
-
-and the matching store method appended to `upload_jobs.go`:
-
-```go
-// ClaimUploadingForDiscard atomically moves a still-uploading row to discard,
-// so a caller about to delete its files cannot be overtaken by a completion.
-// It returns ErrNotClaimed when the row has already moved on.
-func (s *Store) ClaimUploadingForDiscard(ctx context.Context, uploadID string, now int64) error {
-	res, err := s.db.ExecContext(ctx, `
-		UPDATE upload_jobs
-		   SET status = 'discarding',
-		       terminal_reason = CASE WHEN terminal_reason = '' THEN 'cancelled' ELSE terminal_reason END,
-		       next_attempt_at = ?,
-		       updated_at = ?
-		 WHERE upload_id = ? AND status = 'uploading'`, now, now, uploadID)
-	if err != nil {
-		return fmt.Errorf("claim uploading for discard: %w", err)
-	}
-	return requireOneRow(res)
-}
-```
-
-- [ ] **Step 9: Run the tests to verify they pass**
+- [ ] **Step 10: Run the tests to verify they pass**
 
 Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25 go test ./internal/httpapi/ ./internal/ingest/ -race -v`
 Expected: PASS.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add backend/internal/httpapi/ backend/internal/ingest/ backend/internal/store/upload_jobs.go
@@ -4171,10 +4180,14 @@ No other change is needed: `PurgeTrashed` already returns only the IDs it actual
 Also add the storage health check `purgeMedia` currently lacks, immediately before the staging loop, so a purge cannot commit a row deletion while the media volume is unproven — `StageForPurge`'s `moveIfExists` treats a missing original as success, which would otherwise orphan the real file when the mount returns:
 
 ```go
-	if err := s.ingest.Health().Check(ctx); err != nil {
-		return nil, fmt.Errorf("refusing to purge while storage health is unproven: %w", err)
+	if s.ingest != nil {
+		if err := s.ingest.Health().Check(ctx); err != nil {
+			return nil, fmt.Errorf("refusing to purge while storage health is unproven: %w", err)
+		}
 	}
 ```
+
+The nil guard matters: `StartCleanupLoops` runs its first storage-cleanup pass immediately rather than waiting for the ticker, so this code can execute before `main` has attached the manager. Task 14 pins that ordering, and this guard makes the plan safe even if someone reorders it.
 
 Add a test in `backend/internal/httpapi/purge_test.go` proving a purge is skipped while a non-terminal job references the id, that the item's files are restored rather than lost, and that the purge succeeds once that job reaches `complete`.
 
@@ -5100,7 +5113,7 @@ git commit -m "feat: expose batched upload status and neutralize the legacy chec
 
 - [ ] **Step 1: Wire the manager into main**
 
-In `backend/cmd/server/main.go`, after the store, processor, and server are built. The server is constructed first because it is also the `SourceTerminator`, and the manager is attached and the listener started **before** `Start()`, because `Start()` runs the whole startup inventory synchronously:
+In `backend/cmd/server/main.go`, insert this immediately after the `NewServer` block and **before** `srv.StartCleanupLoops(stop)`. That position is load-bearing twice over: `StartCleanupLoops` runs its first storage-cleanup pass immediately, which reaches `purgeMedia` and reads `s.ingest`, and the field is written here without synchronisation. The server is constructed first because it is also the `SourceTerminator`:
 
 ```go
 	ingestManager := ingest.New(st, processor, ingest.Options{
