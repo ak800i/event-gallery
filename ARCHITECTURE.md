@@ -48,7 +48,7 @@ flowchart LR
     App --> Incoming
     App -->|proxy /api/tus| Tusd
     Tusd --> Incoming
-    Tusd -->|pre-create / post-finish hooks| App
+    Tusd -->|pre-create / pre-finish / post-finish hooks| App
 
     CI[GitHub Actions] -->|multi-arch images| Registry[GHCR]
     Registry -->|pull/redeploy| Host
@@ -87,8 +87,13 @@ Global middleware adds panic recovery, JSON request logging, security headers, a
 
 `tusd` is the resumable transport layer. It stores upload data/offset sidecars in the incoming mount, enforces maximum size, and calls the app for:
 
-- `pre-create`: reject invalid size or missing filename before creation;
-- `post-finish`: validate and ingest a completed file.
+- `pre-create`: reject invalid size or missing filename before creation, and record the durable job row;
+- `pre-finish`: block until the completed source and its sidecar are fsynced and the job is promoted to the queue;
+- `post-finish`: nudge the ingest workers.
+
+Processing itself is never done in a hook. `pre-finish` only makes the source
+durable; a worker pool then derives artifacts and publishes the row, so the
+response a guest waits on never depends on ffmpeg.
 
 The app injects a shared hook secret and resolved client IP into proxied requests; tusd forwards them to hooks. The proxy also rewrites tusd's internal `Location` response to the public same-origin `/api/tus/{id}` route.
 
@@ -107,6 +112,7 @@ SQLite uses WAL, foreign keys, a 5-second busy timeout, and embedded ordered mig
 Core tables:
 
 - `media_items`: metadata, unique SHA-256, active/trashed status, and nullable approval timestamp;
+- `upload_jobs`: the durable ingest queue -- one row per upload, from `uploading` through `pending`/`processing` to a terminal state, with lease, attempt, and retry columns;
 - `likes`: unique `(media_id, device_id)` likes;
 - `audit_log`: best-effort administrative/upload history;
 - `admin_sessions`: server-side session and CSRF tokens;
@@ -125,14 +131,15 @@ Core tables:
 ### Upload
 
 1. Browser streams SHA-256 computation in 8 MiB slices.
-2. `/api/uploads/check` skips a known duplicate as a bandwidth optimization.
+2. `/api/uploads/check` always answers "not a duplicate"; the server settles duplicates after the upload instead.
 3. Uppy creates a tus upload through `/api/tus/` and sends 8 MiB PATCH requests.
-4. The app applies per-IP request, concurrent-PATCH, and bandwidth policies, then proxies to tusd.
+4. The app applies per-IP request, concurrent-PATCH, and bandwidth policies, then proxies to tusd. `pre-create` records an `uploading` job row, refusing the upload when the media volume or free space is unproven.
 5. tusd persists chunks and offsets, allowing HEAD-based resume after interruption.
-6. After transport completion, tusd calls the app's `post-finish` hook. Transport completion can precede gallery processing completion.
-7. The app magic-sniffs content, enforces the allowlist, computes authoritative SHA-256, and moves/copies the original into media storage.
+6. On the final PATCH, `pre-finish` fsyncs the completed source and its sidecar and promotes the job to `pending`. Only after that does tusd acknowledge the upload, so an acknowledged upload is one the server has committed to finishing.
+7. A worker claims the job under a lease, copies the source into media storage, and fsyncs it. The source is never moved or deleted.
 8. Images receive EXIF orientation/capture-time handling and JPEG thumbnails. Videos receive ffprobe metadata (including display rotation) and ffmpeg thumbnails.
-9. The app rejects checksum mismatch/unsupported content and discards known duplicates. Otherwise, the same serialized SQLite insert auto-approves when moderation is off or leaves `approved_at` null when it is on.
+9. Publication is one transaction that inserts the media row and finishes the job; the SHA-256 uniqueness constraint settles duplicates. Only once it commits is the tus source removed.
+10. Checksum mismatch and unsupported content are terminal; everything else retries with capped exponential backoff, indefinitely. `POST /api/uploads/status` reports where each upload stands.
 10. With moderation off, the SPA polls and merges processed items without remounting. With moderation on, guest polling/backoff is a no-op and the uploader shows an awaiting-approval confirmation.
 
 Client-side hashing is optional optimization; server sniffing, hashing, and SQLite's unique SHA constraint are authoritative.
@@ -156,7 +163,9 @@ Trash starts as a **soft database status change**. Pending and trashed media use
 - Upload expiry blocks only new upload creation; existing uploads, browsing, and downloads continue.
 - Approval is off by default. When enabled, new completed uploads are admin-only until approved; disabling it atomically publishes all pending media.
 - Per-IP token buckets, PATCH concurrency, and bandwidth controls are process-local and intentionally generous for guests sharing venue NAT.
-- Limiter/session cleanup and one bounded storage janitor run in background goroutines; media processing itself runs inline in tus hooks, not in a queue.
+- Limiter/session cleanup and one bounded storage janitor run in background goroutines; media processing runs in a durable SQLite-backed queue with leases, capped retries, and a startup reconciler, not inline in tus hooks.
+- A guest's source file is never moved or deleted until its artifacts are fsynced and its media row is committed, so no failure between the two loses the upload.
+- `/readyz` reports whether this instance can accept uploads: startup recovery finished and the media volume proven. `/healthz` stays a shallow liveness check, so a storage fault refuses uploads without taking read-only gallery serving offline.
 - The storage janitor purges expired trash and terminates stale incomplete uploads through tusd's internal DELETE endpoint. Retention can be disabled with zero-valued settings.
 - App/tusd containers use read-only roots, dropped capabilities, `no-new-privileges`, non-root Compose identities, and writable bind mounts only where required.
 
@@ -167,6 +176,7 @@ GitHub Actions runs Go tests/vet/build and frontend lint/typecheck/tests/build, 
 Health checks are intentionally shallow:
 
 - app: SQLite ping via `/healthz`;
+- app upload readiness: `/readyz`, which is deliberately **not** the container healthcheck -- it fails while uploads are refused, and pulling the instance for that would also stop the gallery it can still serve;
 - tusd: `/metrics` response;
 - cloudflared: no repository-defined health check.
 
@@ -175,11 +185,20 @@ Operational visibility is JSON stdout logs, Portainer container state/logs, SQLi
 For a consistent backup:
 
 1. stop the stack;
-2. back up app-data and media together;
+2. back up app-data, media, and tus uploads together;
 3. preserve deployment secrets/configuration and image revision separately;
 4. restart the stack.
 
-The tus incoming volume is transient resumability state. Excluding it from backup abandons in-progress uploads but does not lose completed gallery media.
+The tus upload volume is **not** transient. Once an upload completes, its
+source file is the application's only copy until the media row is committed, so
+a backup that omits this volume abandons queued work. Back up app data, media,
+and tus uploads together from a stopped stack.
+
+Rollback is not image-only. After migration 0004, a pre-0004 app must not run
+against these volumes: its `post-finish` path does not understand durable jobs
+and can delete their only source. Roll back by stopping the new containers,
+restoring all three volumes from one pre-upgrade backup, and starting the
+recorded old image pair.
 
 ## 7. Scaling and tradeoffs
 
@@ -206,13 +225,13 @@ A larger multi-event service would separate API, object storage, metadata databa
 
 ## 8. Known gaps
 
-- Media filesystem changes and SQLite inserts are not one transaction. A crash between moving a file and inserting its row can leave an orphan; there is no reconciler.
+- Media filesystem changes and SQLite inserts are not one transaction, but the ordering makes that survivable: artifacts are written and fsynced before the row is inserted, and a startup reconciler plus the queue's retries resolve anything interrupted. An unreferenced artifact is removed by the same pass rather than left as a silent orphan.
 - Malformed or one-sided tus artifacts are retained for manual inspection rather than unlinked unsafely.
 - Purge recovery depends on valid manifests in the media `.purging` directory; corrupt stages are logged and left untouched.
-- App health does not verify media/upload mount writability, free space, ffmpeg, tusd reachability, or tunnel connectivity.
+- `/healthz` does not verify media/upload mount writability, free space, ffmpeg, tusd reachability, or tunnel connectivity; `/readyz` covers only the first two.
 - Audit writes are best effort and are not an authoritative transaction log.
 - Like/device identity is client-asserted and intended only for casual deduplication.
-- When approval is off, post-upload appearance is polling-based; processing rejection/timeout has no dedicated status endpoint.
+- When approval is off, post-upload appearance is polling-based; `POST /api/uploads/status` reports per-upload state, but the SPA does not consume it yet.
 - Rolling back to a pre-approval binary while pending rows exist would expose them because old queries do not understand `approved_at`; rollback requires the matching pre-migration backup.
 - Branding defaults are duplicated in Go and TypeScript and must remain synchronized.
 
@@ -224,6 +243,7 @@ A larger multi-event service would separate API, object storage, metadata databa
 | Routes/middleware/auth | `backend/internal/httpapi/server.go`, `middleware.go`, `auth.go` |
 | Public/admin API | `public.go`, `admin.go`, `branding.go` |
 | Tus proxy/hooks | `tus_proxy.go`, `tus_hooks.go`, `deploy/tusd-entrypoint.sh` |
+| Durable ingest queue | `backend/internal/ingest/*`, `backend/internal/store/upload_jobs.go` |
 | Media processing | `backend/internal/media/*` |
 | Database/store | `backend/internal/db/*`, `backend/internal/store/*` |
 | Guest/admin SPA | `frontend/src/App.tsx`, `components/*`, `hooks/*` |
