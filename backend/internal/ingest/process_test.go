@@ -497,6 +497,7 @@ func TestClaimRunsOnTheLifetimeContext(t *testing.T) {
 	release := stallStore(t, st)
 	defer release()
 
+	parkedBefore := st.DB().Stats().WaitCount
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
@@ -505,7 +506,7 @@ func TestClaimRunsOnTheLifetimeContext(t *testing.T) {
 	// Waiting for the claim to park in the driver is what makes this
 	// discriminating: cancelling before it starts would be answered by the
 	// guard above, and would pass on context.Background() too.
-	awaitParkedQuery(t, st)
+	awaitParkedQuery(t, st, parkedBefore)
 
 	m.Stop()
 

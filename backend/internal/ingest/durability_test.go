@@ -63,12 +63,16 @@ func stallStore(t *testing.T, st *store.Store) (release func()) {
 
 // awaitParkedQuery blocks until a query is waiting for the stalled pool's only
 // connection, so a test acts on a call that is genuinely inside the driver
-// rather than on one that has not reached it yet.
-func awaitParkedQuery(t *testing.T, st *store.Store) {
+// rather than on one that has not reached it yet. The caller passes the wait
+// count observed before it started the work it is waiting for: WaitCount is
+// cumulative, so testing it against zero would return early the moment any
+// earlier query had ever queued, and the test would then act on a call that
+// never parked -- passing under the very mutation it exists to catch.
+func awaitParkedQuery(t *testing.T, st *store.Store, before int64) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if st.DB().Stats().WaitCount > 0 {
+		if st.DB().Stats().WaitCount > before {
 			return
 		}
 		time.Sleep(time.Millisecond)
