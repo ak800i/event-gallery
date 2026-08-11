@@ -121,6 +121,24 @@ func TestReleaseForRetryIncrementsNamedCounter(t *testing.T) {
 	_ = s.PromoteToPending(ctx, "u1", NowMicros())
 	claimed, _ := s.ClaimNextJob(ctx, JobPending, JobProcessing, NowMicros(), time.Minute)
 
+	// A stale token must not reschedule the job or burn a retry budget.
+	if err := s.ReleaseForRetry(ctx, "u1", "stale-token", JobPending, NowMicros(), "processing_failures", "impostor"); err != ErrNotClaimed {
+		t.Fatalf("stale release = %v, want ErrNotClaimed", err)
+	}
+	unchanged, err := s.GetUploadJob(ctx, "u1")
+	if err != nil {
+		t.Fatalf("get after stale release: %v", err)
+	}
+	if unchanged.Status != JobProcessing {
+		t.Errorf("status = %q, want processing (stale release must not move the job)", unchanged.Status)
+	}
+	if unchanged.ProcessingFailures != 0 {
+		t.Errorf("processing_failures = %d, want 0 after stale release", unchanged.ProcessingFailures)
+	}
+	if unchanged.LeaseToken != claimed.LeaseToken {
+		t.Error("stale release must not steal the owner's lease")
+	}
+
 	next := NowMicros() + 1_000_000
 	if err := s.ReleaseForRetry(ctx, "u1", claimed.LeaseToken, JobPending, next, "processing_failures", "disk hiccup"); err != nil {
 		t.Fatalf("release: %v", err)
@@ -178,4 +196,50 @@ func TestRequeueStartupResetsProcessing(t *testing.T) {
 	if got.LeaseToken != "" {
 		t.Error("startup must clear stale leases")
 	}
+}
+
+func TestRequeueStartupPreservesLateStages(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	claimInto(t, s, "u1", "m1", JobCleanup)
+	claimInto(t, s, "u2", "m2", JobDiscarding)
+
+	if _, err := s.RequeueStartup(ctx, NowMicros()); err != nil {
+		t.Fatalf("requeue: %v", err)
+	}
+
+	stages := map[string]JobStatus{"u1": JobCleanup, "u2": JobDiscarding}
+	for uploadID, want := range stages {
+		got, err := s.GetUploadJob(ctx, uploadID)
+		if err != nil {
+			t.Fatalf("get %s: %v", uploadID, err)
+		}
+		// Demoting these to pending would re-run processing against a source
+		// cleanup already deleted, and the job would never terminalize.
+		if got.Status != want {
+			t.Errorf("%s status = %q, want %q after restart", uploadID, got.Status, want)
+		}
+		if got.LeaseToken != "" {
+			t.Errorf("%s: startup must clear stale leases", uploadID)
+		}
+	}
+}
+
+// claimInto seeds a job and carries it to the given stage by claiming it, so a
+// test can observe a stage that is only reachable through the queue.
+func claimInto(t *testing.T, s *Store, uploadID, mediaID string, to JobStatus) *UploadJob {
+	t.Helper()
+	ctx := context.Background()
+	seedUploading(t, s, uploadID, mediaID)
+	if err := s.PromoteToPending(ctx, uploadID, NowMicros()); err != nil {
+		t.Fatalf("promote %s: %v", uploadID, err)
+	}
+	job, err := s.ClaimNextJob(ctx, JobPending, to, NowMicros(), time.Hour)
+	if err != nil {
+		t.Fatalf("claim %s: %v", uploadID, err)
+	}
+	if job == nil || job.UploadID != uploadID {
+		t.Fatalf("claim %s returned %+v", uploadID, job)
+	}
+	return job
 }
