@@ -37,6 +37,7 @@ func TestIngestOptionsMapsEveryConfigField(t *testing.T) {
 		UploadRetryMaxBackoff:   43 * time.Minute,
 		IngestReconcileInterval: 47 * time.Second,
 		UploadJobRetention:      53 * time.Hour,
+		TusIncompleteRetention:  59 * time.Hour,
 		TusUploadDir:            "/data/tusd-incoming",
 		IngestMinFreeBytes:      1234567,
 	}
@@ -60,6 +61,12 @@ func TestIngestOptionsMapsEveryConfigField(t *testing.T) {
 	}
 	if opts.JobRetention != 53*time.Hour {
 		t.Errorf("JobRetention = %v, want 53h (UploadJobRetention)", opts.JobRetention)
+	}
+	// The reconciler reads this as the age at which a data file of unknown
+	// standing has stopped being an upload in progress, so a job-retention
+	// value arriving here instead would authorise adoption hours early.
+	if opts.IncompleteRetention != 59*time.Hour {
+		t.Errorf("IncompleteRetention = %v, want 59h (TusIncompleteRetention)", opts.IncompleteRetention)
 	}
 	if opts.UploadDir != "/data/tusd-incoming" {
 		t.Errorf("UploadDir = %q, want the configured TusUploadDir", opts.UploadDir)
