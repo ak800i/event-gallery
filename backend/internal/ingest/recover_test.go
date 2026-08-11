@@ -377,6 +377,51 @@ func TestFilesReappearingForAFinishedJobReopenIt(t *testing.T) {
 	}
 }
 
+// The reopen above is a claim that files this job had verified as gone are
+// back, so it has to rest on seeing one of them. The inventory keys on the
+// data file or its sidecar, and reaching a row is not by itself evidence that
+// either is there.
+func TestReopeningAFinishedJobRequiresSeeingItsFiles(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+	defer m.Stop()
+
+	for _, tc := range []struct {
+		uploadID string
+		sidecar  bool
+		want     store.JobStatus
+		why      string
+	}{
+		// A sidecar with no data file is still something only this job can
+		// clear: tusd cannot address the upload without its data file, and the
+		// incomplete-upload janitor skips a candidate whose data file is gone.
+		{"sidecar-only", true, store.JobCleanup, "an orphan sidecar has to be removed by the job that owns it"},
+		// Nothing of this upload is on the volume, so nothing came back.
+		{"nothing-there", false, store.JobComplete, "absence is not a reappearance"},
+	} {
+		job := &store.UploadJob{UploadID: tc.uploadID, MediaID: "media-" + tc.uploadID, OriginalFilename: "a.jpg", ExpectedSize: 4}
+		if err := st.CreateUploadingJob(context.Background(), job); err != nil {
+			t.Fatalf("create %s: %v", tc.uploadID, err)
+		}
+		if _, err := st.DB().Exec(
+			`UPDATE upload_jobs SET status = 'complete', terminal_at = ? WHERE upload_id = ?`,
+			store.NowMicros(), tc.uploadID); err != nil {
+			t.Fatalf("finish %s: %v", tc.uploadID, err)
+		}
+		if tc.sidecar {
+			writeSidecar(t, m, tc.uploadID, 4)
+		}
+
+		if err := m.reconcileOne(tc.uploadID); err != nil {
+			t.Fatalf("%s: reconcile: %v", tc.uploadID, err)
+		}
+
+		if got := jobStatus(t, st, tc.uploadID); got != tc.want {
+			t.Errorf("%s: status = %q, want %q: %s", tc.uploadID, got, tc.want, tc.why)
+		}
+	}
+}
+
 // Reconciliation must not touch work the workers own, or it would race their
 // leases and could demote a job that is midway through publication.
 func TestJobsOwnedByTheWorkersAreNotReconciled(t *testing.T) {
@@ -446,6 +491,32 @@ func TestUnreadableUploadDirectoryKeepsReadinessClosed(t *testing.T) {
 
 	if m.Ready() {
 		t.Error("readiness must stay closed while the inventory of completed uploads is unknown")
+	}
+}
+
+// Closing a row out is a conclusion drawn from the absence of its files, so
+// the pass has to establish it can see the volume before it draws it. On a
+// mount that faults hard every stale row would otherwise be closed out at
+// once, on evidence the process never gathered.
+func TestAnUnreadableUploadDirectoryClosesOutNothing(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	opts := testOptions(t)
+	opts.UploadDir = filepath.Join(opts.UploadDir, "not-yet-mounted")
+	m := New(st, proc, opts)
+	defer m.Stop()
+
+	job := &store.UploadJob{UploadID: "ghost", MediaID: "media-ghost", OriginalFilename: "a.jpg", ExpectedSize: 10}
+	if err := st.CreateUploadingJob(context.Background(), job); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	backdateJob(t, st, "ghost", time.Hour)
+
+	if err := m.reconcileOnce(); err == nil {
+		t.Error("a pass that could not read the upload directory must report the failure")
+	}
+
+	if got := jobStatus(t, st, "ghost"); got != store.JobUploading {
+		t.Errorf("status = %q, want uploading: an unreadable volume is not evidence the bytes are gone", got)
 	}
 }
 

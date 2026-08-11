@@ -58,14 +58,18 @@ func (m *Manager) startupRecovery() {
 // finish, and leaving things exactly as they are. It reports whether the
 // inventory pass actually completed, which is what gates readiness.
 func (m *Manager) reconcileOnce() error {
-	m.sweepCancelled(m.opts.ReconcileInterval)
-	m.resolveRowsWithoutFiles()
-
+	// The inventory is read before anything acts, because both steps below
+	// draw their conclusions from the absence of files. On a volume that
+	// cannot be read at all that absence is not evidence, and every stale row
+	// would be closed out at once on the strength of it.
 	entries, err := os.ReadDir(m.opts.UploadDir)
 	if err != nil {
 		slog.Warn("cannot read upload directory", "operation", "reconcile", "error", err)
 		return err
 	}
+
+	m.sweepCancelled(m.opts.ReconcileInterval)
+	m.resolveRowsWithoutFiles()
 
 	// Both sidecars and bare data files are inventoried. The old code ran
 	// `defer cleanupTusInfoFile(...)` before its failure branch, so every
@@ -145,6 +149,17 @@ func (m *Manager) reconcileOne(uploadID string) error {
 	if err != nil {
 		return err
 	}
+
+	// Both derived paths are observed before any decision below, because the
+	// inventory keys on either name and no branch may act on a file this pass
+	// has not itself seen. Lstat, like the incomplete-upload janitor: a
+	// symlink is not something tusd wrote, and following one would take the
+	// reconciler outside the volume it is responsible for.
+	dataStat, dataErr := os.Lstat(m.DataPath(uploadID))
+	sourcePresent := dataErr == nil && dataStat.Mode().IsRegular()
+	infoStat, infoErr := os.Lstat(m.InfoPath(uploadID))
+	sidecarPresent := infoErr == nil && infoStat.Mode().IsRegular()
+
 	if job != nil {
 		switch {
 		case job.Status == store.JobUploading:
@@ -160,11 +175,16 @@ func (m *Manager) reconcileOne(uploadID string) error {
 			}
 			job = nil
 		case job.Status == store.JobComplete || job.Status == store.JobDiscarded:
-			// Files this job verified as gone have reappeared, so the volume
-			// came back after it was closed out. Finish the removal rather
-			// than leaving them: bytes the guest cancelled must not survive,
-			// and once the terminal row expires a rowless complete source
-			// would be adopted and republished.
+			if !sourcePresent && !sidecarPresent {
+				return nil // nothing of this upload is here, so nothing came back
+			}
+			// A file this job verified as gone is on the volume again, so it
+			// came back after the job was closed out. Finish the removal
+			// rather than leaving it: bytes the guest cancelled must not
+			// survive, a sidecar without its data file is one tusd can no
+			// longer address and the incomplete-upload janitor skips, and once
+			// the terminal row expires a rowless complete source would be
+			// adopted and republished.
 			target := store.JobCleanup
 			if job.Status == store.JobDiscarded {
 				target = store.JobDiscarding
@@ -181,11 +201,7 @@ func (m *Manager) reconcileOne(uploadID string) error {
 		}
 	}
 
-	// Lstat, like the incomplete-upload janitor: a symlink is not something
-	// tusd wrote, and following one would take the reconciler outside the
-	// volume it is responsible for.
-	stat, err := os.Lstat(m.DataPath(uploadID))
-	if err != nil || !stat.Mode().IsRegular() {
+	if !sourcePresent {
 		return nil // nothing observable; absence is never actionable here
 	}
 
@@ -194,7 +210,7 @@ func (m *Manager) reconcileOne(uploadID string) error {
 		// a partial file, so this must not fire for them: it would burn a
 		// durability slot every tick and inject 503s into live uploads that
 		// join the doomed operation.
-		if stat.Size() != job.ExpectedSize {
+		if dataStat.Size() != job.ExpectedSize {
 			return nil
 		}
 		// Complete but never past the barrier: a crash inside the pre-finish
@@ -205,7 +221,7 @@ func (m *Manager) reconcileOne(uploadID string) error {
 	info, identityMismatch := m.trustedSidecar(uploadID)
 	switch {
 	case info != nil:
-		if stat.Size() != info.Size {
+		if dataStat.Size() != info.Size {
 			return nil // still uploading; the incomplete-retention policy owns it
 		}
 		return m.adopt(uploadID, info.Size, info.MetaData)
@@ -222,7 +238,7 @@ func (m *Manager) reconcileOne(uploadID string) error {
 		// ingest path, which deleted the sidecar before its failure branch
 		// returned. Adopt at the observed size; with no metadata there is no
 		// declared checksum to mismatch.
-		return m.adopt(uploadID, stat.Size(), nil)
+		return m.adopt(uploadID, dataStat.Size(), nil)
 	}
 }
 

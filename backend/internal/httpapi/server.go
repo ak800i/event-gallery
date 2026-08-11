@@ -184,9 +184,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleReady reports ingest readiness. /healthz stays a shallow liveness
-// check so the gallery and the tunnel start promptly; only upload routes wait
-// for the startup inventory.
+// handleReady reports whether this instance can accept uploads: the startup
+// inventory has finished and the media volume is proven. Read-only gallery
+// serving does not depend on either, so a caller that pulls the whole instance
+// out of rotation on a 503 here is taking more offline than the fault costs.
+// /healthz stays a shallow liveness check so the gallery and the tunnel start
+// promptly.
 func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	if s.ingest == nil || !s.ingest.Ready() {
 		w.Header().Set("Retry-After", "5")

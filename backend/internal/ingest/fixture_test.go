@@ -72,14 +72,6 @@ func writeSidecar(t *testing.T, m *Manager, uploadID string, size int64) {
 	writeSidecarMeta(t, m, uploadID, uploadID, size, map[string]string{"filename": "a.jpg"})
 }
 
-// writeSidecarFor writes a sidecar at one upload's info path whose contents
-// describe a different upload, which is how a stale or misfiled sidecar looks
-// on disk.
-func writeSidecarFor(t *testing.T, m *Manager, fileID, declaredID string, size int64) {
-	t.Helper()
-	writeSidecarMeta(t, m, fileID, declaredID, size, map[string]string{"filename": "a.jpg"})
-}
-
 // writeSidecarMeta writes the full shape tussidecar.Parse demands. Storage.Type
 // is load-bearing: without it Parse fails, the sidecar reads as absent, and
 // tests meant to prove a sidecar was consulted would instead exercise the
