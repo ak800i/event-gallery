@@ -301,3 +301,26 @@ func TestLoad_RejectsNonPositiveUploadStatusRateLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_RejectsNonPositivePublicRateLimit(t *testing.T) {
+	for _, tc := range []struct{ name, key, value string }{
+		{"zero per-minute", "PUBLIC_RATE_LIMIT_PER_MINUTE", "0"},
+		{"negative per-minute", "PUBLIC_RATE_LIMIT_PER_MINUTE", "-1"},
+		{"zero burst", "PUBLIC_RATE_LIMIT_BURST", "0"},
+		{"negative burst", "PUBLIC_RATE_LIMIT_BURST", "-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+			t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+			t.Setenv(tc.key, tc.value)
+
+			// rate.Limit(0) allows no events, so this is not "unlimited" -- it
+			// spends the burst and then blocks that IP forever. The gallery
+			// stops answering with nothing in the logs to explain it.
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected %s=%s to be rejected", tc.key, tc.value)
+			}
+		})
+	}
+}
