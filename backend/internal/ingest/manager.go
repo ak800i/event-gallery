@@ -198,11 +198,14 @@ func (m *Manager) runReconciler() {
 					slog.Warn("reconcile pass failed", "operation", "reconcile", "error", err)
 				}
 			} else {
-				// Startup did not complete. Retry the whole prerequisite,
-				// including the lease reset: opening readiness without it would
-				// leave interrupted jobs holding pre-crash leases for a full
-				// lease duration.
-				m.startupRecovery()
+				// Startup did not complete, so retry the inventory until it
+				// does. Only the inventory: the startup requeue clears leases
+				// unconditionally, and the workers launched by Start are
+				// running by now, so repeating it here would take jobs away
+				// from workers midway through an attempt -- orphaning a
+				// full-size temporary each lap and letting a large job be
+				// demoted before it can ever finish.
+				m.recoverInventory()
 			}
 			m.expireTerminalJobs()
 		}

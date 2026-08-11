@@ -53,15 +53,32 @@ type adoptionObservation struct {
 // upload the previous process never queued, then opens the readiness gate.
 // Readiness is withheld if the inventory could not be read at all: admitting
 // uploads while pre-upgrade completions are still unknown would be worse than
-// a few extra seconds of backpressure. The reconciler retries and opens the
-// gate on the first pass that succeeds.
+// a few extra seconds of backpressure. The reconciler retries recoverInventory
+// -- and only that -- opening the gate on the first pass that succeeds.
+//
+// This runs exactly once, before the worker pool is launched, because the
+// requeue below is unconditional on the lease.
 func (m *Manager) startupRecovery() {
 	if _, err := m.store.RequeueStartup(m.lifetime, store.NowMicros()); err != nil {
 		// A database failure here means nothing about the queue can be trusted
 		// yet, so readiness stays closed and the reconciler retries.
+		//
+		// The requeue itself is not retried. It clears ownership from every
+		// row in a worked stage regardless of who holds it, which is only safe
+		// while no worker is running, and by the time a retry could happen the
+		// pool has started. Interrupted rows are instead reclaimed by the
+		// workers' own expired-lease claims, a lease duration later.
 		slog.Error("failed to requeue interrupted jobs; ingest stays not ready", "operation", "startup_recovery", "error", err)
 		return
 	}
+	m.recoverInventory()
+}
+
+// recoverInventory is the repeatable half of startup recovery: it proves the
+// media volume is mounted, walks the upload directory, and opens the readiness
+// gate once a pass completes. Everything it does is safe to run against a
+// process whose workers are already going.
+func (m *Manager) recoverInventory() {
 	// The gate starts closed and pre-create refuses uploads while it is, so
 	// something has to prove the media volume is mounted before we admit any.
 	if err := m.health.Check(m.lifetime); err != nil {

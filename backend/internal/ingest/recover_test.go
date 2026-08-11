@@ -850,8 +850,13 @@ func TestReconcilerTickAdoptsUploadsAndExpiresTerminalJobs(t *testing.T) {
 }
 
 // The not-ready branch of the ticker: startup could not read the inventory, so
-// every later tick retries the whole prerequisite until it can.
-func TestReconcilerTickOpensReadinessAfterAFailedStartup(t *testing.T) {
+// every later tick retries it until it can. What it must not retry is the
+// startup requeue. That statement resets ownership unconditionally, and its
+// doc comment names the premise it rests on -- "immediately after a restart",
+// when no worker is running. By the time this branch executes the pool has
+// been launched, so a lease it would clear may belong to a worker midway
+// through an attempt.
+func TestReconcilerTickOpensReadinessWithoutStrippingLiveLeases(t *testing.T) {
 	st, proc := newIngestFixture(t)
 	opts := testOptions(t)
 	uploadDir := filepath.Join(opts.UploadDir, "not-yet-mounted")
@@ -864,17 +869,17 @@ func TestReconcilerTickOpensReadinessAfterAFailedStartup(t *testing.T) {
 		t.Fatal("precondition: the gate must start closed when the inventory failed")
 	}
 
-	// Seeded after Start, so only a later tick can act on it: a tick that ran
-	// the inventory alone would open the gate while this row still held a lease
-	// no live worker owns, and nothing would touch it for a full lease.
-	job := &store.UploadJob{UploadID: "crashed", MediaID: "media-crashed", OriginalFilename: "a.jpg", ExpectedSize: 4}
+	// Seeded after Start, so only a later tick can act on it, and held under a
+	// lease that has not expired -- which is indistinguishable from the lease
+	// of a worker of this process that is running right now.
+	job := &store.UploadJob{UploadID: "leased", MediaID: "media-leased", OriginalFilename: "a.jpg", ExpectedSize: 4}
 	if err := st.CreateUploadingJob(context.Background(), job); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if _, err := st.DB().Exec(
-		`UPDATE upload_jobs SET status = 'cleanup', lease_token = 'pre-crash', lease_until = ? WHERE upload_id = ?`,
-		store.NowMicros()+time.Hour.Microseconds(), "crashed"); err != nil {
-		t.Fatalf("simulate crash: %v", err)
+		`UPDATE upload_jobs SET status = 'processing', lease_token = 'held', lease_until = ? WHERE upload_id = ?`,
+		store.NowMicros()+time.Hour.Microseconds(), "leased"); err != nil {
+		t.Fatalf("hold the job under a live lease: %v", err)
 	}
 
 	if err := os.MkdirAll(uploadDir, 0o750); err != nil {
@@ -882,9 +887,14 @@ func TestReconcilerTickOpensReadinessAfterAFailedStartup(t *testing.T) {
 	}
 
 	awaitCondition(t, "a later tick opens readiness", m.Ready)
-	got, _ := st.GetUploadJob(context.Background(), "crashed")
-	if got != nil && got.LeaseToken == "pre-crash" {
-		t.Error("the retried startup must also clear pre-crash leases, not just open the gate")
+
+	got, _ := st.GetUploadJob(context.Background(), "leased")
+	if got == nil {
+		t.Fatal("the row disappeared")
+	}
+	if got.LeaseToken != "held" || got.Status != store.JobProcessing {
+		t.Errorf("status = %q lease = %q, want processing/held: the retry path took a job away from a live worker",
+			got.Status, got.LeaseToken)
 	}
 }
 
