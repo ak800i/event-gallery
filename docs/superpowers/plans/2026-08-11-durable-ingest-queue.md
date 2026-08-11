@@ -1167,6 +1167,8 @@ if info.ID != id ||
 
 Do not change the janitor's retention policy, and keep its existing behavior that a complete data file is left alone for ingest recovery.
 
+Also change the janitor's deletion call so every termination in the system goes through the one guarded path. In the same file, replace `s.terminateTusUpload(ctx, candidate.id)` with `s.Terminate(ctx, candidate.id)` (added in Task 8). The surrounding `if err != nil { slog.Warn(...); continue }` already treats a refusal as "skip this candidate this pass", which is exactly the desired behavior when an upload the janitor saw as partial has since completed and been promoted.
+
 - [ ] **Step 6: Run the affected tests**
 
 Run: `docker run --rm -v "${PWD}/backend:/src" -w /src golang:1.25-alpine go test ./internal/httpapi/ -run Cleanup -v`
@@ -1400,7 +1402,10 @@ func (p *Processor) PrepareOriginal(ctx context.Context, req PrepareRequest) err
 		if err := p.VerifyOriginal(req.StoredFilename, req.Size, req.SHA256); err != nil {
 			return fmt.Errorf("existing original %s does not match this upload: %w", req.StoredFilename, err)
 		}
-		return nil
+		// Re-sync the directory: the previous attempt may have failed on
+		// exactly this step, and skipping it would publish a rename that a
+		// crash could still roll back.
+		return FsyncDir(p.OriginalsDir())
 	}
 
 	src, err := os.Open(req.SourcePath)
@@ -2068,7 +2073,10 @@ func (m *Manager) runReconciler() {
 			if err := m.health.Check(m.lifetime); err != nil {
 				slog.Warn("storage health check failed", "operation", "reconcile", "error", err)
 			}
-			m.reconcileOnce()
+			if err := m.reconcileOnce(); err == nil && m.ready.CompareAndSwap(false, true) {
+				// Recovers from a startup inventory that could not be read.
+				slog.Info("ingest ready", "operation", "reconcile")
+			}
 			m.expireTerminalJobs()
 		}
 	}
@@ -3268,8 +3276,8 @@ package ingest
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
-	"time"
 
 	"event-gallery/backend/internal/store"
 )
@@ -3522,6 +3530,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"event-gallery/backend/internal/media"
@@ -3981,6 +3990,26 @@ func (s *Store) DeleteUploadJob(ctx context.Context, uploadID string) error {
 	}
 	return nil
 }
+
+// ReopenTerminal returns a finished job to a working stage because files it
+// had verified as gone have reappeared. The ordinary worker path then completes
+// the removal it could not perform while the volume was unavailable.
+func (s *Store) ReopenTerminal(ctx context.Context, uploadID string, status JobStatus, now int64) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE upload_jobs
+		   SET status = ?,
+		       terminal_at = NULL,
+		       next_attempt_at = ?,
+		       lease_token = NULL,
+		       lease_until = NULL,
+		       updated_at = ?
+		 WHERE upload_id = ? AND status IN ('complete', 'discarded')`,
+		status, now, now, uploadID)
+	if err != nil {
+		return fmt.Errorf("reopen terminal upload job: %w", err)
+	}
+	return requireOneRow(res)
+}
 ```
 
 In `backend/internal/media/processor.go`, expose the two pieces the manager now needs, without changing `Process`:
@@ -4047,9 +4076,40 @@ Add a test in `backend/internal/httpapi/purge_test.go` proving a purge is skippe
 
 and in `backend/internal/httpapi/tus_hooks.go`, `func actorLabel(...)` — its callers went with the same handler; `recordUploadAudit` in the ingest package replaces it.
 
-In `backend/internal/media/processor_test.go`, delete `TestProcessor_ProcessImage`, `TestProcessor_ProcessAVIF`, and `TestProcessor_ProcessAVIF_RealFixture`. Their coverage of sniffing, hashing, and derivative generation now lives in the ingest tests and in `Derive`, against a path that never removes its input.
+In `backend/internal/media/processor_test.go`, delete every test that calls a removed symbol — all six, not just the obvious three:
 
-Run `go build ./...` after deleting to confirm nothing else referenced them.
+- `TestProcessor_ProcessImage`
+- `TestProcessor_ProcessAVIF`
+- `TestProcessor_ProcessAVIF_RealFixture`
+- `TestProcessor_RejectsDisallowedType`
+- `TestProcessor_RejectsUnknownContent`
+- `TestMoveFile_CrossDeviceFallback`
+
+Keep `TestMimeToExt_AVIF`. Clean up any imports those deletions orphan.
+
+The rejection coverage from the fourth and fifth is genuinely lost, so add the equivalent case to `process_test.go`, where it now belongs:
+
+```go
+func TestUnsupportedTypeIsDeterministicallyRejected(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+	defer m.Stop()
+
+	// Bytes no signature matches: media.Sniff returns *ErrUnsupportedType,
+	// which must be a terminal client rejection rather than an endless retry.
+	seedCompleteUpload(t, m, st, "u1", []byte("not a media file at all"))
+	_ = m.EnsureDurable(context.Background(), "u1")
+
+	drainQueue(t, m)
+
+	job, _ := st.GetUploadJob(context.Background(), "u1")
+	if job.TerminalReason != "unsupported_type" {
+		t.Errorf("terminal_reason = %q, want unsupported_type", job.TerminalReason)
+	}
+}
+```
+
+Verify with `go vet ./...` rather than `go build ./...` — `go build` does not type-check `_test.go` files, so it cannot catch a missed test deletion.
 
 - [ ] **Step 8: Run the tests to verify they pass**
 
@@ -4333,6 +4393,10 @@ import (
 
 // startupRecovery makes interrupted work claimable and adopts any completed
 // upload the previous process never queued, then opens the readiness gate.
+// Readiness is withheld if the inventory could not be read at all: admitting
+// uploads while pre-upgrade completions are still unknown would be worse than
+// a few extra seconds of backpressure. The reconciler retries and opens the
+// gate on the first pass that succeeds.
 func (m *Manager) startupRecovery() {
 	if _, err := m.store.RequeueStartup(m.lifetime, store.NowMicros()); err != nil {
 		slog.Error("failed to requeue interrupted jobs", "operation", "startup_recovery", "error", err)
@@ -4340,23 +4404,27 @@ func (m *Manager) startupRecovery() {
 	if err := m.health.Check(m.lifetime); err != nil {
 		slog.Error("storage health check failed at startup", "operation", "startup_recovery", "error", err)
 	}
-	m.reconcileOnce()
+	if err := m.reconcileOnce(); err != nil {
+		slog.Error("startup inventory failed; ingest stays not ready", "operation", "startup_recovery", "error", err)
+		return
+	}
 	m.ready.Store(true)
 	slog.Info("ingest ready", "operation", "startup_recovery")
 	m.Wake()
 }
 
-// reconcileOnce repairs what it can prove. It never deletes a file: the only
-// outcomes are adoption, promotion, resolving a row that has no bytes, and
-// leaving things exactly as they are.
-func (m *Manager) reconcileOnce() {
+// reconcileOnce repairs what it can prove. It never deletes a file directly:
+// the only outcomes are adoption, promotion, reopening a removal that could not
+// finish, and leaving things exactly as they are. It reports whether the
+// inventory pass actually completed, which is what gates readiness.
+func (m *Manager) reconcileOnce() error {
 	m.sweepCancelled(m.opts.ReconcileInterval)
 	m.resolveRowsWithoutFiles()
 
 	entries, err := os.ReadDir(m.opts.UploadDir)
 	if err != nil {
 		slog.Warn("cannot read upload directory", "operation", "reconcile", "error", err)
-		return
+		return err
 	}
 
 	// Both sidecars and bare data files are inventoried. The old code ran
@@ -4382,6 +4450,7 @@ func (m *Manager) reconcileOnce() {
 			slog.Warn("reconcile failed", "operation", "reconcile", "upload_id", uploadID, "error", err)
 		}
 	}
+	return nil
 }
 
 // sweepCancelled moves cancelled uploads that have gone quiet into discard,
@@ -4444,11 +4513,21 @@ func (m *Manager) reconcileOne(uploadID string) error {
 			}
 			job = nil
 		case job.Status == store.JobComplete || job.Status == store.JobDiscarded:
-			// Finished and verified as gone, then something reappeared.
-			// Republishing content the guest cancelled would be worse than
-			// leaving it, so surface it and touch nothing.
-			slog.Warn("tus files present for a terminal upload job; leaving them untouched",
+			// Files this job verified as gone have reappeared, so the volume
+			// came back after it was closed out. Finish the removal rather
+			// than leaving them: bytes the guest cancelled must not survive,
+			// and once the terminal row expires a rowless complete source
+			// would be adopted and republished.
+			target := store.JobCleanup
+			if job.Status == store.JobDiscarded {
+				target = store.JobDiscarding
+			}
+			slog.Warn("tus files reappeared for a finished upload; reopening to remove them",
 				"operation", "reconcile", "upload_id", uploadID, "status", job.Status, "reason", job.TerminalReason)
+			if err := m.store.ReopenTerminal(m.lifetime, uploadID, target, store.NowMicros()); err != nil {
+				return err
+			}
+			m.Wake()
 			return nil
 		default:
 			return nil // pending or later: the workers own it
@@ -4849,7 +4928,7 @@ Register it as a sibling of the public group, not inside it. chi's `Mux.With` on
 		api.With(s.uploadStatusRateLimit).Post("/uploads/status", s.handleUploadStatus)
 ```
 
-Add `uploadStatusLimiter` to `Server`, built from `cfg.UploadStatusRateLimitPerMinute` exactly like `publicLimiter`, and a `uploadStatusRateLimit` middleware mirroring `publicRateLimit`.
+Add `uploadStatusLimiter` to `Server`, built from `cfg.UploadStatusRateLimitPerMinute` exactly like `publicLimiter`, and a `uploadStatusRateLimit` middleware mirroring `publicRateLimit`. Add `s.uploadStatusLimiter.StartCleanup(10*time.Minute, stop)` alongside the other limiters in `StartCleanupLoops`, or its per-IP state is never evicted.
 
 Finally, make `/api/uploads/check` a shim so pre-upgrade browser tabs stop deleting their own files:
 
@@ -4921,7 +5000,11 @@ Then, **after** the existing `go httpServer.ListenAndServe()` line:
 	// backlog of them; blocking the listener would fail the container
 	// healthcheck and keep the tunnel down. Upload routes answer 503 until
 	// Ready() flips, which is the correct backpressure for that window.
-	go ingestManager.Start()
+	//
+	// Called synchronously, not with `go`: Start takes its WaitGroup slot on
+	// the calling goroutine, so a shutdown racing startup cannot see an empty
+	// group, return, and close the database while recovery is still running.
+	ingestManager.Start()
 ```
 
 `ingestManager.Stop()` must run during graceful shutdown, after the HTTP server stops accepting requests and **before** the database is closed — `Stop` waits for in-flight durability commits, and closing the database first would fail them. With `defer sqlDB.Close()` registered earlier, a later `defer ingestManager.Stop()` gives exactly that order.
