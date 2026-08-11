@@ -78,7 +78,7 @@ func (m *Manager) runProcessing(job *store.UploadJob) {
 	if err := m.health.Check(ctx); err != nil {
 		next := store.NowMicros() + m.backoffFor(job.ProcessingFailures).Microseconds()
 		if err := m.store.ReleaseForRetry(m.lifetime, job.UploadID, job.LeaseToken, store.JobPending, next, "processing_failures", truncateError(err)); err != nil {
-			slog.Error("failed to reschedule after health failure", "operation", "processing", "upload_id", job.UploadID, "error", err)
+			m.logRetryScheduleFailure("failed to reschedule after health failure", "processing", job.UploadID, err)
 		}
 		return
 	}
@@ -101,7 +101,7 @@ func (m *Manager) runProcessing(job *store.UploadJob) {
 		// prepared artifacts. There is no failure count that deletes data.
 		next := store.NowMicros() + m.backoffFor(job.ProcessingFailures).Microseconds()
 		if err := m.store.ReleaseForRetry(m.lifetime, job.UploadID, job.LeaseToken, store.JobPending, next, "processing_failures", truncateError(err)); err != nil {
-			slog.Error("failed to schedule retry", "operation", "processing", "upload_id", job.UploadID, "error", err)
+			m.logRetryScheduleFailure("failed to schedule retry", "processing", job.UploadID, err)
 		}
 		slog.Warn("ingest attempt failed, retrying",
 			"operation", "processing", "upload_id", job.UploadID,
@@ -440,8 +440,22 @@ func pathIsAbsent(path string) (bool, error) {
 func (m *Manager) retryCleanup(job *store.UploadJob, cause error) {
 	next := store.NowMicros() + m.backoffFor(job.CleanupFailures).Microseconds()
 	if err := m.store.ReleaseForRetry(m.lifetime, job.UploadID, job.LeaseToken, job.Status, next, "cleanup_failures", truncateError(cause)); err != nil {
-		slog.Error("failed to schedule cleanup retry", "operation", "cleanup", "upload_id", job.UploadID, "error", err)
+		m.logRetryScheduleFailure("failed to schedule cleanup retry", "cleanup", job.UploadID, err)
 	}
+}
+
+// logRetryScheduleFailure reports a retry that could not be written down. A
+// cancelled lifetime means the process is shutting down, and every clean stop
+// with work in flight produces one of these because the write runs on the very
+// context that was cancelled. Logging those at ERROR puts a false page on
+// every deploy, and an operator who stops paging on ERROR has no signal left
+// for the failures that matter.
+func (m *Manager) logRetryScheduleFailure(message, operation, uploadID string, cause error) {
+	level := slog.LevelError
+	if m.lifetime.Err() != nil {
+		level = slog.LevelWarn
+	}
+	slog.Log(context.Background(), level, message, "operation", operation, "upload_id", uploadID, "error", cause)
 }
 
 func truncateError(err error) string {

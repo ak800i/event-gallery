@@ -389,6 +389,59 @@ func (s *Store) DeleteTerminalJobsBefore(ctx context.Context, cutoff int64, limi
 	return res.RowsAffected()
 }
 
+// QueueSummary is one snapshot of the ingest queue, for the periodic operator
+// log line. Retries are indefinite by design, so a permanently failing job is
+// otherwise visible only as a WARN every backoff interval.
+type QueueSummary struct {
+	Counts map[JobStatus]int64
+	// Active counts rows in a status a worker or a client still owns.
+	Active int64
+	// OldestPendingAttemptAt is the smallest next_attempt_at among pending
+	// rows, or nil when nothing is pending. A value well in the past means
+	// work is queued and not being drained.
+	OldestPendingAttemptAt *int64
+	// MaxProcessingFailures is the worst retry count among non-terminal rows.
+	MaxProcessingFailures int64
+}
+
+// SummarizeQueue aggregates the whole table in one pass.
+func (s *Store) SummarizeQueue(ctx context.Context) (*QueueSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT status, COUNT(*), MIN(next_attempt_at), MAX(processing_failures)
+		  FROM upload_jobs
+		 GROUP BY status`)
+	if err != nil {
+		return nil, fmt.Errorf("summarize upload queue: %w", err)
+	}
+	defer rows.Close()
+
+	summary := &QueueSummary{Counts: make(map[JobStatus]int64, 7)}
+	for rows.Next() {
+		var (
+			status      JobStatus
+			count       int64
+			oldest      sql.NullInt64
+			maxFailures sql.NullInt64
+		)
+		if err := rows.Scan(&status, &count, &oldest, &maxFailures); err != nil {
+			return nil, fmt.Errorf("scan queue summary: %w", err)
+		}
+		summary.Counts[status] = count
+		if status == JobComplete || status == JobDiscarded {
+			continue
+		}
+		summary.Active += count
+		if status == JobPending && oldest.Valid {
+			value := oldest.Int64
+			summary.OldestPendingAttemptAt = &value
+		}
+		if maxFailures.Valid && maxFailures.Int64 > summary.MaxProcessingFailures {
+			summary.MaxProcessingFailures = maxFailures.Int64
+		}
+	}
+	return summary, rows.Err()
+}
+
 // SampleStoredFilenames returns up to limit stored filenames, used to prove a
 // media volume is actually mounted before anything is deleted. Ordered by
 // rowid so the sample is the oldest rows: an original this run just wrote must

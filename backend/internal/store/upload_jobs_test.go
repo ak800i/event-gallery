@@ -222,6 +222,71 @@ func TestRequeueStartupResetsProcessing(t *testing.T) {
 	}
 }
 
+// The queue summary is the only aggregated view of the ingest queue an
+// operator has, so every field has to come from the table rather than from a
+// default that happens to look plausible.
+func TestSummarizeQueueAggregatesTheWholeTable(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	seedUploading(t, s, "still-uploading", "m0")
+	// Claimed first: ClaimNextJob takes the oldest due row, so a pending row
+	// seeded before this one would be the one it picks up.
+	claimInto(t, s, "cleaning", "m2", JobCleanup)
+	seedUploading(t, s, "queued", "m1")
+	if err := s.PromoteToPending(ctx, "queued", NowMicros()); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	if _, err := s.DB().Exec(
+		`UPDATE upload_jobs SET processing_failures = 9, next_attempt_at = ? WHERE upload_id = ?`,
+		NowMicros()-(5*time.Minute).Microseconds(), "queued"); err != nil {
+		t.Fatalf("age the queued job: %v", err)
+	}
+	seedUploading(t, s, "finished", "m3")
+	if _, err := s.DB().Exec(
+		`UPDATE upload_jobs SET status = 'complete', processing_failures = 99, terminal_at = ? WHERE upload_id = ?`,
+		NowMicros(), "finished"); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	summary, err := s.SummarizeQueue(ctx)
+	if err != nil {
+		t.Fatalf("summarize: %v", err)
+	}
+
+	for status, want := range map[JobStatus]int64{
+		JobUploading: 1, JobPending: 1, JobCleanup: 1, JobComplete: 1, JobProcessing: 0,
+	} {
+		if got := summary.Counts[status]; got != want {
+			t.Errorf("%s count = %d, want %d", status, got, want)
+		}
+	}
+	// Terminal rows are counted but are not work in flight; including them
+	// would keep the line printing forever after the queue went quiet.
+	if summary.Active != 3 {
+		t.Errorf("Active = %d, want 3 (uploading + pending + cleanup)", summary.Active)
+	}
+	if summary.MaxProcessingFailures != 9 {
+		t.Errorf("MaxProcessingFailures = %d, want 9: a terminal row's count is history, not a live problem", summary.MaxProcessingFailures)
+	}
+	if summary.OldestPendingAttemptAt == nil {
+		t.Fatal("OldestPendingAttemptAt is nil while a row is pending")
+	}
+	if age := NowMicros() - *summary.OldestPendingAttemptAt; age < (5 * time.Minute).Microseconds() {
+		t.Errorf("oldest pending attempt is %dµs old, want at least five minutes", age)
+	}
+}
+
+func TestSummarizeQueueReportsAnEmptyQueueAsIdle(t *testing.T) {
+	summary, err := newTestStore(t).SummarizeQueue(context.Background())
+	if err != nil {
+		t.Fatalf("summarize: %v", err)
+	}
+	if summary.Active != 0 || summary.OldestPendingAttemptAt != nil {
+		t.Errorf("empty queue summarized as %+v", summary)
+	}
+}
+
 func TestRequeueStartupPreservesLateStages(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

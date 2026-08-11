@@ -207,9 +207,42 @@ func (m *Manager) runReconciler() {
 				// demoted before it can ever finish.
 				m.recoverInventory()
 			}
+			m.logQueueSummary()
 			m.expireTerminalJobs()
 		}
 	}
+}
+
+// logQueueSummary emits the one line an operator can grep for. Retries are
+// indefinite by design, so a job that can never succeed produces only a WARN
+// per attempt at up to MaxBackoff intervals; nothing else in the system
+// reports queue depth, the age of the oldest queued work, or how many times
+// the worst job has failed. It stays silent while nothing is in flight, so the
+// line's presence is itself the signal.
+func (m *Manager) logQueueSummary() {
+	summary, err := m.store.SummarizeQueue(m.lifetime)
+	if err != nil {
+		if m.lifetime.Err() == nil {
+			slog.Warn("could not summarize the ingest queue", "operation", "queue_summary", "error", err)
+		}
+		return
+	}
+	if summary.Active == 0 {
+		return
+	}
+	attrs := []any{"operation", "queue_summary"}
+	for _, status := range []store.JobStatus{
+		store.JobUploading, store.JobPending, store.JobProcessing,
+		store.JobCleanup, store.JobDiscarding,
+	} {
+		attrs = append(attrs, string(status), summary.Counts[status])
+	}
+	attrs = append(attrs, "max_processing_failures", summary.MaxProcessingFailures)
+	if summary.OldestPendingAttemptAt != nil {
+		attrs = append(attrs, "oldest_pending_age_seconds",
+			(store.NowMicros()-*summary.OldestPendingAttemptAt)/int64(time.Second/time.Microsecond))
+	}
+	slog.Info("ingest queue", attrs...)
 }
 
 // backoffFor grows exponentially and then flattens. Retries are indefinite:
