@@ -425,6 +425,12 @@ func assertPreFinishFinal(t *testing.T, resp tusHookResponse) {
 	if status < 400 || status > 499 {
 		t.Errorf("status = %d, want 4xx so the client stops retrying", status)
 	}
+	// tus-js-client's default onShouldRetry is `!inStatusCategory(status, 400)
+	// || status === 409 || status === 423`, so those two 4xx are retried like a
+	// 5xx and cannot express a terminal refusal.
+	if status == http.StatusConflict || status == http.StatusLocked {
+		t.Errorf("status = %d, which tus-js-client retries by default", status)
+	}
 	if resp.HTTPResponse.Header["Retry-After"] != "" {
 		t.Errorf("a final refusal must not invite a retry, got %+v", resp.HTTPResponse.Header)
 	}

@@ -270,7 +270,7 @@ func (s *Server) handlePreFinishHook(w http.ResponseWriter, r *http.Request, req
 		// an upload that can never complete, on a five-second cadence, forever.
 		slog.Warn("durability barrier refused the upload for good",
 			"operation", "pre_finish", "upload_id", upload.ID, "error", err)
-		preFinishFinal(w, http.StatusConflict, "upload can no longer be completed")
+		preFinishFinal(w, http.StatusGone, "upload can no longer be completed")
 	default:
 		// Saturation, shutdown or an expired budget is backpressure. The
 		// detached operation continues, so the retry will usually find it
@@ -299,7 +299,8 @@ func preFinishRetry(w http.ResponseWriter, message string) {
 // source, or a row reconciliation has discarded, leaves the client retrying
 // on a five-second cadence with nothing that could ever tell it to stop. It
 // carries no Retry-After, and no RejectUpload, which tusd honours at
-// pre-create only.
+// pre-create only. status must never be 409 or 423: tus-js-client retries
+// those two by default, so they are not terminal at the browser.
 func preFinishFinal(w http.ResponseWriter, status int, message string) {
 	clientStatusHook(w, false, status, message, 0)
 }
