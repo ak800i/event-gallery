@@ -4,3 +4,6 @@ backend/server
 frontend/coverage/
 frontend/dist/
 frontend/node_modules/
+
+# subagent-driven-development scratch
+.superpowers/
