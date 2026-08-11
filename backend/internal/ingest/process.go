@@ -241,18 +241,26 @@ func (m *Manager) prepareAndPublish(ctx context.Context, job *store.UploadJob) e
 // media row is committed. This is the only path that may delete a source
 // after a successful publication.
 func (m *Manager) runCleanup(job *store.UploadJob) {
-	if !m.deletionAllowed(job) {
+	// Bounded exactly like runProcessing, and for the same reason: the lease
+	// outlives the attempt timeout by design, so an attempt that cannot exceed
+	// it can never run beside the worker that reclaimed the job. Every call
+	// below happens to be individually bounded today; this is what keeps that
+	// true of the next one added.
+	ctx, cancel := context.WithTimeout(m.lifetime, m.opts.ProcessingTimeout)
+	defer cancel()
+
+	if !m.deletionAllowed(ctx, job) {
 		return
 	}
 	if job.ResultMediaID != "" && job.ResultMediaID != job.MediaID {
-		if !m.removeArtifactsIfUnowned(job) {
+		if !m.removeArtifactsIfUnowned(ctx, job) {
 			return
 		}
 	}
 	// The media row is committed, so any temporary from an earlier attempt is
 	// provably redundant.
 	m.sweepTemporaries(job)
-	m.finishBySourceRemoval(job, store.JobComplete, "")
+	m.finishBySourceRemoval(ctx, job, store.JobComplete, "")
 }
 
 // runDiscard terminates a rejected or cancelled upload. Both reasons are
@@ -260,14 +268,17 @@ func (m *Manager) runCleanup(job *store.UploadJob) {
 // were simply never observable never reaches this state — it is closed out as
 // 'unobservable' instead, which deletes nothing and stays reversible.
 func (m *Manager) runDiscard(job *store.UploadJob) {
-	if !m.deletionAllowed(job) {
+	ctx, cancel := context.WithTimeout(m.lifetime, m.opts.ProcessingTimeout)
+	defer cancel()
+
+	if !m.deletionAllowed(ctx, job) {
 		return
 	}
-	if !m.removeArtifactsIfUnowned(job) {
+	if !m.removeArtifactsIfUnowned(ctx, job) {
 		return
 	}
 	m.sweepTemporaries(job)
-	m.finishBySourceRemoval(job, store.JobDiscarded, job.TerminalReason)
+	m.finishBySourceRemoval(ctx, job, store.JobDiscarded, job.TerminalReason)
 }
 
 // deletionAllowed re-checks storage health against the filesystem rather than
@@ -275,8 +286,8 @@ func (m *Manager) runDiscard(job *store.UploadJob) {
 // reconcile tick must not produce a cascade of deletions. On refusal the lease
 // is released so the job is retried in seconds instead of after the full lease
 // duration.
-func (m *Manager) deletionAllowed(job *store.UploadJob) bool {
-	if err := m.health.Check(m.lifetime); err != nil {
+func (m *Manager) deletionAllowed(ctx context.Context, job *store.UploadJob) bool {
+	if err := m.health.Check(ctx); err != nil {
 		slog.Warn("refusing to delete while storage health is unproven",
 			"operation", "cleanup", "upload_id", job.UploadID, "error", err)
 		m.retryCleanup(job, err)
@@ -289,8 +300,8 @@ func (m *Manager) deletionAllowed(job *store.UploadJob) bool {
 // no committed media row claims its media id. GetByID reports absence as
 // sql.ErrNoRows, and any other error means ownership is unknown — in which
 // case nothing may be deleted. Returns false when the caller should stop.
-func (m *Manager) removeArtifactsIfUnowned(job *store.UploadJob) bool {
-	_, err := m.store.GetByID(m.lifetime, job.MediaID, "")
+func (m *Manager) removeArtifactsIfUnowned(ctx context.Context, job *store.UploadJob) bool {
+	_, err := m.store.GetByID(ctx, job.MediaID, "")
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		m.removeArtifacts(job)
@@ -335,11 +346,11 @@ func (m *Manager) sweepTemporaries(job *store.UploadJob) {
 // tusd's sidecar and lock state stay consistent, and it is issued only for a
 // path just observed to exist: an absent file may be a faulted mount rather
 // than a deleted one.
-func (m *Manager) finishBySourceRemoval(job *store.UploadJob, status store.JobStatus, reason string) {
+func (m *Manager) finishBySourceRemoval(ctx context.Context, job *store.UploadJob, status store.JobStatus, reason string) {
 	dataPath := m.DataPath(job.UploadID)
 	switch _, err := os.Stat(dataPath); {
 	case err == nil:
-		if err := m.opts.Terminator.Terminate(m.lifetime, job.UploadID); err != nil {
+		if err := m.opts.Terminator.Terminate(ctx, job.UploadID); err != nil {
 			m.retryCleanup(job, fmt.Errorf("terminate source: %w", err))
 			return
 		}
@@ -416,6 +427,10 @@ func (m *Manager) finishBySourceRemoval(job *store.UploadJob, status store.JobSt
 		}
 	}
 
+	// Deliberately on the lifetime rather than the attempt context: by here
+	// the source is already gone, and abandoning the record of that because
+	// the attempt clock ran out would leave the job retrying a deletion it has
+	// no way left to observe.
 	if err := m.store.FinishJob(m.lifetime, job.UploadID, job.LeaseToken, status, reason, store.NowMicros()); err != nil {
 		slog.Error("failed to commit terminal state", "operation", "cleanup", "upload_id", job.UploadID, "error", err)
 	}

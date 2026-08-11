@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -344,6 +345,95 @@ func TestCleanupRefusesWhileStorageIsUnproven(t *testing.T) {
 		t.Errorf("cleanup_failures = %d, want 1", job.CleanupFailures)
 	}
 	requireSourceIntact(t, m, "u1", payload)
+}
+
+// recordingTerminator remembers the context the cleanup path handed it.
+type recordingTerminator struct {
+	inner       unlinkTerminator
+	mu          sync.Mutex
+	called      bool
+	hadDeadline bool
+}
+
+func (rt *recordingTerminator) Terminate(ctx context.Context, uploadID string) error {
+	rt.mu.Lock()
+	_, rt.hadDeadline = ctx.Deadline()
+	rt.called = true
+	rt.mu.Unlock()
+	return rt.inner.Terminate(ctx, uploadID)
+}
+
+func (rt *recordingTerminator) observed() (called, hadDeadline bool) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.called, rt.hadDeadline
+}
+
+// A worker owns a job for exactly one lease, and runProcessing bounds its
+// attempt so it always unwinds inside one. Cleanup and discard hold the same
+// kind of lease and are the two stages that delete things, so they must be
+// bounded the same way: every call they make today happens to be bounded
+// individually, but an unbounded attempt is one addition away from outliving
+// its lease and running beside the worker that reclaimed the job.
+func TestCleanupAndDiscardRunUnderAnAttemptDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stage store.JobStatus
+		setUp func(t *testing.T, m *Manager, st *store.Store)
+		run   func(m *Manager, job *store.UploadJob)
+	}{
+		{
+			name:  "cleanup",
+			stage: store.JobCleanup,
+			setUp: func(t *testing.T, m *Manager, st *store.Store) {
+				if worked, err := m.claimAndRunOnce(); !worked || err != nil {
+					t.Fatalf("publication pass: worked=%v err=%v", worked, err)
+				}
+			},
+			run: func(m *Manager, job *store.UploadJob) { m.runCleanup(job) },
+		},
+		{
+			name:  "discard",
+			stage: store.JobDiscarding,
+			setUp: func(t *testing.T, m *Manager, st *store.Store) {
+				if _, err := st.DB().Exec(
+					`UPDATE upload_jobs SET status = 'discarding', terminal_reason = 'cancelled' WHERE upload_id = ?`, "u1"); err != nil {
+					t.Fatalf("send to discard: %v", err)
+				}
+			},
+			run: func(m *Manager, job *store.UploadJob) { m.runDiscard(job) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, proc := newIngestFixture(t)
+			opts := testOptions(t)
+			term := &recordingTerminator{inner: unlinkTerminator{dir: opts.UploadDir}}
+			opts.Terminator = term
+			m := New(st, proc, opts)
+			defer m.Stop()
+
+			seedCompleteUpload(t, m, st, "u1", jpegFixture(t))
+			if err := m.EnsureDurable(context.Background(), "u1"); err != nil {
+				t.Fatalf("ensure durable: %v", err)
+			}
+			tc.setUp(t, m, st)
+
+			job, err := st.ClaimNextJob(context.Background(), tc.stage, tc.stage, store.NowMicros(), time.Minute)
+			if err != nil || job == nil {
+				t.Fatalf("claim %s: %+v %v", tc.stage, job, err)
+			}
+
+			tc.run(m, job)
+
+			called, hadDeadline := term.observed()
+			if !called {
+				t.Fatal("the source was never terminated, so nothing was observed")
+			}
+			if !hadDeadline {
+				t.Error("the attempt ran on the bare lifetime: nothing makes it unwind before its lease expires")
+			}
+		})
+	}
 }
 
 // tusd being briefly unreachable must not lose the source, terminalize the
