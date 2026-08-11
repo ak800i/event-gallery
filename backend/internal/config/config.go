@@ -357,6 +357,14 @@ func (c *Config) Validate() error {
 	if c.UploadStatusRateLimitPerMinute <= 0 {
 		return fmt.Errorf("UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE must be positive")
 	}
+	// The same gap in the sibling limiter, where it silences the gallery
+	// itself rather than one poller.
+	if c.PublicRateLimitPerMinute <= 0 {
+		return fmt.Errorf("PUBLIC_RATE_LIMIT_PER_MINUTE must be positive")
+	}
+	if c.PublicRateLimitBurst <= 0 {
+		return fmt.Errorf("PUBLIC_RATE_LIMIT_BURST must be positive")
+	}
 	if strings.TrimSpace(c.TusUploadDir) == "" {
 		return fmt.Errorf("TUS_UPLOAD_DIR must not be empty")
 	}
