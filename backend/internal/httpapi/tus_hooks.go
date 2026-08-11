@@ -115,14 +115,11 @@ func retryHook(w http.ResponseWriter, retryAfterSeconds int, message string) {
 // via -hooks-http-forward-headers.
 func (s *Server) handleTusHook(w http.ResponseWriter, r *http.Request) {
 	// One absolute deadline for the whole hook, recorded before authentication
-	// and body decode so no later phase can reset it. A non-positive budget
-	// means "unbounded", never "already expired", which would refuse every
-	// upload with a transient error nobody could diagnose.
-	if s.cfg.UploadDurabilityWait > 0 {
-		ctx, cancel := context.WithTimeout(r.Context(), s.cfg.UploadDurabilityWait)
-		defer cancel()
-		r = r.WithContext(ctx)
-	}
+	// and body decode so no later phase can reset it. Config rejects a
+	// non-positive budget, so this is always a real bound.
+	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.UploadDurabilityWait)
+	defer cancel()
+	r = r.WithContext(ctx)
 
 	if r.Header.Get(internalProxySecretHeader) != s.cfg.TusHookSecret || s.cfg.TusHookSecret == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized hook caller")

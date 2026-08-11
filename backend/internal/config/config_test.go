@@ -265,3 +265,21 @@ func TestLoad_RejectsDurabilityWaitAboveHookTimeout(t *testing.T) {
 		t.Fatal("expected a budget above the 90s hook timeout to be rejected")
 	}
 }
+
+func TestLoad_RejectsNonPositiveDurabilityWait(t *testing.T) {
+	for _, value := range []string{"0", "-5"} {
+		t.Run(value, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+			t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+			t.Setenv("UPLOAD_DURABILITY_WAIT_SECONDS", value)
+
+			// A non-positive budget is not "no bound": the hook then runs under
+			// tusd's own 90s timeout, which severs the request before a 503 can
+			// be relayed — exactly what the upper bound above exists to prevent.
+			if _, err := Load(); err == nil {
+				t.Fatal("expected a non-positive durability budget to be rejected")
+			}
+		})
+	}
+}

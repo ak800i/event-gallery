@@ -220,22 +220,28 @@ func TestTusCleanupWillNotDeleteAnUploadTheQueueOwns(t *testing.T) {
 }
 
 // Terminate is the single seam both the janitor and the ingest workers use. It
-// must refuse outright when the queue still needs the source, so a caller that
-// forgets to claim first cannot delete a live upload.
+// must refuse outright while the queue may still need the source, so a caller
+// that forgets to claim the row first cannot delete a live upload. An
+// uploading row counts: its bytes are still arriving and its final PATCH may
+// hand it to the queue at any moment.
 func TestTerminateRefusesSourcesTheQueueStillNeeds(t *testing.T) {
-	h := newTestHarness(t)
-	seedUploadingJob(t, h, "u1")
-	if _, err := h.store.DB().Exec(`UPDATE upload_jobs SET status = 'pending' WHERE upload_id = ?`, "u1"); err != nil {
-		t.Fatalf("advance status: %v", err)
-	}
-	var calls atomic.Int32
-	countingTusd(t, h, &calls)
+	for _, status := range []store.JobStatus{store.JobUploading, store.JobPending, store.JobProcessing} {
+		t.Run(string(status), func(t *testing.T) {
+			h := newTestHarness(t)
+			seedUploadingJob(t, h, "u1")
+			if _, err := h.store.DB().Exec(`UPDATE upload_jobs SET status = ? WHERE upload_id = ?`, string(status), "u1"); err != nil {
+				t.Fatalf("advance status: %v", err)
+			}
+			var calls atomic.Int32
+			countingTusd(t, h, &calls)
 
-	if err := h.server.Terminate(context.Background(), "u1"); err == nil {
-		t.Fatal("Terminate must refuse a pending job")
-	}
-	if calls.Load() != 0 {
-		t.Fatalf("no DELETE may be issued for a refused termination, got %d", calls.Load())
+			if err := h.server.Terminate(context.Background(), "u1"); err == nil {
+				t.Fatalf("Terminate must refuse a %s job", status)
+			}
+			if calls.Load() != 0 {
+				t.Fatalf("no DELETE may be issued for a refused termination, got %d", calls.Load())
+			}
+		})
 	}
 }
 

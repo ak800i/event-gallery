@@ -308,6 +308,12 @@ func Load() (*Config, error) {
 	if cfg.UploadDurabilityWait >= 90*time.Second {
 		return nil, fmt.Errorf("UPLOAD_DURABILITY_WAIT_SECONDS must be below the 90s tusd hook timeout, got %v", cfg.UploadDurabilityWait)
 	}
+	// A non-positive budget is not "no bound": it leaves the hook running under
+	// tusd's own 90s timeout, which is the severed request the check above
+	// exists to prevent.
+	if cfg.UploadDurabilityWait <= 0 {
+		return nil, fmt.Errorf("UPLOAD_DURABILITY_WAIT_SECONDS must be positive, got %v", cfg.UploadDurabilityWait)
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return nil, err

@@ -49,6 +49,7 @@ type Manager struct {
 	lifetime context.Context
 	cancel   context.CancelFunc
 	wake     chan struct{}
+	wakes    atomic.Uint64
 	wg       sync.WaitGroup
 	ready    atomic.Bool
 
@@ -141,11 +142,17 @@ func (m *Manager) Stop() {
 // Wake nudges a worker without blocking. A full channel already means "there
 // is work to look at", so dropping the signal is correct.
 func (m *Manager) Wake() {
+	m.wakes.Add(1)
 	select {
 	case m.wake <- struct{}{}:
 	default:
 	}
 }
+
+// WakeCount reports how many nudges Wake has received, including the ones it
+// dropped. A dropped nudge leaves no other trace, so this is the only way a
+// caller of the hook seam can prove it nudged the queue at all.
+func (m *Manager) WakeCount() uint64 { return m.wakes.Load() }
 
 func (m *Manager) runWorker(worker int) {
 	ticker := time.NewTicker(m.opts.ReconcileInterval)

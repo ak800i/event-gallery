@@ -114,14 +114,17 @@ func (s *Server) handleTusProxy(w http.ResponseWriter, r *http.Request) {
 // janitor and the ingest workers remove tus files through this one path, so
 // tusd always cleans up its own sidecar and lock state.
 //
-// It refuses to remove a source that a pending or processing job still needs.
+// It refuses to remove a source the queue may still need. An uploading row is
+// refused along with pending and processing: its final PATCH can commit at any
+// moment, so a caller must first claim it to discarding, which is the only
+// transition that cannot lose that race.
 func (s *Server) Terminate(ctx context.Context, uploadID string) error {
 	job, err := s.store.GetUploadJob(ctx, uploadID)
 	if err != nil {
 		return err
 	}
-	if job != nil && (job.Status == store.JobPending || job.Status == store.JobProcessing) {
-		return fmt.Errorf("upload %s is queued for publication and must not be terminated", uploadID)
+	if job != nil && (job.Status == store.JobUploading || job.Status == store.JobPending || job.Status == store.JobProcessing) {
+		return fmt.Errorf("upload %s is still owned by the queue and must not be terminated", uploadID)
 	}
 	return s.terminateTusUpload(ctx, uploadID)
 }

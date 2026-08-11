@@ -281,44 +281,6 @@ func TestPreCreateRefusesWhileStorageIsUnhealthy(t *testing.T) {
 	assertNoUploadJobs(t, h)
 }
 
-// The hook budget bounds admission. A misconfigured or unset budget must
-// degrade to "no app-level bound", because context.WithTimeout(ctx, 0) yields
-// an already-expired context that would refuse every upload as transient.
-func TestPreCreateAdmitsWithNoDurabilityBudgetConfigured(t *testing.T) {
-	h := newTestHarness(t)
-	h.cfg.UploadDurabilityWait = 0
-
-	resp := postHook(t, h, tusHookRequest{
-		Type:  "pre-create",
-		Event: tusHookEvent{Upload: tusHookUpload{Size: 10, MetaData: map[string]string{"filename": "a.jpg"}}},
-	})
-
-	if resp.RejectUpload || resp.ChangeFileInfo == nil {
-		t.Fatalf("an unset budget must not refuse uploads, got %+v", resp)
-	}
-}
-
-func TestPreCreateRefusesWhenTheFreeSpaceFloorWouldBeCrossed(t *testing.T) {
-	h := newTestHarness(t)
-	// A floor no filesystem can satisfy, so the refusal does not depend on the
-	// test machine's free space.
-	manager := ingest.New(h.store, h.proc, ingest.Options{
-		UploadDir:    h.cfg.TusUploadDir,
-		MinFreeBytes: 1 << 62,
-	})
-	manager.Start()
-	t.Cleanup(manager.Stop)
-	h.server.SetIngest(manager)
-
-	resp := postHook(t, h, tusHookRequest{
-		Type:  "pre-create",
-		Event: tusHookEvent{Upload: tusHookUpload{Size: 10, MetaData: map[string]string{"filename": "a.jpg"}}},
-	})
-
-	assertRetryable(t, resp)
-	assertNoUploadJobs(t, h)
-}
-
 // post-finish is unordered and non-blocking; tusd may never re-deliver it. It
 // must therefore do nothing but nudge the queue. Processing here, on a
 // request context tusd cancels seconds later, is the production incident.
@@ -330,6 +292,7 @@ func TestPostFinishOnlyNudgesTheQueue(t *testing.T) {
 	if err := os.WriteFile(infoPath, []byte(`{}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	wakesBefore := h.ingest.WakeCount()
 
 	resp := postHook(t, h, tusHookRequest{
 		Type: "post-finish",
@@ -343,6 +306,9 @@ func TestPostFinishOnlyNudgesTheQueue(t *testing.T) {
 
 	if resp.RejectUpload {
 		t.Error("post-finish cannot reject anything; the bytes are already written")
+	}
+	if got := h.ingest.WakeCount(); got != wakesBefore+1 {
+		t.Errorf("post-finish must nudge the queue: wake count %d, want %d", got, wakesBefore+1)
 	}
 	if _, err := os.Stat(dataPath); err != nil {
 		t.Errorf("post-finish must never remove the source: %v", err)

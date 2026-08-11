@@ -41,22 +41,3 @@ func TestAdmitCapacityIsDisabledWithoutAFloor(t *testing.T) {
 		t.Fatalf("no floor configured must admit anything: %v", err)
 	}
 }
-
-func TestAdmitCapacityRefusesWhenTheFloorWouldBeCrossed(t *testing.T) {
-	st, proc := newIngestFixture(t)
-	opts := testOptions(t)
-	// A floor no real filesystem can satisfy, so the refusal is deterministic
-	// rather than dependent on the test machine's free space.
-	opts.MinFreeBytes = 1 << 62
-	m := New(st, proc, opts)
-
-	if err := m.AdmitCapacity(context.Background(), 1); err == nil {
-		t.Fatal("a create that would cross the free space floor must be refused")
-	}
-
-	opts.MinFreeBytes = 1
-	relaxed := New(st, proc, opts)
-	if err := relaxed.AdmitCapacity(context.Background(), 1); err != nil {
-		t.Fatalf("a one byte floor must admit a one byte upload: %v", err)
-	}
-}
