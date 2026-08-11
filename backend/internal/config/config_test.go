@@ -283,3 +283,21 @@ func TestLoad_RejectsNonPositiveDurabilityWait(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_RejectsNonPositiveUploadStatusRateLimit(t *testing.T) {
+	for _, value := range []string{"0", "-1"} {
+		t.Run(value, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+			t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+			t.Setenv("UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE", value)
+
+			// A non-positive limit is not "unlimited": the status route
+			// degrades to rate 0 with a burst of one, which is a single poll
+			// per IP forever, with nothing in the logs to explain it.
+			if _, err := Load(); err == nil {
+				t.Fatal("expected a non-positive status poll limit to be rejected")
+			}
+		})
+	}
+}

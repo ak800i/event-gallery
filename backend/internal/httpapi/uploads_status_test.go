@@ -110,6 +110,11 @@ func TestUploadStatusMapsQueueStatesToPublicStates(t *testing.T) {
 		{"bad-hash", stagedJob{status: store.JobDiscarding, terminalReason: "checksum_mismatch"}, "failed", ""},
 		{"abandoned", stagedJob{status: store.JobDiscarded, terminalReason: "cancelled"}, "cancelled", ""},
 		{"never-seen", stagedJob{status: store.JobDiscarded, terminalReason: "unobservable"}, "cancelled", ""},
+		// Only a reason that genuinely means the guest cancelled may say so;
+		// accusing them of cancelling an upload they did not is worse than
+		// reporting the failure it actually was.
+		{"reason-we-added-later", stagedJob{status: store.JobDiscarded, terminalReason: "quarantined"}, "failed", ""},
+		{"reason-we-never-recorded", stagedJob{status: store.JobDiscarded}, "failed", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -224,6 +229,33 @@ func TestUploadStatusIsRetryableWhenTheQueueCannotBeRead(t *testing.T) {
 		t.Error("a transient refusal must carry Retry-After")
 	}
 	if strings.Contains(rec.Body.String(), "context canceled") {
+		t.Errorf("the response disclosed the internal error: %s", rec.Body.String())
+	}
+}
+
+// A failed media lookup is the same transient database condition as a failed
+// queue read. Rendering it as a published entry whose mediaId is quietly
+// absent would make "the database is unhappy" indistinguishable from "the item
+// is not publicly visible", and hand the caller a deterministic-looking 200.
+func TestUploadStatusIsRetryableWhenTheMediaLookupFails(t *testing.T) {
+	h := newTestHarness(t)
+	insertTestMedia(t, h, "visible-media", repeatChar('d', 64), time.Now())
+	seedStagedJob(t, h, "shy", stagedJob{status: store.JobComplete, resultMediaID: "visible-media"})
+
+	// The visibility query counts likes, so losing that table breaks the media
+	// lookup alone; the queue read is untouched and still answers.
+	if _, err := h.store.DB().Exec(`DROP TABLE likes`); err != nil {
+		t.Fatalf("drop likes: %v", err)
+	}
+
+	rec := postStatusRaw(t, h, []string{"shy"})
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("a transient refusal must carry Retry-After")
+	}
+	if strings.Contains(rec.Body.String(), "likes") {
 		t.Errorf("the response disclosed the internal error: %s", rec.Body.String())
 	}
 }

@@ -352,6 +352,11 @@ func (c *Config) Validate() error {
 	if c.StorageCleanupInterval <= 0 {
 		return fmt.Errorf("STORAGE_CLEANUP_INTERVAL_MINUTES must be positive")
 	}
+	// Not "unlimited": a non-positive limit yields rate 0 with a burst of one,
+	// which is one status poll per IP forever.
+	if c.UploadStatusRateLimitPerMinute <= 0 {
+		return fmt.Errorf("UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE must be positive")
+	}
 	if strings.TrimSpace(c.TusUploadDir) == "" {
 		return fmt.Errorf("TUS_UPLOAD_DIR must not be empty")
 	}

@@ -144,9 +144,10 @@ func (s *Server) Router() http.Handler {
 		api.Handle("/tus/*", http.HandlerFunc(s.handleTusProxy))
 		api.Post("/internal/tus-hooks", s.handleTusHook)
 
-		// A sibling of the public group, not a member: chi copies the parent
-		// chain into an inline group, so registering it inside pub would spend
-		// the gallery budget as well as this route's own.
+		// A sibling of the public group, not a member: pub.Use adds the public
+		// limiter to everything registered inside it, so a route registered
+		// there would be metered twice, spending the gallery budget as well as
+		// its own.
 		api.With(s.uploadStatusRateLimit).Post("/uploads/status", s.handleUploadStatus)
 
 		api.Group(func(pub chi.Router) {
