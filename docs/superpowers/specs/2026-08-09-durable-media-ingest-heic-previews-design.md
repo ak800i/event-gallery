@@ -283,24 +283,24 @@ request. The entrypoint derives and validates these values at startup.
 
 ### Cancellation and termination
 
-Enable the blocking `pre-terminate` hook. No tus termination is authorized
-from queue status alone.
+The app is the only terminator. The public proxy refuses every client DELETE
+unconditionally, before any path parsing, so no browser request can remove an
+upload from tusd's storage. Deletion happens exclusively through one internal
+helper that issues tusd's own DELETE, which is what keeps tusd's sidecars and
+locks consistent; the app never unlinks tusd's files itself. The
+incomplete-upload janitor and the ingest workers share that one helper, so
+there is a single audited path to deletion rather than two.
 
-A public DELETE is consumed by the app as cancellation intent and is never
-forwarded to tusd directly. It first applies the same completion fence used by
-HEAD and PATCH. If the row has already committed `pending` or later, it
-returns 409 and the upload proceeds to publication; a durable completion is
-never silently reversed. Otherwise one immediate transaction sets
-`cancellation_requested_at`, which causes every later PATCH and pre-finish
-promotion to fail closed.
+A public DELETE is consumed by the app as cancellation intent. It first applies
+the same completion fence used by HEAD and PATCH. If the row has already
+committed `pending` or later, it returns 409 and the upload proceeds to
+publication; a durable completion is never silently reversed. Otherwise one
+immediate transaction sets `cancellation_requested_at`, which causes every
+later PATCH and pre-finish promotion to fail closed.
 
 Maintenance then claims cancelled rows whose upload has been idle for one
-reconcile interval, transitions them to `discarding` with a worker lease, and
-issues the internal tusd DELETE carrying that lease token. The blocking
-`pre-terminate` hook permits deletion only when the row is `discarding` or
-`cleanup` and the forwarded token matches its live lease; every other request
-is rejected regardless of offset. The incomplete-upload janitor uses the same
-claim API rather than calling tusd directly.
+reconcile interval and transitions them to `discarding` under a worker lease,
+where the ordinary discard path reclaims the bytes.
 
 A termination is issued only for a job whose data path the worker has just
 observed to exist. If the path is already absent the worker issues no DELETE
@@ -311,7 +311,7 @@ than a removed file.
 HTTP 204, 404, or 410 from tusd is a prompt to verify, not proof. The worker
 requires both derived paths to be absent, fsyncs the upload directory, and
 verifies absence again before the terminal transition. Remaining ambiguity
-schedules a retry; the app never unlinks tusd lock files.
+schedules a retry.
 
 ### Recovery reconciler
 
@@ -444,11 +444,11 @@ A `discarding` worker performs the same ownership check for the original,
 thumbnail, and preview before terminating the source, because a crash may have
 left artifacts from an earlier attempt.
 
-Only then does the worker call tusd's internal DELETE with its lease token,
-verify absence of both derived paths across a directory fsync, and commit the
-terminal transition with `terminal_at`. A crash after source deletion is
-recovered by the same verification. A cleanup error leaves the job in
-`cleanup` with backoff and never affects the committed media row.
+Only then does the worker call tusd's internal DELETE through the shared
+termination helper, verify absence of both derived paths across a directory
+fsync, and commit the terminal transition with `terminal_at`. A crash after
+source deletion is recovered by the same verification. A cleanup error leaves
+the job in `cleanup` with backoff and never affects the committed media row.
 
 ## Failure Handling
 
@@ -679,9 +679,10 @@ passes a stage.
 - Cancellation racing pre-finish is decided by one conditional transition:
   cancel-first blocks publication, pending-first returns 409 and the upload
   publishes.
-- Internal DELETE requires the exact live lease token; a stale token is
-  rejected even while the row is in an authorized state, and public DELETE can
-  never terminate a complete upload.
+- Internal termination is issued only for a path just observed to exist, and
+  the terminal transition requires both paths absent across a directory fsync.
+  The proxy refuses every client DELETE, so a public request can never
+  terminate an upload, complete or not.
 - Browser cancellation keeps the entry visible until status reports a terminal
   result; 423, 429, 503, and network loss retry without reporting success.
 
@@ -733,11 +734,10 @@ GID with a read-only root filesystem and a writable `/tmp` tmpfs.
   source. Rollback means stopping the new containers, restoring all three
   volumes from one pre-upgrade backup, and starting the recorded old image
   pair.
-- The tusd entrypoint enables `pre-create`, `pre-finish`, `post-finish`, and
-  `pre-terminate`, adds `X-Ingest-Lease-Token` to the existing
-  `-hooks-http-forward-headers` list, sets the derived timeout flags, and
-  passes `-disable-concatenation` because partial and final concatenation
-  would create completion semantics outside this state machine.
+- The tusd entrypoint enables `pre-create`, `pre-finish`, and `post-finish`,
+  sets the derived timeout flags, and passes `-disable-concatenation` because
+  partial and final concatenation would create completion semantics outside
+  this state machine.
 - Startup adopts every valid pre-upgrade sidecar before readiness, so uploads
   completed by the old code are published rather than stranded. Status reports
   `recovering` during that window.
@@ -761,6 +761,9 @@ GID with a read-only root filesystem and a writable `/tmp` tmpfs.
   than per-volume identity files and operator commands.
 - Concurrency: a single app instance is a deployment constraint, so worker
   leases plus tusd's own file locker replace a general fencing lattice.
+- Termination: the proxy refuses all client DELETEs and the app deletes tus
+  sources only through tusd's own DELETE, so one code path owns removal and no
+  hook-level authorization scheme is needed.
 - HEIC: a resource-limited `heif-preview` helper linked against pinned
   libheif, then Go JPEG encoding; originals are never rewritten and HEIC is
   never rejected.
