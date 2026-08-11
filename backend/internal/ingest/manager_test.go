@@ -50,6 +50,32 @@ func TestBackoffIsExponentialAndCapped(t *testing.T) {
 	if capped := m.backoffFor(40); capped != m.opts.MaxBackoff {
 		t.Errorf("backoff must cap at %v, got %v", m.opts.MaxBackoff, capped)
 	}
+	// 2^20s is far past MaxBackoff but well under the failures>30 shortcut, so
+	// only the ceiling itself can produce this. Without it a 15m cap would be
+	// ignored from failure 11 on and retries would stall for years.
+	if capped := m.backoffFor(20); capped != m.opts.MaxBackoff {
+		t.Errorf("backoff must cap at %v below the overflow guard, got %v", m.opts.MaxBackoff, capped)
+	}
+}
+
+func TestWakeDoesNotBlockWithNoWorkerDraining(t *testing.T) {
+	st, proc := newIngestFixture(t)
+	m := New(st, proc, testOptions(t))
+
+	// Deliberately not started: with workers parked in their select, they drain
+	// m.wake and a blocking send would look fine.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		m.Wake()
+		m.Wake()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wake blocked on a full channel; a dropped nudge is correct, a stalled caller is not")
+	}
 }
 
 func TestStartStopIsClean(t *testing.T) {
