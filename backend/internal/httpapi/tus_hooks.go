@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -215,9 +216,84 @@ func (s *Server) handlePreCreateHook(w http.ResponseWriter, r *http.Request, req
 	})
 }
 
-// TODO(task-9): the durability barrier replaces this stub.
+// handlePreFinishHook runs inside the upload's final PATCH, and its response
+// becomes that PATCH's response. Completing it successfully is precisely what
+// makes the browser's success message truthful.
+//
+// The budget was already established by handleTusHook, so every phase here
+// shares one absolute deadline.
 func (s *Server) handlePreFinishHook(w http.ResponseWriter, r *http.Request, req tusHookRequest) {
-	allowHook(w)
+	ctx := r.Context()
+
+	upload := req.Event.Upload
+	if s.ingest == nil {
+		preFinishRetry(w, "ingest is not ready")
+		return
+	}
+	if upload.ID == "" || !safeUploadID(upload.ID) {
+		preFinishRetry(w, "invalid upload id")
+		return
+	}
+	if upload.Storage.Type != "filestore" {
+		preFinishRetry(w, "unsupported storage backend")
+		return
+	}
+	// The hook must be talking about the path we derive, not one it chose.
+	if filepath.Clean(upload.Storage.Path) != filepath.Clean(s.ingest.DataPath(upload.ID)) {
+		preFinishRetry(w, "unexpected storage path")
+		return
+	}
+	if upload.Size <= 0 || upload.Offset != upload.Size {
+		preFinishRetry(w, "upload is not complete")
+		return
+	}
+
+	switch err := s.ingest.EnsureDurable(ctx, upload.ID); {
+	case err == nil:
+		allowHook(w)
+	default:
+		// Saturation or an expired budget is backpressure. The detached
+		// operation continues, so the retry will usually find it already done.
+		slog.Warn("durability barrier did not complete within the request budget",
+			"operation", "pre_finish", "upload_id", upload.ID, "error", err)
+		preFinishRetry(w, "upload is still being persisted, please retry")
+	}
+}
+
+// preFinishRetry is the only failure response pre-finish has. tusd ignores
+// RejectUpload for this hook — the upload is already written and cannot be
+// rejected here — and merges HTTPResponse into the final PATCH response. So
+// every failure is reported as retryable backpressure, and it is the
+// completion fence, not this status, that stops a false success. Nothing is
+// lost either way: an upload we refuse to promote is picked up later by
+// reconciliation.
+func preFinishRetry(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(tusHookResponse{
+		HTTPResponse: &tusHookHTTPResponse{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       `{"error":"` + message + `"}`,
+			Header: map[string]string{
+				"Content-Type": "application/json",
+				"Retry-After":  "5",
+			},
+		},
+	})
+}
+
+// safeUploadID rejects anything that could escape the upload directory.
+func safeUploadID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		isHex := (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+		if !isHex && r != '-' && r != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 // newUploadIdentifier returns a URL-safe random id. It is always freshly

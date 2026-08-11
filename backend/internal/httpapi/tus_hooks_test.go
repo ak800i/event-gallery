@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,6 +346,268 @@ func assertNoUploadJobs(t *testing.T, h *testHarness) {
 	}
 	if n != 0 {
 		t.Errorf("a refused upload must leave no job row, found %d", n)
+	}
+}
+
+// admitUpload runs the real pre-create hook and then lays down the files tusd
+// would have written, so pre-finish is exercised against a genuine admitted
+// row rather than a hand-made one.
+func admitUpload(t *testing.T, h *testHarness, payload []byte) string {
+	t.Helper()
+	resp := postHook(t, h, tusHookRequest{
+		Type: "pre-create",
+		Event: tusHookEvent{Upload: tusHookUpload{
+			Size:     int64(len(payload)),
+			MetaData: map[string]string{"filename": "a.jpg"},
+		}},
+	})
+	if resp.ChangeFileInfo == nil || resp.ChangeFileInfo.ID == "" {
+		t.Fatalf("pre-create returned no upload id: %+v", resp)
+	}
+	id := resp.ChangeFileInfo.ID
+	if err := os.WriteFile(filepath.Join(h.cfg.TusUploadDir, id), payload, 0o600); err != nil {
+		t.Fatalf("write data file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(h.cfg.TusUploadDir, id+".info"), []byte(`{"ID":"`+id+`"}`), 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	return id
+}
+
+// completedUpload is the event tusd sends at pre-finish for a whole upload.
+func completedUpload(h *testHarness, id string, size int64) tusHookUpload {
+	return tusHookUpload{
+		ID:       id,
+		Size:     size,
+		Offset:   size,
+		MetaData: map[string]string{"filename": "a.jpg"},
+		Storage:  tusHookStorage{Type: "filestore", Path: filepath.Join(h.cfg.TusUploadDir, id)},
+	}
+}
+
+func postPreFinish(t *testing.T, h *testHarness, upload tusHookUpload) tusHookResponse {
+	t.Helper()
+	return postHook(t, h, tusHookRequest{Type: "pre-finish", Event: tusHookEvent{Upload: upload}})
+}
+
+// A pre-finish rejection cannot use RejectUpload: tusd honours that field only
+// at pre-create, and the bytes are already written by now. The only channel
+// left is an embedded response inside a 2xx envelope, and it must be a
+// retryable 503 — the upload is not wrong, it is merely not committed yet.
+func assertPreFinishRetryable(t *testing.T, resp tusHookResponse) {
+	t.Helper()
+	if resp.HTTPResponse == nil {
+		t.Fatalf("expected an embedded client response, got %+v", resp)
+	}
+	if resp.HTTPResponse.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 so the client retries", resp.HTTPResponse.StatusCode)
+	}
+	if resp.HTTPResponse.Header["Retry-After"] == "" {
+		t.Errorf("backpressure must carry Retry-After, got %+v", resp.HTTPResponse.Header)
+	}
+}
+
+func assertUploadJobStatus(t *testing.T, h *testHarness, uploadID string, want store.JobStatus) {
+	t.Helper()
+	job, err := h.store.GetUploadJob(context.Background(), uploadID)
+	if err != nil {
+		t.Fatalf("get upload job: %v", err)
+	}
+	if job == nil {
+		t.Fatalf("no upload job row for %s", uploadID)
+	}
+	if job.Status != want {
+		t.Errorf("status = %q, want %q", job.Status, want)
+	}
+}
+
+func assertSourceSurvives(t *testing.T, h *testHarness, uploadID string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(h.cfg.TusUploadDir, uploadID)); err != nil {
+		t.Errorf("the barrier must never remove the source: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(h.cfg.TusUploadDir, uploadID+".info")); err != nil {
+		t.Errorf("the barrier must never remove the sidecar: %v", err)
+	}
+}
+
+// The whole project exists because a 204 could be returned for bytes the
+// application had not committed. Succeeding here is what makes it truthful.
+func TestPreFinishCommitsBeforeAllowingCompletion(t *testing.T) {
+	h := newTestHarness(t)
+	payload := []byte("durable bytes")
+	id := admitUpload(t, h, payload)
+
+	resp := postPreFinish(t, h, completedUpload(h, id, int64(len(payload))))
+
+	if resp.HTTPResponse != nil {
+		t.Fatalf("a committed upload must not embed a client response: %+v", resp.HTTPResponse)
+	}
+	if resp.RejectUpload {
+		t.Error("pre-finish cannot reject an upload that is already written")
+	}
+	job, err := h.store.GetUploadJob(context.Background(), id)
+	if err != nil || job == nil {
+		t.Fatalf("get upload job: %v", err)
+	}
+	if job.Status != store.JobPending {
+		t.Fatalf("status = %q, want pending: success was reported without a commit", job.Status)
+	}
+	if job.SourceCompletedAt == nil {
+		t.Error("source_completed_at must be committed before the PATCH may succeed")
+	}
+	assertSourceSurvives(t, h, id)
+}
+
+func TestPreFinishRefusesToCommitAnUploadThatIsNotWhole(t *testing.T) {
+	cases := map[string]func(h *testHarness, id string, size int64) tusHookUpload{
+		"offset behind size": func(h *testHarness, id string, size int64) tusHookUpload {
+			up := completedUpload(h, id, size)
+			up.Offset = size - 1
+			return up
+		},
+		"unknown size": func(h *testHarness, id string, size int64) tusHookUpload {
+			up := completedUpload(h, id, size)
+			up.Size, up.Offset = 0, 0
+			return up
+		},
+		"source shorter than the admitted size": func(h *testHarness, id string, size int64) tusHookUpload {
+			if err := os.WriteFile(filepath.Join(h.cfg.TusUploadDir, id), []byte("x"), 0o600); err != nil {
+				panic(err)
+			}
+			return completedUpload(h, id, size)
+		},
+	}
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newTestHarness(t)
+			payload := []byte("durable bytes")
+			id := admitUpload(t, h, payload)
+
+			resp := postPreFinish(t, h, build(h, id, int64(len(payload))))
+
+			assertPreFinishRetryable(t, resp)
+			assertUploadJobStatus(t, h, id, store.JobUploading)
+			assertSourceSurvives(t, h, id)
+		})
+	}
+}
+
+// The hook payload is input. An id or storage path the app did not derive
+// itself must never be allowed to select which file the barrier commits.
+func TestPreFinishRefusesAnUploadItCannotIdentify(t *testing.T) {
+	cases := map[string]func(h *testHarness, id string, size int64) tusHookUpload{
+		"traversing upload id": func(h *testHarness, id string, size int64) tusHookUpload {
+			up := completedUpload(h, id, size)
+			up.ID = "../../etc/passwd"
+			up.Storage.Path = filepath.Join(h.cfg.TusUploadDir, "..", "..", "etc", "passwd")
+			return up
+		},
+		"empty upload id": func(h *testHarness, id string, size int64) tusHookUpload {
+			up := completedUpload(h, id, size)
+			up.ID = ""
+			return up
+		},
+		"storage path outside the upload directory": func(h *testHarness, id string, size int64) tusHookUpload {
+			up := completedUpload(h, id, size)
+			up.Storage.Path = filepath.Join(h.cfg.DataDir, "elsewhere", id)
+			return up
+		},
+		"foreign storage backend": func(h *testHarness, id string, size int64) tusHookUpload {
+			up := completedUpload(h, id, size)
+			up.Storage.Type = "s3store"
+			return up
+		},
+	}
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newTestHarness(t)
+			payload := []byte("durable bytes")
+			id := admitUpload(t, h, payload)
+
+			resp := postPreFinish(t, h, build(h, id, int64(len(payload))))
+
+			assertPreFinishRetryable(t, resp)
+			assertUploadJobStatus(t, h, id, store.JobUploading)
+			assertSourceSurvives(t, h, id)
+		})
+	}
+}
+
+// A cancelled upload fails the promotion closed. The client is told to retry
+// rather than told it succeeded, and nothing is deleted here either.
+func TestPreFinishDoesNotReportSuccessForACancelledUpload(t *testing.T) {
+	h := newTestHarness(t)
+	payload := []byte("durable bytes")
+	id := admitUpload(t, h, payload)
+	if err := h.store.RequestCancellation(context.Background(), id, store.NowMicros()); err != nil {
+		t.Fatalf("request cancellation: %v", err)
+	}
+
+	resp := postPreFinish(t, h, completedUpload(h, id, int64(len(payload))))
+
+	assertPreFinishRetryable(t, resp)
+	assertUploadJobStatus(t, h, id, store.JobUploading)
+	assertSourceSurvives(t, h, id)
+}
+
+// Readiness is backpressure, not a client error, and it must be relayed
+// through the embedded response rather than by failing the hook itself.
+func TestPreFinishIsRetryableWhileIngestIsUnavailable(t *testing.T) {
+	h := newTestHarness(t)
+	payload := []byte("durable bytes")
+	id := admitUpload(t, h, payload)
+	h.server.SetIngest(nil)
+
+	resp := postPreFinish(t, h, completedUpload(h, id, int64(len(payload))))
+
+	assertPreFinishRetryable(t, resp)
+	assertUploadJobStatus(t, h, id, store.JobUploading)
+	assertSourceSurvives(t, h, id)
+}
+
+// Defence in depth: the derived-path check alone cannot stop an escaping id,
+// because the path is derived from that same id. Only rejecting the id keeps
+// the barrier from fsyncing and publishing a file outside the upload
+// directory, so this asserts it against a row that already carries one.
+func TestPreFinishRefusesAnIdThatEscapesTheUploadDirectory(t *testing.T) {
+	h := newTestHarness(t)
+	payload := []byte("outside the upload directory")
+	escaping := "../escaped"
+	err := h.store.CreateUploadingJob(context.Background(), &store.UploadJob{
+		UploadID:         escaping,
+		MediaID:          "media-escaped",
+		OriginalFilename: "a.jpg",
+		ExpectedSize:     int64(len(payload)),
+	})
+	if err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(h.cfg.TusUploadDir, escaping), payload, 0o600); err != nil {
+		t.Fatalf("write file outside the upload dir: %v", err)
+	}
+
+	resp := postPreFinish(t, h, completedUpload(h, escaping, int64(len(payload))))
+
+	assertPreFinishRetryable(t, resp)
+	assertUploadJobStatus(t, h, escaping, store.JobUploading)
+}
+
+// safeUploadID is the guard that keeps a hook payload from selecting a path
+// outside the upload directory, so it is asserted directly: every other check
+// in the handler would mask a weakened predicate here.
+func TestSafeUploadIDAcceptsOnlyGeneratedIdentifiers(t *testing.T) {
+	valid := []string{"0123456789abcdef", "0123456789ABCDEF", "a-b_c", strings.Repeat("a", 128)}
+	for _, id := range valid {
+		if !safeUploadID(id) {
+			t.Errorf("safeUploadID(%q) = false, want true", id)
+		}
+	}
+	invalid := []string{"", "..", "../x", "a/b", `a\b`, "a.b", "a b", "abc%2f", "zz", strings.Repeat("a", 129)}
+	for _, id := range invalid {
+		if safeUploadID(id) {
+			t.Errorf("safeUploadID(%q) = true, want false", id)
+		}
 	}
 }
 
