@@ -19,6 +19,7 @@
 - **Abort if free space on `D:` falls below 50 GB.** Peak need ≈118 GB against 363 GB free.
 - All test filenames are prefixed `event-gallery-battle-`.
 - **A missed threshold is reported, not tuned away.** Worker counts are set once, up front, on calibration evidence.
+- **Commit before falsifying.** Where a step says to break the implementation and confirm a test fails, commit first. Reverting the mutation with `git checkout` on uncommitted work discards your own change too — that exact mistake landed a commit containing only a test earlier in this repo's history, leaving `main` red. Revert with the editor, or commit first and then `git checkout` is safe.
 - Target under test: `main@99e06d7`, Portainer stack `wedding-gallery`, project network `wedding-gallery_edge`.
 - Host paths: uploads `<data-dir>\uploads`, media `<data-dir>\media`, app data `<data-dir>\app`.
 
@@ -1189,8 +1190,12 @@ STAGES = {
     "smoke":              (3, 3, 6, 600.0, 0.0, 3),
     "calibrate-serial":   (92, 8, 100, 6000.0, 0.0, 1),
     "calibrate-parallel": (92, 8, 100, 6000.0, 0.0, 16),
-    "wedding":            (4600, 400, 120, 12.0, 0.15, 40),
-    "overload":           (900, 100, 120, 36.0, 0.15, 50),
+    # 60/min compresses a busy evening into ~83 minutes of arrivals. Slower
+    # would never build a backlog and so would prove nothing; the ceiling is
+    # what the overload and herd stages are for.
+    "wedding":            (4600, 400, 120, 60.0, 0.15, 40),
+    "overload":           (900, 100, 120, 180.0, 0.15, 50),
+    "herd":               (180, 20, 200, 1.0, 0.0, 50),
     "tunnel":             (280, 20, 30, 20.0, 0.15, 8),
 }
 
@@ -1219,8 +1224,9 @@ def main() -> int:
 
     assets = corpus.build_assets(Path(args.assets))
     payloads = corpus.make_payloads(assets, photos, videos, seed=1234)
-    schedule = arrivals.poisson_schedule(len(payloads), rate, seed=1234,
-                                         cluster_fraction=cluster)
+    schedule = (arrivals.herd_schedule(len(payloads)) if args.stage == "herd"
+                else arrivals.poisson_schedule(len(payloads), rate, seed=1234,
+                                               cluster_fraction=cluster))
 
     started = time.monotonic()
     landed: dict[str, tuple] = {}
@@ -1652,7 +1658,15 @@ Expected: no line, or `pending: 0`. The summary line is suppressed when nothing 
 
 Run: `pwsh loadtest/run_wedding.ps1 -Stage overload`
 
-1,000 items at 3× the Stage 2 arrival rate, followed by a 200-item herd with `herd_schedule`.
+1,000 items at 3x the Stage 2 arrival rate (180/min against 60/min).
+
+Then the thundering herd, as a separate stage so its schedule is unambiguous:
+
+Run: `pwsh loadtest/run_wedding.ps1 -Stage herd`
+
+200 items released simultaneously via `herd_schedule`. This is the shape that
+saturates `UPLOAD_DURABILITY_WORKERS` and drives the 503 path the completion
+fence exists to survive.
 
 - [ ] **Step 3: Assert overload behaviour**
 
