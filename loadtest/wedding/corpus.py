@@ -104,10 +104,11 @@ PHOTO_SIZE = "4000x3000"
 VIDEO_SECONDS = 60
 VIDEO_TARGET_BYTES = 200 * 1024 * 1024
 
+# -q:v is per-encoder: mjpeg reads 1-31 (1 = best), libwebp reads 0-100 (100 = best).
 _PHOTO_VARIANTS = [
-    ("photo-jpeg", "image/jpeg", "mjpeg", ".jpg"),
-    ("photo-png", "image/png", "png", ".png"),
-    ("photo-webp", "image/webp", "libwebp", ".webp"),
+    ("photo-jpeg", "image/jpeg", "mjpeg", ".jpg", "1"),
+    ("photo-png", "image/png", "png", ".png", "1"),
+    ("photo-webp", "image/webp", "libwebp", ".webp", "90"),
 ]
 _VIDEO_VARIANTS = [
     ("video-mp4", "video/mp4", ".mp4"),
@@ -125,7 +126,7 @@ def build_assets(
     assets_dir.mkdir(parents=True, exist_ok=True)
     out: list[Asset] = []
 
-    for name, mime, encoder, ext in _PHOTO_VARIANTS:
+    for name, mime, encoder, ext, quality in _PHOTO_VARIANTS:
         path = assets_dir / f"{name}{ext}"
         if not path.exists():
             # testsrc2 plus heavy noise defeats compression, so the file reaches
@@ -133,7 +134,7 @@ def build_assets(
             _run([
                 "ffmpeg", "-y", "-v", "error",
                 "-f", "lavfi", "-i", f"testsrc2=s={photo_size},noise=alls=90:allf=t+u",
-                "-frames:v", "1", "-c:v", encoder, "-q:v", "1", str(path),
+                "-frames:v", "1", "-c:v", encoder, "-q:v", quality, str(path),
             ])
         out.append(Asset(name=name, path=path, mime=mime, kind="image"))
 
