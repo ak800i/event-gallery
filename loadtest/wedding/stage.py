@@ -11,6 +11,7 @@ import http.client
 import json
 import time
 import urllib.error
+import zlib
 from pathlib import Path
 
 from . import arrivals, corpus, observe, oracle, runner, tusclient
@@ -70,7 +71,13 @@ def main() -> int:
     free_before = observe.disk_free_bytes(upload_dir)
 
     assets = corpus.build_assets(Path(args.assets))
-    payloads = corpus.make_payloads(assets, photos, videos, seed=1234)
+    # Seed the corpus per stage. A shared seed makes every stage redraw the same
+    # markers, so a later stage re-uploads an earlier one's exact bytes and the
+    # server correctly dedupes them -- skipping the copy and the derivation the
+    # measurement is trying to time. Observed live: calibrate-serial reported 3
+    # duplicates because its first three photos were smoke's.
+    corpus_seed = 1234 + (zlib.crc32(args.stage.encode()) & 0xFFFF)
+    payloads = corpus.make_payloads(assets, photos, videos, seed=corpus_seed)
     schedule = (arrivals.herd_schedule(len(payloads)) if args.stage == "herd"
                 else arrivals.poisson_schedule(len(payloads), rate, seed=1234,
                                                cluster_fraction=cluster))
