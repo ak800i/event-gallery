@@ -14,9 +14,16 @@ $repo    = Split-Path -Parent $PSScriptRoot
 $results = Join-Path $repo 'loadtest\results'
 New-Item -ItemType Directory -Force -Path $results | Out-Null
 
-# Anything that throws below leaves this untouched, so a stage that never ran
-# reports failure rather than exiting 0 on an unset variable.
+# Belt and braces. A `throw` below never reaches `exit $code` -- the finally
+# runs and the script terminates with 1 on its own -- but a future edit that
+# returns early would otherwise exit on an unset variable, which is 0.
 $code = 1
+
+# A stale results\<Stage>.json from an earlier campaign is worse than none: if
+# this run dies before overwriting it, finalize reads the old one and can print
+# `passed: true` for a stage that never ran.
+Remove-Item -Path (Join-Path $results "$Stage.json"), (Join-Path $results "$Stage-uploads.json") `
+    -ErrorAction SilentlyContinue
 
 Push-Location $repo   # `python -m loadtest.wedding.*` resolves from the repo root
 try {
@@ -30,6 +37,10 @@ if ($LASTEXITCODE -ne 0) { throw "asset generation failed ($LASTEXITCODE)" }
 $since = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 
 Write-Host "==> running stage $Stage"
+# pwsh 7 leaves $PSNativeCommandUseErrorActionPreference off by default, so a
+# native command that exits non-zero does not throw even under
+# ErrorActionPreference = 'Stop'. Without this check a crashed stage falls
+# straight through to finalize, which then judges whatever JSON is on disk.
 docker run --rm `
     --network $Network `
     -e PYTHONUNBUFFERED=1 `

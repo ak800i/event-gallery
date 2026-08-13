@@ -22,8 +22,17 @@ def main() -> int:
     report_path = Path(args.report)
     # Explicit UTF-8: the report and log are written by a Linux container and
     # read back on a Windows host, whose default text encoding is not UTF-8.
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    lines = Path(args.logs).read_text(encoding="utf-8", errors="replace").splitlines()
+    # `-sig` because Windows PowerShell 5.1's `Set-Content -Encoding utf8`
+    # prepends a BOM, which would otherwise take the first line with it.
+    report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+    lines = Path(args.logs).read_text(encoding="utf-8-sig", errors="replace").splitlines()
+
+    # Criterion 5 is satisfied by an absence, so the authoritative verdict will
+    # not certify it for a stage that never watched the upload directory. An
+    # older report, or one from a stage that skipped the probe, fails closed.
+    report.setdefault("source_observation", {
+        "samples": 0, "max_seen": 0, "observed": False, "errors": 0,
+        "error": "the stage recorded no observation of the tus upload directory"})
 
     report["log_levels"] = observe.count_levels(lines)
     # count_levels answers {} for output it cannot parse, and an empty ERROR
@@ -49,6 +58,7 @@ def main() -> int:
         "warnings": report["log_levels"].get("WARN", 0),
         "log_lines": report["log_lines"],
         "log_trustworthy": log_evidence_ok(report),
+        "tus_sources_observed": report["source_observation"]["max_seen"],
         "suspect_queue_gaps": report["queue_summary"]["suspect_gaps_seconds"],
         "aborted": report.get("aborted", ""),
     }, indent=2))

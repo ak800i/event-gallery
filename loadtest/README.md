@@ -127,6 +127,22 @@ counts as verified only when all five criteria hold:
 Criterion 5 is the one that would have caught the incident. Any single failure
 fails the whole stage.
 
+### Proving criterion 5 was watching something
+
+`source_gone` is satisfied by an *absence*, so an `--upload-dir` pointed at the
+wrong host directory — one that exists but is not the app's tus data dir —
+reports every item clean and proves nothing. While uploads are in flight the
+harness therefore samples that directory four times a second and counts tusd
+`.info` sidecars, reporting the result as `source_observation`. A stage that
+never saw a single source cannot pass: the criterion is unverifiable, and an
+unverifiable criterion has not been met.
+
+It cannot false-fail a run that legitimately cleaned up between samples, because
+`max_seen` latches — one sighting anywhere in the phase is enough, and sampling
+stops when the last upload returns, not after the queue drains. `finalize` fills
+in a *failing* observation when the report carries none, so skipping the probe
+fails closed rather than silently reverting to the old behaviour.
+
 ### Running a stage
 
 ```powershell
@@ -192,6 +208,15 @@ the report records the abort and fails.
   over leaves the zero-ERROR criterion green while blanking the curve.
 - `by_type` reports published counts and thumbnail coverage per MIME type. A
   published item with no thumbnail is a reported finding, not a failure.
+- `timings.to_published_*` measure upload finish → first *observed* terminal
+  state. Observation costs up to one 10 s poll interval plus one sweep of the
+  batched status endpoint, so these are upper bounds, never optimistic ones.
+- `source_observation` is the criterion-5 evidence above. `gallery_unavailable`
+  is non-empty when the gallery listing could not be read at all, in which case
+  every item fails criterion 4 rather than the run being thrown away.
+- `<stage>-uploads.json` is written the moment the upload phase ends, before the
+  much longer verification pass. If verification dies, the upload evidence —
+  backpressure, 5xx, arrival lag, source observation — survives.
 
 ### Tests
 

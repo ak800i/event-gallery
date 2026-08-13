@@ -15,12 +15,14 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from .runner import retry_after_seconds
+from .backoff import retry_after_seconds
 
 # A connection reset, DNS blip or read timeout, recorded as a status so it is
 # retried like any other transient refusal instead of unwinding the pool.
 TRANSPORT_ERROR = 0
 
+# 410 Gone is deliberately absent: the completion fence answers it for a
+# deterministic final refusal, so retrying could only ever fail again.
 RETRYABLE = {TRANSPORT_ERROR, 408, 409, 423, 425, 429, 500, 502, 503, 504}
 BACKPRESSURE = {429, 503}
 
@@ -87,11 +89,17 @@ def upload(base_url: str, payload, chunk_bytes: int, max_retries: int = 5) -> At
         return attempt
 
     offset = 0
-    for block in _blocks(payload, chunk_bytes):
-        moved = _patch(base_url, attempt, offset, block, max_retries)
-        if moved == offset:
-            break
-        offset = moved
+    try:
+        for block in _blocks(payload, chunk_bytes):
+            moved = _patch(base_url, attempt, offset, block, max_retries)
+            if moved == offset:
+                break
+            offset = moved
+    except OSError as exc:
+        # payload.chunks() reads the base asset from disk, and it is consumed
+        # here rather than inside _request, so nothing else catches this. One
+        # unreadable asset must cost one item, not the worker and the pool.
+        attempt.error = f"reading {payload.filename}: {type(exc).__name__}: {exc}"
 
     attempt.transport_seconds = time.monotonic() - started
     if offset != payload.size and not attempt.error:
@@ -157,8 +165,16 @@ def _because(note: str) -> str:
     return f" ({note})" if note else ""
 
 
+def _int_or(raw, fallback: int) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _patch(base_url: str, attempt: Attempt, offset: int, body: bytes, max_retries: int) -> int:
     note = ""
+    expected = offset + len(body)
     for i in range(max_retries):
         status, headers, _, note = _request(
             "PATCH", f"{base_url}/api/tus/{attempt.upload_id}", {
@@ -168,7 +184,16 @@ def _patch(base_url: str, attempt: Attempt, offset: int, body: bytes, max_retrie
             }, body=body)
         attempt.statuses.append(status)
         if status == 204:
-            return int(headers.get("upload-offset", offset + len(body)))
+            # Same divergence guard as the HEAD branch below. An acknowledged
+            # offset that is not exactly what we sent desynchronizes _blocks'
+            # sequential cursor, and every following block lands in the wrong
+            # place -- caught downstream by the digest, but only after 5000
+            # uploads have been written wrong.
+            moved = _int_or(headers.get("upload-offset"), expected)
+            if moved != expected:
+                attempt.error = f"offset diverged: server {moved}, client {expected}"
+                return offset
+            return expected
         if status not in RETRYABLE:
             attempt.error = f"PATCH returned {status}"
             return offset
@@ -180,7 +205,7 @@ def _patch(base_url: str, attempt: Attempt, offset: int, body: bytes, max_retrie
         # 409 until the retries ran out -- a false transport failure on an
         # upload the server has.
         durable = _head_offset(base_url, attempt.upload_id)
-        if durable == offset + len(body):
+        if durable == expected:
             return durable
         if durable is not None and durable != offset:
             attempt.error = f"offset diverged: server {durable}, client {offset}"

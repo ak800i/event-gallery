@@ -7,6 +7,7 @@ app's logs itself. The `passed` value it prints is therefore provisional.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import time
 import urllib.error
@@ -40,6 +41,15 @@ POLL_SECONDS = 10.0
 # non-terminal.
 WAIT_TERMINAL = oracle.TERMINAL_STATES | {"unknown"}
 
+# What a streaming HTTP read actually raises. http.client.IncompleteRead -- a
+# truncated body, the likeliest fault in a 134 GB verification pass -- is an
+# HTTPException, which is neither OSError nor URLError, so catching only those
+# two lets it escape and destroy the report after the expensive part.
+NETWORK_ERRORS = (urllib.error.URLError, OSError, http.client.HTTPException)
+
+# How often the upload directory is sampled while uploads are in flight.
+SOURCE_SAMPLE_SECONDS = 0.25
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -70,23 +80,53 @@ def main() -> int:
 
     landed: dict[str, tuple] = {}
     lags: list[float] = []
-    for ran in runner.run_schedule(schedule, concurrency, do_upload, guard=guard):
-        payload = payloads[ran.index]
-        attempt = ran.result if ran.result is not None else tusclient.skipped(ran.skipped)
-        key = attempt.upload_id or f"nocreate-{payload.filename}"
-        landed[key] = (payload, attempt, ran.finished_at)
-        if not ran.skipped:
-            lags.append(ran.lag)
+    # Criterion 5 passes on an absence, so the upload directory has to be
+    # watched while there is something in it to see. Sampling stops with the
+    # upload phase: afterwards the app is meant to have emptied it.
+    watch = runner.SourceWatch(lambda: observe.count_tus_sources(upload_dir),
+                               interval=SOURCE_SAMPLE_SECONDS)
+    with watch:
+        for ran in runner.run_schedule(schedule, concurrency, do_upload, guard=guard):
+            payload = payloads[ran.index]
+            attempt = ran.result if ran.result is not None else tusclient.skipped(ran.skipped)
+            key = attempt.upload_id or f"nocreate-{payload.filename}"
+            landed[key] = (payload, attempt, ran.finished_at)
+            if not ran.skipped:
+                lags.append(ran.lag)
+    sources = watch.snapshot()
+
+    arrival_lag = {"p50": runner.percentile(lags, 0.50),
+                   "p95": runner.percentile(lags, 0.95),
+                   "max": round(max(lags), 3) if lags else 0.0}
+    transport_errors = sum(
+        1 for _, attempt, _ in landed.values()
+        for status in attempt.statuses if status == tusclient.TRANSPORT_ERROR)
+    # Everything the upload phase paid for, on disk before the verification pass
+    # starts. Verification re-reads 134 GB over the network and takes longer than
+    # the uploads did; a fault there must not erase what the uploads established.
+    runner.write_report({
+        "stage": args.stage,
+        "phase": "uploads",
+        "aborted": guard.tripped,
+        "created": len(live_ids(landed)),
+        "attempted": len(landed),
+        "backpressure": _backpressure(landed),
+        "unexpected_5xx": _unexpected_5xx(landed),
+        "transport_errors": transport_errors,
+        "arrival_lag": arrival_lag,
+        "source_observation": sources,
+        "disk": {"free_before": free_before},
+    }, Path(args.out) / f"{args.stage}-uploads.json")
 
     last_upload_at = max((f for _, _, f in landed.values()), default=time.monotonic())
-    live = [k for k, (_, a, _) in landed.items() if a.upload_id]
+    live = live_ids(landed)
     paced: dict[str, int] = {}
     problems: dict[str, int] = {}
     states, terminal_at = _await_terminal(args.base_url, live, args.deadline, paced, problems)
     drain_seconds = time.monotonic() - last_upload_at
 
-    verdicts, to_published = _verify(args.base_url, upload_dir, landed, states,
-                                     terminal_at, paced)
+    verdicts, to_published, gallery_error = _verify(
+        args.base_url, upload_dir, landed, states, terminal_at, paced)
 
     report = runner.summarize(
         args.stage, verdicts,
@@ -98,31 +138,41 @@ def main() -> int:
         to_published=to_published,
         drain_seconds=round(drain_seconds, 1),
         aborted=guard.tripped,
+        source_observation=sources,
     )
     report["by_type"] = _by_type(landed, states, media_dir)
     report["verification_backpressure"] = paced
     report["poll_problems"] = problems
+    report["gallery_unavailable"] = gallery_error
     # Concurrency is a ceiling on offered load, not a target. Lag near zero means
     # the schedule set the pace; lag that grows means the pool did.
-    report["arrival_lag"] = {
-        "p50": runner.percentile(lags, 0.50),
-        "p95": runner.percentile(lags, 0.95),
-        "max": round(max(lags), 3) if lags else 0.0,
-    }
-    report["transport_errors"] = sum(
-        1 for _, attempt, _ in landed.values()
-        for status in attempt.statuses if status == tusclient.TRANSPORT_ERROR)
+    report["arrival_lag"] = arrival_lag
+    report["transport_errors"] = transport_errors
     report["provisional"] = True
     runner.write_report(report, Path(args.out) / f"{args.stage}.json")
     print(json.dumps({k: report[k] for k in
-                      ("stage", "items", "drain_seconds", "backpressure", "aborted")}, indent=2))
+                      ("stage", "items", "drain_seconds", "backpressure", "aborted",
+                       "source_observation")}, indent=2))
     return 0
+
+
+def live_ids(landed) -> list[str]:
+    return [key for key, (_p, attempt, _f) in landed.items() if attempt.upload_id]
 
 
 def _count(paced: dict[str, int]):
     def note(status: int) -> None:
         paced[str(status)] = paced.get(str(status), 0) + 1
     return note
+
+
+def _discard(exc: BaseException) -> None:
+    """An HTTPError wraps a live response. Dropping one without closing it holds
+    the connection until the collector notices, and a verification pass across
+    thousands of items discards a lot of them."""
+    closer = getattr(exc, "close", None)
+    if closer is not None:
+        closer()
 
 
 def _await_terminal(base_url: str, upload_ids: list[str], deadline: float,
@@ -133,6 +183,11 @@ def _await_terminal(base_url: str, upload_ids: list[str], deadline: float,
     Returns the last state seen for each id and when each first went terminal,
     which is the only honest measure of publication latency available: reading
     the clock during the verification pass instead would time the verifier.
+
+    It carries a systematic positive bias: an item is recorded as terminal at
+    the poll that observed it, so up to POLL_SECONDS plus one full sweep of
+    50-id batches later than it really became terminal. Publication latency is
+    therefore an upper bound, never an optimistic one.
     """
     states: dict[str, dict] = {}
     terminal_at: dict[str, float] = {}
@@ -170,16 +225,24 @@ def _await_terminal(base_url: str, upload_ids: list[str], deadline: float,
 def _verify(base_url, upload_dir, landed, states, terminal_at, paced):
     """Judge every landed item against the five criteria.
 
-    A gallery listing that fails for anything but backpressure is left to
-    propagate. Without the listing every item's `gallery_ok` would be wrong, and
-    losing the run is better than publishing a report that says five thousand
-    items are missing from a gallery nobody managed to read.
+    A gallery listing that fails for anything but backpressure fails criterion 4
+    for every item and is recorded as the reason. That fails the stage, which is
+    honest -- nobody read the gallery, so nothing is verified -- while keeping
+    the hour of uploads the run has already paid for. Letting it propagate would
+    have thrown the evidence away as well.
     """
-    gallery = runner.call_with_backpressure(
-        # Pagination restarts from the first page on a retry. The listing is an
-        # idempotent read and the public budget is 12000/min, so paying for a
-        # repeat is cheaper than carrying a half-read gallery into the verdict.
-        lambda: oracle.gallery_filenames(base_url), on_backpressure=_count(paced))
+    gallery: set[str] = set()
+    gallery_error = ""
+    try:
+        gallery = runner.call_with_backpressure(
+            # Pagination restarts from the first page on a retry. The listing is
+            # an idempotent read and the public budget is 12000/min, so paying
+            # for a repeat is cheaper than carrying a half-read gallery into the
+            # verdict.
+            lambda: oracle.gallery_filenames(base_url), on_backpressure=_count(paced))
+    except NETWORK_ERRORS + (json.JSONDecodeError,) as exc:
+        gallery_error = f"{type(exc).__name__}: {exc}"
+        _discard(exc)
     verdicts, to_published = [], []
     for key, (payload, attempt, finished_at) in landed.items():
         info = states.get(key, {"state": "unknown"})
@@ -198,20 +261,23 @@ def _verify(base_url, upload_dir, landed, states, terminal_at, paced):
         ))
         if published_ok and key in terminal_at:
             to_published.append(terminal_at[key] - finished_at)
-    return verdicts, to_published
+    return verdicts, to_published, gallery_error
 
 
 def _digest_ok(base_url: str, media_id: str, expected_sha: str, paced: dict[str, int]) -> bool:
     """A 404 here is this item's verdict, not backpressure: the server said it
     published this media and the download does not have it. HTTPError subclasses
-    URLError, so the catch below deliberately covers both -- either way it fails
+    URLError, so that arrives in the catch below along with every connection
+    fault and, crucially, http.client.IncompleteRead -- a truncated body on a
+    200 MB video, which is neither an OSError nor a URLError. Any of them fails
     this item and leaves the rest of the campaign to finish reporting."""
     try:
         ok, _ = runner.call_with_backpressure(
             lambda: oracle.verify_download(base_url, media_id, expected_sha),
             on_backpressure=_count(paced))
         return ok
-    except (urllib.error.URLError, OSError):
+    except NETWORK_ERRORS as exc:
+        _discard(exc)
         return False
 
 

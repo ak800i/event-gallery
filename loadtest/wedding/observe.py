@@ -55,6 +55,22 @@ def disk_free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
 
 
+def count_tus_sources(upload_dir: Path) -> int:
+    """How many tus uploads the directory holds right now, counted by sidecar.
+
+    tusd's filestore writes `<id>` and `<id>.info` together at create, and the
+    sidecar is what makes a directory recognisably the tus data dir rather than
+    any other non-empty path someone bind-mounted by mistake. Errors count as
+    zero: this runs on a sampling thread beside the uploads, and raising would
+    end the upload phase instead of recording that nothing could be seen.
+    """
+    try:
+        return sum(1 for entry in Path(upload_dir).iterdir()
+                   if entry.name.endswith(".info"))
+    except OSError:
+        return 0
+
+
 def thumbnail_exists(media_dir: Path, media_id: str) -> bool:
     """A published item with no thumbnail is a reported finding, not a failure."""
     thumbs = Path(media_dir) / THUMBNAILS_DIRNAME

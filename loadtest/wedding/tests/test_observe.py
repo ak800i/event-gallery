@@ -6,6 +6,7 @@ from pathlib import Path
 
 from loadtest.wedding.observe import (
     count_levels,
+    count_tus_sources,
     disk_free_bytes,
     parse_queue_samples,
     thumbnail_exists,
@@ -102,6 +103,23 @@ class TestObserve(unittest.TestCase):
         self.assertFalse(thumbnail_exists(tmp, "m1"))  # no thumbnails dir yet
         (tmp / "thumbnails").mkdir()
         self.assertFalse(thumbnail_exists(tmp, "m1"))
+
+    def test_tus_sources_are_counted_by_their_sidecars(self):
+        # tusd's filestore writes <id> and <id>.info together at create, and the
+        # sidecar is what makes the directory recognisably a tus data dir rather
+        # than any other non-empty path someone bind-mounted by mistake.
+        tmp = Path(tempfile.mkdtemp())
+        self.assertEqual(count_tus_sources(tmp), 0)
+        (tmp / "abc123").write_bytes(b"x")
+        self.assertEqual(count_tus_sources(tmp), 0, "a bare file is not evidence")
+        (tmp / "abc123.info").write_bytes(b"{}")
+        (tmp / "def456.info").write_bytes(b"{}")
+        self.assertEqual(count_tus_sources(tmp), 2)
+
+    def test_a_missing_upload_directory_counts_zero_rather_than_raising(self):
+        # The count runs on a sampling thread during the upload phase; a probe
+        # that raised would end the phase instead of recording the absence.
+        self.assertEqual(count_tus_sources(Path(tempfile.mkdtemp()) / "nope"), 0)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .backoff import retry_after_seconds
 from .oracle import ItemVerdict
 
 # Documented backpressure. /api/uploads/status answers 503 + Retry-After behind
@@ -19,9 +20,6 @@ from .oracle import ItemVerdict
 # another and answer 429 + Retry-After. The tus proxy also answers 429, without
 # a Retry-After, which is why every caller needs a backoff fallback too.
 BACKPRESSURE_STATUSES = (429, 503)
-
-# A Retry-After is a hint from the server, not an instruction to park the run.
-MAX_RETRY_AFTER_SECONDS = 120.0
 
 # A zero-ERROR verdict is only worth anything if the log actually parsed.
 LOG_PARSE_FLOOR = 0.95
@@ -34,10 +32,13 @@ QUEUE_GAP_FACTOR = 3.0
 class DiskGuard:
     """Peak need is ~118 GB against 363 GB free; this stops a runaway stage.
 
-    Latching: once tripped, every later check refuses without probing. Workers
-    are expected to consult ``tripped`` and return rather than raise, because a
-    pool that unwinds through an exception still runs whatever it has already
-    queued -- which is precisely the load the guard exists to stop.
+    Latching: once tripped, every later check refuses without probing, and
+    workers are expected to consult ``tripped`` and return rather than raise.
+    Not because raising would fail to stop the pool -- ThreadPoolExecutor.map
+    cancels its pending futures from a generator ``finally`` while the exception
+    unwinds, so it halts within roughly ``concurrency`` more items -- but
+    because that exception propagates out of main() and takes the entire report
+    with it, leaving no verdict at all and no record that the stage aborted.
     """
     min_free_bytes: int
     probe: Callable[[], int]
@@ -60,6 +61,67 @@ class DiskGuard:
             with self._lock:
                 self._tripped = self._tripped or reason
             raise RuntimeError(reason)
+
+
+class SourceWatch:
+    """Evidence that ``--upload-dir`` really is the app's tus data directory.
+
+    Criterion 5 is satisfied by an *absence*, so a directory that never held a
+    source -- the wrong bind mount, or the right path on the wrong host --
+    reports every item as clean and the campaign proves nothing. Sampling while
+    uploads are in flight is what turns that assumption into an observation.
+
+    ``max_seen`` latches, so an upload that completes and is cleaned up between
+    two samples cannot erase evidence an earlier sample already recorded. Only a
+    phase in which no sample ever saw a source counts as unverified.
+    """
+
+    def __init__(self, probe: Callable[[], int], interval: float = 0.25):
+        self._probe = probe
+        self._interval = interval
+        self._lock = threading.Lock()
+        self._samples = 0
+        self._max_seen = 0
+        self._errors = 0
+        self._error = ""
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def sample(self) -> None:
+        try:
+            seen = self._probe()
+        except OSError as exc:
+            with self._lock:
+                self._errors += 1
+                self._error = f"{type(exc).__name__}: {exc}"
+            return
+        with self._lock:
+            self._samples += 1
+            self._max_seen = max(self._max_seen, seen)
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"samples": self._samples, "max_seen": self._max_seen,
+                    "observed": self._max_seen > 0, "errors": self._errors,
+                    "error": self._error}
+
+    def __enter__(self) -> "SourceWatch":
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, name="source-watch", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._interval * 10 + 5.0)
+            self._thread = None
+
+    def _loop(self) -> None:
+        while True:
+            self.sample()
+            if self._stop.wait(self._interval):
+                return
 
 
 @dataclass
@@ -118,27 +180,6 @@ def run_schedule(schedule: list[float], concurrency: int, work: Callable[[int], 
         return list(pool.map(run_one, range(len(schedule))))
 
 
-def retry_after_seconds(headers, fallback: float) -> float:
-    """Seconds to wait per Retry-After, else ``fallback``.
-
-    This server always sends an integer count; the HTTP-date form is legal but
-    unparseable here and falls back, which is the safe direction.
-    """
-    raw = ""
-    if headers is not None:
-        try:
-            raw = headers.get("Retry-After") or ""
-        except AttributeError:
-            raw = ""
-    try:
-        wait = float(str(raw).strip())
-    except (TypeError, ValueError):
-        wait = fallback
-    if not wait >= 0:  # also catches NaN
-        wait = fallback
-    return min(max(float(wait), 0.0), MAX_RETRY_AFTER_SECONDS)
-
-
 def call_with_backpressure(fn: Callable[[], object], *, attempts: int = 8,
                            sleep: Callable[[float], None] = time.sleep,
                            on_backpressure: Callable[[int], None] | None = None):
@@ -169,7 +210,8 @@ def call_with_backpressure(fn: Callable[[], object], *, attempts: int = 8,
             if i == attempts - 1:
                 break
             sleep(retry_after_seconds(getattr(exc, "headers", None), min(2.0 ** i, 30.0)))
-    assert last is not None
+    if last is None:  # unreachable: attempts >= 1, and a non-backpressure status raises
+        raise RuntimeError("call_with_backpressure made no attempt")
     raise last
 
 
@@ -241,6 +283,20 @@ def log_evidence_ok(report: dict) -> bool:
     return total > 0 and logs.get("parsed", 0) >= total * LOG_PARSE_FLOOR
 
 
+def source_evidence_ok(report: dict) -> bool:
+    """Whether criterion 5's verdict in this report was actually observed.
+
+    `source_gone` is true when nothing is there, so an upload directory that
+    never held a tus source passes every item without proving anything. A
+    report with no `source_observation` at all has not reached finalize yet and
+    is provisional; finalize fills in a failing one rather than trusting it.
+    """
+    probe = report.get("source_observation")
+    if probe is None:
+        return True
+    return bool(probe.get("observed"))
+
+
 def decide_passed(report: dict) -> bool:
     """The single definition of a passing stage. Both summarize and finalize
     use it, so the provisional and authoritative verdicts cannot diverge."""
@@ -250,13 +306,15 @@ def decide_passed(report: dict) -> bool:
             and report["log_levels"].get("ERROR", 0) == 0
             and report["items"]["total"] > 0
             and report["items"]["verified"] == report["items"]["total"]
-            and log_evidence_ok(report))
+            and log_evidence_ok(report)
+            and source_evidence_ok(report))
 
 
 def summarize(stage: str, verdicts: list[ItemVerdict], backpressure: dict[str, int],
               unexpected_5xx: int, levels: dict[str, int], queue: list,
               disk: tuple[int, int], to_published: list[float] | None = None,
-              drain_seconds: float | None = None, aborted: str = "") -> dict:
+              drain_seconds: float | None = None, aborted: str = "",
+              source_observation: dict | None = None) -> dict:
     to_published = to_published or []
     verified = [v for v in verdicts if v.ok]
     failures = [
@@ -289,6 +347,8 @@ def summarize(stage: str, verdicts: list[ItemVerdict], backpressure: dict[str, i
         "queue_samples": [{"time": q.time, **q.fields} for q in queue],
         "disk": {"free_before": disk[0], "free_after": disk[1]},
     }
+    if source_observation is not None:
+        report["source_observation"] = source_observation
     report["passed"] = decide_passed(report)
     return report
 

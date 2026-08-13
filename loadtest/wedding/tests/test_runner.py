@@ -1,4 +1,6 @@
+import base64
 import contextlib
+import http.client
 import io
 import json
 import socket
@@ -11,12 +13,17 @@ import urllib.error
 from pathlib import Path
 from unittest import mock
 
-from loadtest.wedding import finalize, runner, stage, tusclient
+from loadtest.wedding import backoff, finalize, runner, stage, tusclient
+from loadtest.wedding.backoff import retry_after_seconds
 from loadtest.wedding.observe import QueueSample
 from loadtest.wedding.oracle import ItemVerdict
-from loadtest.wedding.runner import (DiskGuard, call_with_backpressure, decide_passed,
-                                     log_evidence_ok, retry_after_seconds, run_schedule,
+from loadtest.wedding.runner import (DiskGuard, SourceWatch, call_with_backpressure,
+                                     decide_passed, log_evidence_ok, run_schedule,
                                      summarize, summarize_queue)
+
+# What stage.py hands summarize once it has watched the tus upload directory
+# during the upload phase and seen sources come and go.
+SOURCES_SEEN = {"samples": 40, "max_seen": 7, "observed": True, "errors": 0, "error": ""}
 
 
 def _v(ok=True, **over):
@@ -55,6 +62,59 @@ class TestDiskGuard(unittest.TestCase):
             g.check()
 
 
+class TestSourceWatch(unittest.TestCase):
+    """Criterion 5 is satisfied by an absence, so a directory that never held a
+    tus source -- a wrong bind mount above all -- reports every item clean. The
+    watch is what turns "the sources are gone" into something observed."""
+
+    def test_a_directory_that_never_holds_a_source_proves_nothing(self):
+        watch = SourceWatch(lambda: 0)
+        for _ in range(3):
+            watch.sample()
+        snap = watch.snapshot()
+        self.assertEqual(snap["samples"], 3)
+        self.assertFalse(snap["observed"])
+
+    def test_a_source_seen_once_stays_observed_after_it_is_cleaned_up(self):
+        readings = iter([0, 4, 0])
+        watch = SourceWatch(lambda: next(readings))
+        for _ in range(3):
+            watch.sample()
+        snap = watch.snapshot()
+        self.assertTrue(snap["observed"], "uploads that complete and are cleaned up "
+                                          "between samples must not erase the evidence")
+        self.assertEqual(snap["max_seen"], 4)
+
+    def test_a_directory_it_cannot_read_is_recorded_and_still_proves_nothing(self):
+        def probe():
+            raise PermissionError(13, "Permission denied")
+
+        watch = SourceWatch(probe)
+        watch.sample()
+        snap = watch.snapshot()
+        self.assertEqual(snap["samples"], 0)
+        self.assertEqual(snap["errors"], 1)
+        self.assertFalse(snap["observed"])
+        self.assertIn("PermissionError", snap["error"])
+
+    def test_it_samples_for_the_upload_phase_and_not_past_it(self):
+        calls = []
+
+        def probe():
+            calls.append(1)
+            return 1
+
+        watch = SourceWatch(probe, interval=0.01)
+        with watch:
+            time.sleep(0.15)
+        stopped_at = len(calls)
+        self.assertGreater(stopped_at, 1)
+        self.assertTrue(watch.snapshot()["observed"])
+        time.sleep(0.05)
+        self.assertEqual(len(calls), stopped_at,
+                         "the watch must not outlive the upload phase")
+
+
 class TestSummary(unittest.TestCase):
     def test_a_single_failed_item_fails_the_stage(self):
         report = summarize("s", [_v(), _v(ok=False)], backpressure={}, unexpected_5xx=0,
@@ -88,6 +148,21 @@ class TestSummary(unittest.TestCase):
                            levels={"ERROR": 0}, queue=[], disk=(1, 1),
                            aborted="aborting: 1.0 GB free is below the 50.0 GB floor")
         self.assertFalse(report["passed"])
+
+    def test_a_stage_that_never_saw_a_tus_source_cannot_pass(self):
+        # Every source_gone here is true because the directory was empty all
+        # along -- the wrong-bind-mount case. Nothing was proven, so nothing passes.
+        report = summarize("s", [_v()], backpressure={}, unexpected_5xx=0,
+                           levels={"ERROR": 0}, queue=[], disk=(1, 1),
+                           source_observation={"samples": 40, "max_seen": 0,
+                                               "observed": False, "errors": 0, "error": ""})
+        self.assertFalse(report["passed"])
+
+    def test_having_watched_sources_come_and_go_leaves_the_stage_passing(self):
+        report = summarize("s", [_v()], backpressure={}, unexpected_5xx=0,
+                           levels={"ERROR": 0}, queue=[], disk=(1, 1),
+                           source_observation=SOURCES_SEEN)
+        self.assertTrue(report["passed"])
 
 
 class TestLogEvidence(unittest.TestCase):
@@ -130,7 +205,7 @@ class TestRetryAfter(unittest.TestCase):
 
     def test_clamps_an_absurd_wait(self):
         self.assertEqual(retry_after_seconds({"Retry-After": "86400"}, 3.0),
-                         runner.MAX_RETRY_AFTER_SECONDS)
+                         backoff.MAX_RETRY_AFTER_SECONDS)
 
 
 class TestBackpressure(unittest.TestCase):
@@ -322,15 +397,16 @@ class TestFinalize(unittest.TestCase):
     """Finding 4, end to end: the authoritative verdict must not certify a log
     it could not read."""
 
-    def _finalize(self, log_text):
+    def _finalize(self, log_text, source_observation=SOURCES_SEEN, encoding="utf-8"):
         with tempfile.TemporaryDirectory() as tmp:
             report = summarize("s", [_v()], backpressure={}, unexpected_5xx=0,
-                               levels={}, queue=[], disk=(1, 1))
+                               levels={}, queue=[], disk=(1, 1),
+                               source_observation=source_observation)
             report["provisional"] = True
             report_path = Path(tmp) / "s.json"
             report_path.write_text(json.dumps(report))
             log_path = Path(tmp) / "s.log"
-            log_path.write_text(log_text, encoding="utf-8")
+            log_path.write_text(log_text, encoding=encoding)
             argv = ["finalize", "--report", str(report_path), "--logs", str(log_path)]
             with mock.patch.object(sys, "argv", argv), \
                     contextlib.redirect_stdout(io.StringIO()):
@@ -344,6 +420,24 @@ class TestFinalize(unittest.TestCase):
         self.assertTrue(report["passed"])
         self.assertFalse(report["provisional"])
         self.assertEqual(report["log_lines"], {"total": 5, "parsed": 5})
+
+    def test_a_bom_does_not_corrupt_the_first_line(self):
+        # Windows PowerShell 5.1's `Set-Content -Encoding utf8` writes one. On
+        # smoke's handful of lines, losing the first is 80% parsed and fails the
+        # 95% floor spuriously.
+        text = "\n".join(APP_LINE.format(i=i, level="INFO") for i in range(5))
+        code, report = self._finalize(text, encoding="utf-8-sig")
+        self.assertEqual(report["log_lines"], {"total": 5, "parsed": 5})
+        self.assertEqual(code, 0)
+
+    def test_a_report_with_no_source_observation_cannot_be_certified(self):
+        # The authoritative verdict refuses to certify criterion 5 for a stage
+        # that never watched the upload directory at all.
+        text = "\n".join(APP_LINE.format(i=i, level="INFO") for i in range(5))
+        code, report = self._finalize(text, source_observation=None)
+        self.assertFalse(report["passed"])
+        self.assertEqual(code, 1)
+        self.assertFalse(report["source_observation"]["observed"])
 
     def test_an_error_in_the_log_fails_the_stage(self):
         lines = [APP_LINE.format(i=i, level="INFO") for i in range(4)]
@@ -447,11 +541,11 @@ class TestTusClient(unittest.TestCase):
         self.assertEqual(attempt.error, "create returned 403")
 
     def test_a_lost_204_is_reconciled_by_head_instead_of_looping_on_409(self):
-        # The bytes are durable; re-sending them would draw 409 until the
-        # retries ran out and report a false transport failure on an upload the
-        # server has.
+        # The bytes are durable; re-sending them draws the 409 tus mandates on
+        # an Upload-Offset mismatch, until the retries run out and report a
+        # false transport failure on an upload the server has.
         script = [CREATED,
-                  (500, {}),                          # PATCH: reply lost
+                  (409, {}),                          # PATCH: reply lost, bytes landed
                   (200, {"upload-offset": "8"}),      # HEAD: it landed anyway
                   (204, {"upload-offset": "16"}),
                   (204, {"upload-offset": "20"})]
@@ -482,11 +576,171 @@ class TestTusClient(unittest.TestCase):
         self.assertTrue(note, "the failure reason must survive for diagnosis")
 
     def test_a_short_upload_is_reported_even_when_every_call_succeeded(self):
-        # The server acknowledged less than was sent: offset != size is its own
-        # failure, independent of any status code.
+        # The server acknowledged less than was sent. Both branches of _patch
+        # check the offset they are given, so this is caught where it happens
+        # rather than inferred from the total at the end.
         script = [CREATED, (204, {"upload-offset": "8"}), (204, {"upload-offset": "8"})]
         attempt, _server = self._upload(script, data=b"x" * 16, chunk=8)
         self.assertFalse(attempt.transport_ok)
-        self.assertEqual(attempt.error, "final offset 8 != 16")
+        self.assertEqual(attempt.error, "offset diverged: server 8, client 16")
+
+    def test_a_204_reporting_an_offset_ahead_of_the_block_fails_the_item(self):
+        # The HEAD branch guarded divergence and this one trusted the server
+        # blindly. An offset ahead of what we sent desynchronizes _blocks'
+        # sequential cursor and writes the following block at the wrong place.
+        script = [CREATED, (204, {"upload-offset": "12"})]
+        attempt, _server = self._upload(script, data=b"x" * 20, chunk=8)
+        self.assertFalse(attempt.transport_ok)
+        self.assertEqual(attempt.error, "offset diverged: server 12, client 8")
+
+    def test_an_unreadable_asset_fails_one_item_rather_than_the_pool(self):
+        # payload.chunks() opens the base asset and is consumed outside every
+        # try in _request, so an IO error there used to escape the worker,
+        # pool.map and main().
+        class _Unreadable(_FakePayload):
+            def chunks(self, _n):
+                raise OSError(5, "Input/output error")
+                yield b""  # pragma: no cover - makes this a generator
+
+        server = _FakeServer([CREATED])
+        with mock.patch.object(tusclient, "_request", server), \
+                mock.patch.object(tusclient.time, "sleep"):
+            attempt = tusclient.upload("http://app:8080", _Unreadable(b"x" * 20), 8)
+        self.assertFalse(attempt.transport_ok)
+        self.assertIn("Input/output error", attempt.error)
+
+    def test_metadata_carries_the_filename_criterion_4_matches_on(self):
+        payload = _FakePayload(b"x")
+        pairs = dict(part.split(" ", 1) for part in tusclient._metadata(payload).split(","))
+        self.assertEqual(base64.b64decode(pairs["filename"]).decode(), payload.filename)
+        self.assertEqual(base64.b64decode(pairs["filetype"]).decode(), payload.mime)
+        self.assertEqual(base64.b64decode(pairs["sha256"]).decode(), payload.sha256_hex)
+
+
+class TestVerify(unittest.TestCase):
+    """stage._verify is where all five criteria are assigned, so each of them is
+    exercised through it rather than by hand-building an ItemVerdict."""
+
+    def _verify(self, *, state="published", media_id="m1", attempt=None,
+                gallery=(_FakePayload.filename,), download=None, sources=(),
+                terminal_at=130.0):
+        payload = _FakePayload(b"x" * 4)
+        attempt = attempt if attempt is not None else tusclient.Attempt(upload_id="abc123")
+        landed = {"abc123": (payload, attempt, 100.0)}
+        states = {"abc123": {"state": state, "mediaId": media_id}}
+
+        def listing(*_a, **_kw):
+            if isinstance(gallery, BaseException):
+                raise gallery
+            return set(gallery)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in sources:
+                (Path(tmp) / name).write_bytes(b"")
+            with mock.patch.object(stage.oracle, "gallery_filenames", listing), \
+                    mock.patch.object(stage.oracle, "verify_download",
+                                      download or (lambda *a, **kw: (True, ""))):
+                return stage._verify("http://app:8080", Path(tmp), landed, states,
+                                     {"abc123": terminal_at}, {})
+
+    def test_a_clean_item_meets_all_five_criteria(self):
+        verdicts, to_published, gallery_error = self._verify()
+        self.assertEqual(verdicts[0].failed_criteria, [])
+        self.assertTrue(verdicts[0].ok)
+        self.assertEqual(gallery_error, "")
+        # Upload finish to first observed terminal, not the verification pass.
+        self.assertEqual(to_published, [30.0])
+
+    def test_a_transport_failure_alone_fails_the_item(self):
+        attempt = tusclient.Attempt(upload_id="abc123")
+        attempt.error = "PATCH retries exhausted"
+        verdicts, _t, _e = self._verify(attempt=attempt)
+        self.assertEqual(verdicts[0].failed_criteria, ["transport_ok"])
+
+    def test_a_non_success_state_fails_the_item(self):
+        verdicts, to_published, _e = self._verify(state="failed")
+        self.assertIn("published_ok", verdicts[0].failed_criteria)
+        self.assertEqual(to_published, [], "an unpublished item has no publication latency")
+
+    def test_a_digest_mismatch_alone_fails_the_item(self):
+        verdicts, _t, _e = self._verify(
+            download=lambda *a, **kw: (False, "digest mismatch: sent aaa, stored bbb"))
+        self.assertEqual(verdicts[0].failed_criteria, ["digest_ok"])
+
+    def test_an_item_absent_from_the_gallery_alone_fails_the_item(self):
+        verdicts, _t, _e = self._verify(gallery=())
+        self.assertEqual(verdicts[0].failed_criteria, ["gallery_ok"])
+
+    def test_a_surviving_tus_source_alone_fails_the_item(self):
+        verdicts, _t, _e = self._verify(sources=("abc123",))
+        self.assertEqual(verdicts[0].failed_criteria, ["source_gone"])
+
+    def test_a_surviving_info_sidecar_alone_fails_the_item(self):
+        # tusd's filestore resolves an upload through its sidecar, so an orphan
+        # sidecar is a leaked source even with the data file gone.
+        verdicts, _t, _e = self._verify(sources=("abc123.info",))
+        self.assertEqual(verdicts[0].failed_criteria, ["source_gone"])
+
+    def test_an_item_that_never_got_an_id_cannot_claim_its_source_is_gone(self):
+        verdicts, _t, _e = self._verify(attempt=tusclient.skipped("aborting: disk floor"))
+        self.assertIn("transport_ok", verdicts[0].failed_criteria)
+        self.assertIn("source_gone", verdicts[0].failed_criteria)
+
+    def test_an_unreadable_gallery_fails_every_item_rather_than_the_run(self):
+        # Losing the listing is not a reason to lose an hour of uploads: every
+        # gallery_ok goes false, the reason is recorded, and the stage fails.
+        verdicts, _t, gallery_error = self._verify(
+            gallery=urllib.error.URLError("connection reset"))
+        self.assertFalse(verdicts[0].gallery_ok)
+        self.assertIn("URLError", gallery_error)
+        report = summarize("s", verdicts, backpressure={}, unexpected_5xx=0,
+                           levels={"ERROR": 0}, queue=[], disk=(1, 1),
+                           source_observation=SOURCES_SEEN)
+        self.assertFalse(report["passed"])
+
+    def test_a_truncated_gallery_listing_is_recorded_rather_than_raised(self):
+        verdicts, _t, gallery_error = self._verify(
+            gallery=http.client.IncompleteRead(b"partial", 4096))
+        self.assertFalse(verdicts[0].gallery_ok)
+        self.assertIn("IncompleteRead", gallery_error)
+
+    def test_a_gallery_page_that_is_not_json_is_recorded_rather_than_raised(self):
+        verdicts, _t, gallery_error = self._verify(
+            gallery=json.JSONDecodeError("Expecting value", "<html>", 0))
+        self.assertIn("JSONDecodeError", gallery_error)
+        self.assertFalse(verdicts[0].gallery_ok)
+
+
+class TestDigestOk(unittest.TestCase):
+    """The re-download is the only criterion that reads the stored bytes, and it
+    is the one most likely to meet a network fault: 134 GB of it."""
+
+    def _digest(self, download):
+        with mock.patch.object(stage.oracle, "verify_download", download):
+            return stage._digest_ok("http://app:8080", "m1", "a" * 64, {})
+
+    def test_a_matching_digest_verifies_the_item(self):
+        self.assertTrue(self._digest(lambda *a, **kw: (True, "")))
+
+    def test_a_truncated_download_fails_the_item_rather_than_the_run(self):
+        # http.client.IncompleteRead derives from HTTPException, which is
+        # neither OSError nor URLError, so it used to escape _digest_ok,
+        # _verify and main() -- destroying the report after the expensive part.
+        def boom(*_a, **_kw):
+            raise http.client.IncompleteRead(b"partial", 200_000_000)
+
+        self.assertFalse(self._digest(boom))
+
+    def test_a_404_is_this_items_verdict_and_not_the_runs(self):
+        def boom(*_a, **_kw):
+            raise _http_error(404)
+
+        self.assertFalse(self._digest(boom))
+
+    def test_a_reset_connection_fails_the_item_rather_than_the_run(self):
+        def boom(*_a, **_kw):
+            raise ConnectionResetError(104, "Connection reset by peer")
+
+        self.assertFalse(self._digest(boom))
 
 
