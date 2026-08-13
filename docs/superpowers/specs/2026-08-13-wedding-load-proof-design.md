@@ -194,6 +194,11 @@ Excluded by instruction: restart, crash-recovery, and disk-failure testing.
 Also out of scope: multi-IP behaviour, since one generator is one public IP —
 which happens to model venue NAT accurately rather than being a gap.
 
-The free-space admission gate will not trigger naturally, since 245 GB remains
-free at peak. If it is to be proven, it needs a targeted micro-test that raises
-`INGEST_MIN_FREE_BYTES` temporarily rather than filling the disk.
+The free-space admission gate is **left unproven** by decision. It cannot fire
+naturally, since 245 GB remains free at peak, and proving it would require
+temporarily raising `INGEST_MIN_FREE_BYTES` — a config change whose blast radius
+is not worth the coverage.
+
+HEIC items that publish without a thumbnail are a **reported finding, not a
+failure**. The `heif-preview` helper is deferred to plan 2, so their absence is
+expected; the run exists to quantify how many wedding uploads would be affected.
