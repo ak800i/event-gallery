@@ -167,12 +167,19 @@ class TestHTTPChecks(unittest.TestCase):
 
     def _assert_terminates(self, base):
         box = {}
-        t = threading.Thread(target=lambda: box.setdefault("names", gallery_filenames(base)),
-                             daemon=True)
+
+        def run():
+            try:
+                box["names"] = gallery_filenames(base)
+            except BaseException as exc:  # reported as an assertion, not a thread traceback
+                box["error"] = exc
+
+        t = threading.Thread(target=run, daemon=True)
         t.start()
         t.join(timeout=15)
         self.assertFalse(t.is_alive(), "gallery_filenames never stopped paginating")
-        self.assertTrue(box["names"])
+        self.assertIsNone(box.get("error"), f"gallery_filenames raised {box.get('error')!r}")
+        self.assertTrue(box.get("names"))
 
     def test_source_removed_is_false_while_the_file_remains(self):
         tmp = Path(tempfile.mkdtemp())
