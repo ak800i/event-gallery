@@ -45,6 +45,10 @@ def poisson_schedule(n: int, rate_per_min: float, seed: int,
 
 
 def herd_schedule(n: int) -> list[float]:
+    # Same len == n contract as poisson_schedule: a negative n would otherwise
+    # return [] and give the runner a silently zero-length campaign.
+    if n < 0:
+        raise ValueError("n must not be negative")
     return [0.0] * n
 
 
