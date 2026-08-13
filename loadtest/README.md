@@ -182,6 +182,10 @@ the report records the abort and fails.
   `verification_backpressure` those seen while verifying. Neither fails a stage —
   they are the server pacing a single-IP client, which is what those limiters are
   for. `unexpected_5xx` counts every other 5xx and does fail it.
+- `arrival_lag` is how far behind its scheduled arrival each upload actually
+  started. Concurrency is a ceiling on offered load, not a target: lag near zero
+  means the schedule set the pace, lag that grows means the pool did and the
+  stage ran slower than its nominal arrival rate.
 - `queue_summary.suspect_gaps_seconds` flags holes in the app's own drain curve.
   A hole is not proof of an idle queue: the queue summarizer is silent while
   empty, but its failure path logs `WARN`, not `ERROR`, so a summarizer that fell
