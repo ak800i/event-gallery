@@ -1,0 +1,105 @@
+{
+  "stage": "01-calibration",
+  "note": "Measured against the live stack at MEDIA_PROCESSING_WORKERS=16, UPLOAD_DURABILITY_WORKERS=8.",
+
+  "runs": {
+    "calibrate-serial": {
+      "concurrency": 1,
+      "items": 100,
+      "verified": 100,
+      "duplicates": 0,
+      "upload_phase_seconds": 84.5,
+      "drain_seconds": 10.3,
+      "total_publish_seconds": 94.8,
+      "to_published_p50": 51.101,
+      "to_published_p95": 82.788,
+      "peak_pending": 0,
+      "peak_processing": 8
+    },
+    "calibrate-parallel": {
+      "concurrency": 16,
+      "items": 100,
+      "verified": 100,
+      "duplicates": 0,
+      "upload_phase_seconds": 15.3,
+      "drain_seconds": 50.7,
+      "total_publish_seconds": 66.0,
+      "to_published_p50": 36.662,
+      "to_published_p95": 53.852,
+      "peak_pending": 64,
+      "peak_processing": 16,
+      "backpressure": { "503": 1 }
+    }
+  },
+
+  "corpus_per_run_bytes": 2684354560,
+
+  "measured_rates": {
+    "serial_transport_MB_per_s": 30.3,
+    "parallel_transport_MB_per_s": 167.0,
+    "transport_speedup": 5.5,
+    "transport_scaling_efficiency": 0.34,
+
+    "serial_publish_items_per_s": 1.055,
+    "parallel_publish_items_per_s": 1.515,
+    "publish_speedup": 1.44
+  },
+
+  "why_the_plans_efficiency_rule_does_not_apply_as_written": [
+    "The rule assumes serial-vs-parallel measures SERVER worker scaling. It does not.",
+    "Both runs ran against the same 16 media workers; only the OFFERED LOAD rate differed.",
+    "So the ratio measures client transport concurrency, not worker scaling, and the",
+    "0.3/0.6 thresholds cannot be applied to it. Reported both numbers separately instead."
+  ],
+
+  "what_was_actually_learned": [
+    "Transport scales 5.5x from 16x concurrency: partially I/O-bound, efficiency 0.34.",
+    "Peak processing hit 16 of 16 workers with 64 items pending, so the workers were",
+    "fully saturated and the queue absorbed the backlog and drained it cleanly.",
+    "Publication capacity is ~1.5 items/s at 16 workers under saturation.",
+    "The I/O-bound hypothesis is only PARTIALLY confirmed: the mount sustained 167 MB/s,",
+    "which is not the wall the design feared, and the workers saturated before it did."
+  ],
+
+  "decision": {
+    "media_processing_workers": 16,
+    "upload_durability_workers": 8,
+    "reason": "Workers saturated at 16/16 with a backlog, so they are the active constraint rather than the mount; but the owner capped this at 16 cores and the box is shared. Not reducing to 8: the measured saturation shows 16 are all doing work."
+  },
+
+  "projection_for_the_wedding_stage": {
+    "items": 5000,
+    "bytes": 134389135882,
+    "arrival_rate_items_per_s": 1.0,
+    "measured_publish_capacity_items_per_s": 1.515,
+    "headroom": 1.5,
+    "expected_backlog": "bounded - arrivals are slower than publication, so the queue should not grow without limit",
+    "projected_drain_seconds_worst_case": 330,
+    "projected_drain_note": "Even a pathological 500-item residual backlog drains in ~5.5 min at 1.515 items/s.",
+    "one_hour_threshold": "PREDICTED PASS, with wide margin",
+    "stated_before_task_8_ran": true
+  },
+
+  "per_type_matrix": {
+    "note": "PNG was unproven after smoke (weighted 10%, only 3 draws). Calibration settles it.",
+    "image/jpeg": { "uploaded": 128, "published": 128, "with_thumbnail": 128 },
+    "image/png": { "uploaded": 22, "published": 22, "with_thumbnail": 22 },
+    "image/webp": { "uploaded": 34, "published": 34, "with_thumbnail": 34 },
+    "video/mp4": { "uploaded": 9, "published": 9, "with_thumbnail": 9 },
+    "video/quicktime": { "uploaded": 7, "published": 7, "with_thumbnail": 7 },
+    "verdict": "Every type published and produced a thumbnail. HEIC is absent by recorded deferral."
+  },
+
+  "oracle": {
+    "both_runs": "all five criteria passed on 100/100 items, twice",
+    "unexpected_5xx": 0,
+    "error_log_lines": 0,
+    "source_observation_max_seen": { "serial": 12, "parallel": 93 }
+  },
+
+  "disk": {
+    "free_before_gib": 360.0,
+    "free_after_gib": 355.0,
+    "consumed_by_calibration_gib": 5.0
+  }
+}
