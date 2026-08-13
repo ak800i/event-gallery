@@ -1,0 +1,65 @@
+# Generates base assets on the host, runs a stage inside a sidecar container on
+# the app's own network (the app publishes no host port), then merges the app's
+# logs in and decides pass/fail.
+param(
+    [Parameter(Mandatory = $true)][string]$Stage,
+    [string]$Network   = 'wedding-gallery_edge',
+    [string]$BaseUrl   = 'http://app:8080',
+    [string]$UploadDir = '<data-dir>\uploads',
+    [string]$MediaDir  = '<data-dir>\media',
+    [string]$Container = 'wedding-gallery-app-1'
+)
+$ErrorActionPreference = 'Stop'
+$repo    = Split-Path -Parent $PSScriptRoot
+$results = Join-Path $repo 'loadtest\results'
+New-Item -ItemType Directory -Force -Path $results | Out-Null
+
+# Anything that throws below leaves this untouched, so a stage that never ran
+# reports failure rather than exiting 0 on an unset variable.
+$code = 1
+
+Push-Location $repo   # `python -m loadtest.wedding.*` resolves from the repo root
+try {
+
+# ffmpeg lives on the host, not in the sidecar image, so the corpus is built
+# here first. build_assets is idempotent, so the container only ever reads them.
+Write-Host '==> generating base assets on the host (idempotent)'
+python -c "from pathlib import Path; from loadtest.wedding.corpus import build_assets; build_assets(Path('loadtest/assets'))"
+if ($LASTEXITCODE -ne 0) { throw "asset generation failed ($LASTEXITCODE)" }
+
+$since = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+
+Write-Host "==> running stage $Stage"
+docker run --rm `
+    --network $Network `
+    -e PYTHONUNBUFFERED=1 `
+    -v "${repo}:/work:ro" `
+    -v "${results}:/results" `
+    -v "${UploadDir}:/uploads:ro" `
+    -v "${MediaDir}:/media:ro" `
+    -w /work `
+    python:3.13-slim `
+    python -m loadtest.wedding.stage --stage $Stage --base-url $BaseUrl `
+        --upload-dir /uploads --media-dir /media --out /results
+if ($LASTEXITCODE -ne 0) { throw "stage $Stage did not complete ($LASTEXITCODE)" }
+
+Write-Host '==> collecting app logs and finalizing'
+$logFile = Join-Path $results "$Stage.log"
+
+# `docker logs`, never `docker compose logs`: compose prefixes every line with
+# `app-1  | `, so none of it parses as JSON, the ERROR count comes back zero and
+# the stage passes vacuously against a log full of errors. Compose also
+# multiplexes tusd and cloudflared, whose errors are not the app's.
+$prev = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    docker logs --since $since $Container 2>&1 |
+        ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { $_ } } |
+        Set-Content -Path $logFile -Encoding utf8
+} finally { $ErrorActionPreference = $prev }
+
+python -m loadtest.wedding.finalize --report (Join-Path $results "$Stage.json") --logs $logFile
+$code = $LASTEXITCODE
+
+} finally { Pop-Location }
+exit $code

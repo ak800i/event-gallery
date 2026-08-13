@@ -104,3 +104,94 @@ and use **Delete permanently**. Do not edit live SQLite or media files directly.
 --state PATH              forensic upload URL/offset state
 --json-out PATH           stage metrics report
 ```
+
+## Wedding load proof
+
+A second, separate harness under `loadtest/wedding/`. The battle test above asks
+whether uploads succeed; this one asks whether they were *published*, which is
+not the same question.
+
+### Why transport success is not enough
+
+The July incident reported every upload successful while seventeen guests' files
+were destroyed, because the only thing checked was `offset == size`. An item here
+counts as verified only when all five criteria hold:
+
+1. `transport_ok` — the tus upload completed;
+2. `published_ok` — the server reports a terminal success state for the id;
+3. `digest_ok` — the stored original is re-downloaded and its SHA-256 matches
+   what was sent;
+4. `gallery_ok` — the filename appears in the public gallery listing;
+5. `source_gone` — the tus source and its `.info` sidecar have been removed.
+
+Criterion 5 is the one that would have caught the incident. Any single failure
+fails the whole stage.
+
+### Running a stage
+
+```powershell
+pwsh loadtest/run_wedding.ps1 -Stage smoke
+```
+
+The script builds base assets on the host, runs the stage in a sidecar, collects
+the app's logs, and prints the verdict. Stages are `smoke`, `calibrate-serial`,
+`calibrate-parallel`, `wedding`, `overload`, `herd`, and `tunnel`.
+
+### Why a sidecar container
+
+The app publishes no host port; it is reachable only on the Docker network
+`wedding-gallery_edge` as `http://app:8080`. The harness therefore runs as a
+throwaway `python:3.13-slim` container joined to that network, with the repo and
+the upload/media directories bind-mounted read-only. It is stdlib-only, so the
+image needs no `pip install`.
+
+Base assets are generated **on the host**, once, into `loadtest/assets/` (git
+ignored) because ffmpeg is not in the sidecar image. `build_assets` is
+idempotent, so later runs only read them. Delete the directory to regenerate;
+it is idempotent by existence alone, so it will happily reuse a truncated asset
+left by an interrupted run.
+
+### Why `finalize` decides, not the stage
+
+The sidecar has no Docker socket, so it cannot read the app's logs. The report it
+writes is marked `"provisional": true` and its `passed` is not authoritative.
+`finalize` then runs on the host, merges in the app's own log-derived evidence,
+and recomputes the verdict. Both call the same `runner.decide_passed`, so the two
+cannot disagree about what passing means.
+
+Logs are collected with `docker logs`, never `docker compose logs`. Compose
+prefixes every line with `app-1  | `, so nothing parses as JSON, the ERROR count
+comes back zero and the stage passes *vacuously* against a log full of errors.
+`finalize` guards against that anyway by comparing parsed lines against raw
+lines and refusing to certify a log it could not read. The parser is deliberately
+not made prefix-tolerant: compose also multiplexes tusd and cloudflared, whose
+errors are not the app's.
+
+### Abort floor
+
+Peak need is roughly 118 GB against 363 GB free. Every arrival re-checks free
+space on the upload volume and the stage aborts below **50 GB**. The guard
+latches: once tripped, the remaining arrivals are skipped rather than sent, and
+the report records the abort and fails.
+
+### Reading a report
+
+`loadtest/results/<stage>.json`. Beyond the verdict:
+
+- `backpressure` counts 429/503 seen on the tus path and
+  `verification_backpressure` those seen while verifying. Neither fails a stage —
+  they are the server pacing a single-IP client, which is what those limiters are
+  for. `unexpected_5xx` counts every other 5xx and does fail it.
+- `queue_summary.suspect_gaps_seconds` flags holes in the app's own drain curve.
+  A hole is not proof of an idle queue: the queue summarizer is silent while
+  empty, but its failure path logs `WARN`, not `ERROR`, so a summarizer that fell
+  over leaves the zero-ERROR criterion green while blanking the curve.
+- `by_type` reports published counts and thumbnail coverage per MIME type. A
+  published item with no thumbnail is a reported finding, not a failure.
+
+### Tests
+
+```sh
+python -m unittest discover -s loadtest/wedding/tests -t .
+```
+
