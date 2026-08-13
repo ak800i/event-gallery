@@ -52,7 +52,8 @@ class TestObserve(unittest.TestCase):
         # docker logs interleaves stderr and can hand us a truncated line. A
         # parser that raises here destroys the report after the expensive part
         # of the run has already happened.
-        noise = ["", "   ", "panic: runtime error", "{", '{"level":', "]not json["]
+        noise = ["", "   ", "panic: runtime error", "{", '{"level":', "]not json[",
+                 '{"time":"t","msg":"a record carrying no level at all"}']
         self.assertEqual(count_levels(noise), {})
         self.assertEqual(count_levels(noise + LINES), count_levels(LINES))
 
@@ -98,6 +99,7 @@ class TestObserve(unittest.TestCase):
         tmp = Path(tempfile.mkdtemp())
         (tmp / "originals").mkdir()
         (tmp / "originals" / "m1.jpg").write_bytes(b"x")
+        self.assertFalse(thumbnail_exists(tmp, "m1"))  # no thumbnails dir yet
         (tmp / "thumbnails").mkdir()
         self.assertFalse(thumbnail_exists(tmp, "m1"))
 
