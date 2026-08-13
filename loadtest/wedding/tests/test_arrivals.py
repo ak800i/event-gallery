@@ -74,6 +74,16 @@ class TestArrivals(unittest.TestCase):
         self.assertEqual(len(parts), 120)
         self.assertTrue(all(p >= 1 for p in parts))
 
+    def test_split_items_seats_every_guest_when_items_are_scarce(self):
+        # At 5000/120 the >= 1 floor above is unfalsifiable: handing out all
+        # 5000 items from a zero floor leaves a guest empty roughly once in
+        # 1e18 runs (measured: 0 of 2000). Just above n_guests it happens every
+        # time, so this is where the floor is actually load-bearing.
+        parts = split_items(125, 120, seed=4)
+        self.assertEqual(sum(parts), 125)
+        self.assertEqual(len(parts), 120)
+        self.assertEqual(min(parts), 1, "a guest was left with nothing to upload")
+
     def test_split_items_refuses_to_leave_a_guest_empty(self):
         with self.assertRaisesRegex(ValueError, "more guests than items"):
             split_items(10, 11, seed=9)
