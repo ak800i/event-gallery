@@ -128,19 +128,32 @@ def main() -> int:
     verdicts, to_published, gallery_error = _verify(
         args.base_url, upload_dir, landed, states, terminal_at, paced)
 
+    # These two touch the local filesystem after the whole 134 GB re-download.
+    # An OSError here would cost the entire verification pass, so neither is
+    # allowed to take the report with it.
+    try:
+        free_after = observe.disk_free_bytes(upload_dir)
+    except OSError as exc:
+        free_after = -1
+        print(f"could not read free space after the run: {exc}")
+
     report = runner.summarize(
         args.stage, verdicts,
         backpressure=_backpressure(landed),
         unexpected_5xx=_unexpected_5xx(landed),
         levels={},          # filled by finalize on the host
         queue=[],           # filled by finalize on the host
-        disk=(free_before, observe.disk_free_bytes(upload_dir)),
+        disk=(free_before, free_after),
         to_published=to_published,
         drain_seconds=round(drain_seconds, 1),
         aborted=guard.tripped,
         source_observation=sources,
     )
-    report["by_type"] = _by_type(landed, states, media_dir)
+    try:
+        report["by_type"] = _by_type(landed, states, media_dir)
+    except OSError as exc:
+        report["by_type"] = {}
+        report["by_type_unavailable"] = str(exc)
     report["verification_backpressure"] = paced
     report["poll_problems"] = problems
     report["gallery_unavailable"] = gallery_error
