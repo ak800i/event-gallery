@@ -1,0 +1,1 @@
+"""Wedding load proof harness."""
