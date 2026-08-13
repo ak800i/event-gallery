@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a load harness whose success oracle proves *publication and byte integrity*, then use it to demonstrate the deployed instance survives a 5,000-item / 108 GB wedding and quantify the headroom beyond it.
+**Goal:** Build a load harness whose success oracle proves *publication and byte integrity*, then use it to demonstrate the deployed instance survives a 5,000-item / 134 GB wedding and quantify the headroom beyond it.
 
 **Architecture:** A new self-contained Python package `loadtest/wedding/` runs as a sidecar container on the `wedding-gallery_edge` network, reaching the app at `http://app:8080` (the app publishes no host port). It mounts the tus upload directory and the media directory read-only so it can verify that sources are removed and thumbnails are produced. Base media assets are generated once on the host with ffmpeg; each upload streams `base asset + unique 64-byte marker`, giving a distinct SHA-256 without duplicating gigabytes on disk.
 
@@ -16,7 +16,7 @@
 - **SHA-256 is sent as tus metadata** so the server independently verifies integrity via its own `checksum_mismatch` path.
 - Documented `503` and `429` carrying `Retry-After` are **backpressure, not failure** — counted separately, but their uploads must still publish before the deadline.
 - **Zero `ERROR` log lines** is a valid assertion: nothing is restarted, and the false shutdown ERROR was fixed in `main@99e06d7`.
-- **Abort if free space on `D:` falls below 50 GB.** Peak need ≈118 GB against 363 GB free.
+- **Abort if free space on `D:` falls below 50 GB.** Peak need ≈145 GB against 363 GB free.
 - All test filenames are prefixed `event-gallery-battle-`.
 - **A missed threshold is reported, not tuned away.** Worker counts are set once, up front, on calibration evidence.
 - **Commit before falsifying.** Where a step says to break the implementation and confirm a test fails, commit first. Reverting the mutation with `git checkout` on uncommitted work discards your own change too — that exact mistake landed a commit containing only a test earlier in this repo's history, leaving `main` red. Revert with the editor, or commit first and then `git checkout` is safe.
@@ -188,8 +188,6 @@ def _one(rng: random.Random, base: Asset) -> Payload:
         ext = ".png"
     elif base.mime == "image/webp":
         ext = ".webp"
-    elif base.mime == "image/heic":
-        ext = ".heic"
     elif base.mime == "video/quicktime":
         ext = ".mov"
     return Payload(base, marker, f"{NAME_PREFIX}-{token}{ext}")
@@ -240,7 +238,7 @@ Expected: `ImportError: cannot import name 'build_assets'`
 Append to `corpus.py`:
 
 ```python
-# Sizes are the wedding profile: ~6 MB photos, ~200 MB videos.
+# Sizes are the wedding profile: ~11 MB mean photos, ~206 MB videos.
 PHOTO_SIZE = "4000x3000"
 VIDEO_SECONDS = 60
 VIDEO_TARGET_BYTES = 200 * 1024 * 1024
@@ -1083,7 +1081,7 @@ from .oracle import ItemVerdict
 
 @dataclass
 class DiskGuard:
-    """Peak need is ~118 GB against 363 GB free; this stops a runaway stage."""
+    """Peak need is ~145 GB against 363 GB free; this stops a runaway stage."""
     min_free_bytes: int
     probe: Callable[[], int]
 
@@ -1532,7 +1530,7 @@ A Portainer redeploy regenerates `stack.env` from `portainer.db` and would rever
 
 Run: `pwsh loadtest/run_wedding.ps1 -Stage smoke`
 
-Expected: one JPEG, PNG, WebP, HEIC, MP4 and MOV each pass all five oracle criteria. Record which types produced a thumbnail — HEIC is expected not to, and that is a reported finding rather than a failure.
+Expected: one JPEG, PNG, WebP, MP4 and MOV each pass all five oracle criteria. There is no HEIC asset — see the design's corpus section for the verified reason — so HEIC is neither uploaded nor reported here. Record which types produced a thumbnail.
 
 - [ ] **Step 8: Commit the baseline**
 
@@ -1601,7 +1599,7 @@ git commit -m "test(loadtest): calibration measurements and the worker-count dec
 - [ ] **Step 1: Confirm the disk floor before starting**
 
 Run: `(Get-PSDrive D).Free / 1GB`
-Expected: greater than 150. If not, stop — peak need is ~118 GB.
+Expected: greater than 200. If not, stop — peak need is ~145 GB and the run must not drive free space below the 50 GB abort floor.
 
 - [ ] **Step 2: Run the wedding stage**
 
@@ -1628,13 +1626,13 @@ From `02-wedding.json`:
 
 - [ ] **Step 5: Record the per-type matrix**
 
-Report publish success and thumbnail presence per MIME type. HEIC publishing without a thumbnail is a finding, not a failure.
+Report publish success and thumbnail presence per MIME type. HEIC is absent from the corpus, so this matrix cannot speak to it.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add loadtest/results/02-wedding.json
-git commit -m "test(loadtest): wedding-profile run at 5000 items and 108 GB"
+git commit -m "test(loadtest): wedding-profile run at 5000 items and 134 GB"
 ```
 
 ---
@@ -1741,7 +1739,7 @@ Expected: 0.
 
 - [ ] **Step 5: Write the results report**
 
-Create `docs/superpowers/reports/2026-08-13-wedding-load-proof-results.md` covering: the headline verdict against the one-hour threshold; measured drain time and throughput; whether the I/O-bound hypothesis held and the final recommended worker counts; the headroom multiple from Stage 3; the tunnel result; the per-type matrix including HEIC thumbnails; and anything that failed, stated plainly rather than explained away.
+Create `docs/superpowers/reports/2026-08-13-wedding-load-proof-results.md` covering: the headline verdict against the one-hour threshold; measured drain time and throughput; whether the I/O-bound hypothesis held and the final recommended worker counts; the headroom multiple from Stage 3; the tunnel result; the per-type matrix, and the fact that HEIC is untested with its residual risk restated; and anything that failed, stated plainly rather than explained away.
 
 - [ ] **Step 6: Commit**
 

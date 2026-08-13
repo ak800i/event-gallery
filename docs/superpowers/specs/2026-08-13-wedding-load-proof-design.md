@@ -63,19 +63,19 @@ the reason transport success is never sufficient on its own.
 
 ## Corpus
 
-5,000 items, ≈108 GB:
+5,000 items, ≈134 GB:
 
 | Class | Count | Size each | Total |
 |---|---:|---:|---:|
-| Photos | 4,600 | ~6 MB | ~27.6 GB |
-| Videos | 400 | ~200 MB | ~80 GB |
+| Photos | 4,600 | ~11 MB mean | ~52 GB |
+| Videos | 400 | ~206 MB | ~82 GB |
 
-Types span JPEG, PNG, WebP, HEIC, MP4 and MOV, so the run doubles as a
-media-type matrix. HEIC is deliberately included: iPhones emit it by default, it
-is accepted today, but the `heif-preview` helper is deferred to plan 2 — so the
-run must report publish success *and* thumbnail success per type. A HEIC item
-that publishes without a preview is a finding worth having before the wedding,
-not during it.
+Types span JPEG, PNG, WebP, MP4 and MOV, so the run doubles as a media-type
+matrix. Photo variants are drawn at **JPEG 70% / WebP 20% / PNG 10%** rather
+than uniformly: that is roughly what phones emit, and it keeps PNG in the matrix
+without letting a synthetic 25 MiB PNG dominate a third of the corpus. The
+measured base assets are JPEG 9.08 MiB, WebP 8.77 MiB, PNG 25.27 MiB at
+4000×3000, and 196.4 MiB per 60-second 1080p video.
 
 Base assets are generated once at true phone dimensions (4000×3000) with real
 entropy. Each upload streams `base asset + unique trailing marker`. Decoders
@@ -87,13 +87,31 @@ This matters because the current generator emits a small PNG followed by zero
 padding, which makes thumbnailing artificially cheap. A pass on that payload
 would prove nothing about the real bottleneck.
 
+### HEIC is not in the corpus
+
+HEIC was specified here and is the format iPhones emit by default, but **it
+cannot be produced on this host**: ffmpeg 6.1.1 ships no HEIF muxer and no HEIC
+encoder (`-c:v libx265 out.heic` fails with "Unable to choose an output format",
+exit −22), and two attempts to generate one through an ImageMagick container
+failed — first with a zero-byte output, then with a mount error. Sourcing a real
+HEIC out of band is a plan-owner decision, not something this campaign will
+synthesise.
+
+The residual risk is stated plainly: iPhone guests are a large share of a real
+wedding, so **the pipeline's HEIC path goes entirely unexercised by this
+campaign**. What is already known without testing: `image/heic` is in the
+default accepted-types allow-list and is sniffed on its `ftyp` brands, and the
+`heif-preview` helper is deferred to plan 2 — so HEIC items are expected to
+publish without a thumbnail. What remains unmeasured is whether they publish at
+all under load, and what a thumbnail-less item does to the gallery in practice.
+
 ## Central hypothesis
 
 The system is expected to be **I/O-bound on the bind mount, not CPU-bound**.
 
-Publishing 108 GB requires roughly 324 GB of traffic across that mount — read to
+Publishing 134 GB requires roughly 403 GB of traffic across that mount — read to
 hash, read to copy, write the copy — before any derivation. At 200 MB/s
-effective that is ~27 minutes; at 500 MB/s, ~11. Meanwhile derivation at 16
+effective that is ~34 minutes; at 500 MB/s, ~13. Meanwhile derivation at 16
 workers should clear 5,000 items in well under ten minutes.
 
 If this holds, raising worker counts past a threshold will not help and may hurt
@@ -129,7 +147,7 @@ above holds, the recommendation may be lower.
 |---|---|---|---|
 | 0 | Baseline and smoke | Record free space, gallery count, log counts. Verify the quiescence witness rejects a fresh rowless partial. | Clean comparison; confirms the Critical fix is live in production |
 | 1 | Calibration | ~100 items across all types, measured at concurrency 1 and 16 | Per-item derive cost, bind-mount throughput, scaling efficiency — settles the hypothesis |
-| 2 | Wedding | 5,000 items / 108 GB, Poisson arrivals with occasional clustering, direct to container | The proof, and the drain time |
+| 2 | Wedding | 5,000 items / 134 GB, Poisson arrivals with occasional clustering, direct to container | The proof, and the drain time |
 | 3 | Overload | 3× arrival rate, then a thundering herd | Headroom; where backpressure begins and whether it recovers |
 | 4 | Tunnel | ~300 items via Cloudflare | The 75s durability budget against the ~100s edge timeout |
 | 5 | Cleanup | Purge and verify | Bytes and rows actually reclaimed |
@@ -178,7 +196,7 @@ to work around.
 
 ## Risks
 
-- **Disk exhaustion.** Peak need ≈118 GB against 363 GB free. The harness aborts
+- **Disk exhaustion.** Peak need ≈145 GB against 363 GB free. The harness aborts
   if free space falls below 50 GB.
 - **Live gallery pollution.** The gallery is near-empty, so anything left behind
   is conspicuous. Mitigated by the name prefix and verified cleanup.
@@ -195,10 +213,15 @@ Also out of scope: multi-IP behaviour, since one generator is one public IP —
 which happens to model venue NAT accurately rather than being a gap.
 
 The free-space admission gate is **left unproven** by decision. It cannot fire
-naturally, since 245 GB remains free at peak, and proving it would require
+naturally, since 218 GB remains free at peak, and proving it would require
 temporarily raising `INGEST_MIN_FREE_BYTES` — a config change whose blast radius
-is not worth the coverage.
+is not worth the coverage. That argument was re-checked against the corrected
+134 GB corpus and still holds, with the margin now computed rather than asserted:
+218 GB free at peak is 4.4× the 50 GB abort floor, and even a pathological run in
+which cleanup never removes a single tus source — the whole corpus resident
+twice — leaves 94 GB free. The gate cannot be reached by this campaign even in
+its worst case.
 
-HEIC items that publish without a thumbnail are a **reported finding, not a
-failure**. The `heif-preview` helper is deferred to plan 2, so their absence is
-expected; the run exists to quantify how many wedding uploads would be affected.
+HEIC is **not exercised at all**. It cannot be generated on this host — the
+verified reason is in the Corpus section — so the run reports nothing about it,
+and the residual iPhone risk carries into the wedding unmeasured.
