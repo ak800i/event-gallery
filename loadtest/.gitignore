@@ -1,4 +1,6 @@
-results/
+results/*
+# The pre-campaign baseline is the one result that is evidence, not output.
+!results/00-baseline.json
 assets/
 __pycache__/
 *.pyc
