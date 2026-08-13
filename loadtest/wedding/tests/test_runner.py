@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import socket
 import sys
 import tempfile
 import threading
@@ -455,6 +456,18 @@ class TestTusClient(unittest.TestCase):
         self.assertFalse(attempt.transport_ok)
         self.assertIn("create retries exhausted", attempt.error)
         self.assertIn("connection reset", attempt.error)
+
+    def test_a_refused_connection_becomes_a_status_rather_than_an_exception(self):
+        # The real _request, not the fake: this is the clause that keeps one
+        # dead connection from unwinding pool.map and ending the campaign.
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        closed_port = probe.getsockname()[1]
+        probe.close()
+        status, _headers, _body, note = tusclient._request(
+            "HEAD", f"http://127.0.0.1:{closed_port}/api/tus/x", {}, timeout=5.0)
+        self.assertEqual(status, tusclient.TRANSPORT_ERROR)
+        self.assertTrue(note, "the failure reason must survive for diagnosis")
 
     def test_a_short_upload_is_reported_even_when_every_call_succeeded(self):
         # The server acknowledged less than was sent: offset != size is its own
