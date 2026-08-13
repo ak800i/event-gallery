@@ -53,6 +53,10 @@ def poll_status(base_url: str, upload_ids: list[str], batch_size: int = STATUS_B
     """Batched status poll. The endpoint caps a batch at 100 ids."""
     if batch_size > STATUS_BATCH_MAX:
         raise ValueError(f"batch_size must be <= {STATUS_BATCH_MAX}")
+    # A non-positive size yields an empty range, so poll_status would report
+    # nothing rather than failing -- the one thing an oracle must never do.
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
     out: dict[str, dict] = {}
     for start in range(0, len(upload_ids), batch_size):
         chunk = upload_ids[start:start + batch_size]
@@ -62,6 +66,10 @@ def poll_status(base_url: str, upload_ids: list[str], batch_size: int = STATUS_B
             headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             out.update(json.loads(resp.read()).get("results", {}))
+    missing = [u for u in upload_ids if u not in out]
+    if missing:
+        raise RuntimeError(f"status endpoint omitted {len(missing)} of "
+                           f"{len(upload_ids)} ids, first {missing[:3]}")
     return out
 
 
@@ -90,9 +98,11 @@ def gallery_filenames(base_url: str, timeout: float = 60.0) -> set[str]:
     cursor = None
     seen: set[str] = set()
     while True:
-        url = f"{base_url}/api/gallery"
+        # The server defaults to 30 per page and caps at 100; asking for the cap
+        # cuts a 5000-item verification from ~167 rate-limited round trips to ~50.
+        url = f"{base_url}/api/gallery?limit=100"
         if cursor:
-            url += "?cursor=" + urllib.parse.quote(cursor, safe="")
+            url += "&cursor=" + urllib.parse.quote(cursor, safe="")
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             page = json.loads(resp.read())
         for item in page.get("items", []):

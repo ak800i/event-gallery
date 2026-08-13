@@ -66,7 +66,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         ids = json.loads(self.rfile.read(n))["uploadIds"]
         with self.lock:
             self.status_batches.append(len(ids))
-        results = {i: {"state": "published", "mediaId": f"media-{i}"} for i in ids}
+        results = {i: {"state": "published", "mediaId": f"media-{i}"}
+                   for i in ids if i != "omit-me"}
         self._json({"results": results})
 
     def do_GET(self):
@@ -120,6 +121,7 @@ class TestHTTPChecks(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
+        cls.srv.server_close()   # shutdown stops serve_forever; the socket stays open without this
 
     def setUp(self):
         with _Handler.lock:
@@ -130,6 +132,19 @@ class TestHTTPChecks(unittest.TestCase):
         got = poll_status(self.base, [f"u{i}" for i in range(150)], batch_size=100)
         self.assertEqual(len(got), 150)
         self.assertEqual(got["u7"]["state"], "published")
+
+    def test_poll_status_refuses_a_short_answer(self):
+        # An id the server silently omits is exactly the shape of the July
+        # failure: absence read as success. It must raise, not return short.
+        with self.assertRaises(RuntimeError) as caught:
+            poll_status(self.base, ["u1", "omit-me", "u2"])
+        self.assertIn("omitted", str(caught.exception))
+
+    def test_poll_status_rejects_a_non_positive_batch(self):
+        for bad in (0, -1):
+            with self.subTest(batch_size=bad):
+                with self.assertRaises(ValueError):
+                    poll_status(self.base, ["u1"], batch_size=bad)
 
     def test_poll_status_really_sent_more_than_one_request(self):
         poll_status(self.base, [f"u{i}" for i in range(150)], batch_size=100)
