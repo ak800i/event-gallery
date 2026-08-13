@@ -262,6 +262,18 @@ class TestRunSchedule(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_schedule([5.0, 0.0], 2, lambda i: i)
 
+    def test_a_schedule_the_pool_can_keep_up_with_reports_no_lag(self):
+        ran = run_schedule([0.0, 0.1, 0.2], 2, lambda i: None)
+        self.assertLess(max(r.lag for r in ran), 0.05)
+
+    def test_lag_grows_when_concurrency_and_not_the_schedule_sets_the_pace(self):
+        # Everything is due at once but only one worker exists, so arrivals
+        # degrade to pool speed. They are delayed, never reordered.
+        ran = run_schedule([0.0] * 3, 1, lambda _i: time.sleep(0.1))
+        self.assertLess(ran[0].lag, 0.05)
+        self.assertGreater(ran[2].lag, 0.15)
+        self.assertEqual([r.index for r in ran], [0, 1, 2])
+
     def test_a_tripped_guard_stops_the_rest_of_the_campaign(self):
         done = []
         readings = iter([10 ** 12, 10 ** 12, 0])

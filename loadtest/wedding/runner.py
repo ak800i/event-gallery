@@ -70,6 +70,7 @@ class Ran:
     finished_at: float
     result: object = None
     skipped: str = ""
+    lag: float = 0.0
 
 
 def run_schedule(schedule: list[float], concurrency: int, work: Callable[[int], object],
@@ -108,7 +109,10 @@ def run_schedule(schedule: list[float], concurrency: int, work: Callable[[int], 
                 return Ran(index, now, now, skipped=str(exc))
         began = clock()
         result = work(index)
-        return Ran(index, began, clock(), result=result)
+        # How far behind its arrival this item actually started. Rising lag is
+        # the signal that concurrency, not the schedule, is setting the rate.
+        return Ran(index, began, clock(), result=result,
+                   lag=max(0.0, began - (started + schedule[index])))
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         return list(pool.map(run_one, range(len(schedule))))
@@ -214,7 +218,7 @@ def summarize_queue(samples, gap_factor: float = QUEUE_GAP_FACTOR) -> dict:
     }
 
 
-def _pct(values: list[float], p: float) -> float:
+def percentile(values: list[float], p: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(values)
@@ -276,8 +280,8 @@ def summarize(stage: str, verdicts: list[ItemVerdict], backpressure: dict[str, i
         "unexpected_5xx": unexpected_5xx,
         "log_levels": levels,
         "timings": {
-            "to_published_p50": _pct(to_published, 0.50),
-            "to_published_p95": _pct(to_published, 0.95),
+            "to_published_p50": percentile(to_published, 0.50),
+            "to_published_p95": percentile(to_published, 0.95),
             "to_published_max": round(max(to_published), 3) if to_published else 0.0,
         },
         "drain_seconds": drain_seconds,

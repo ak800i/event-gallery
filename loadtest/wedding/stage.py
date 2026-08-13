@@ -69,11 +69,14 @@ def main() -> int:
         return tusclient.upload(args.base_url, payloads[index], CHUNK_BYTES)
 
     landed: dict[str, tuple] = {}
+    lags: list[float] = []
     for ran in runner.run_schedule(schedule, concurrency, do_upload, guard=guard):
         payload = payloads[ran.index]
         attempt = ran.result if ran.result is not None else tusclient.skipped(ran.skipped)
         key = attempt.upload_id or f"nocreate-{payload.filename}"
         landed[key] = (payload, attempt, ran.finished_at)
+        if not ran.skipped:
+            lags.append(ran.lag)
 
     last_upload_at = max((f for _, _, f in landed.values()), default=time.monotonic())
     live = [k for k, (_, a, _) in landed.items() if a.upload_id]
@@ -99,6 +102,13 @@ def main() -> int:
     report["by_type"] = _by_type(landed, states, media_dir)
     report["verification_backpressure"] = paced
     report["poll_problems"] = problems
+    # Concurrency is a ceiling on offered load, not a target. Lag near zero means
+    # the schedule set the pace; lag that grows means the pool did.
+    report["arrival_lag"] = {
+        "p50": runner.percentile(lags, 0.50),
+        "p95": runner.percentile(lags, 0.95),
+        "max": round(max(lags), 3) if lags else 0.0,
+    }
     report["transport_errors"] = sum(
         1 for _, attempt, _ in landed.values()
         for status in attempt.statuses if status == tusclient.TRANSPORT_ERROR)
