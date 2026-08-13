@@ -131,7 +131,7 @@ def _one(rng: random.Random, base: Asset) -> Payload:
     return Payload(base, marker, f"{NAME_PREFIX}-{token}{ext}")
 
 
-# Sizes are the wedding profile: ~6 MB photos, ~200 MB videos.
+# Sizes are the wedding profile: ~11 MB mean photos, ~206 MB videos.
 PHOTO_SIZE = "4000x3000"
 VIDEO_SECONDS = 60
 VIDEO_TARGET_BYTES = 200 * 1024 * 1024
