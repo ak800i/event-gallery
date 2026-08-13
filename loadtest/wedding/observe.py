@@ -60,6 +60,10 @@ def thumbnail_exists(media_dir: Path, media_id: str) -> bool:
     thumbs = Path(media_dir) / THUMBNAILS_DIRNAME
     if not thumbs.is_dir():
         return False
+    # The server writes exactly <id>.jpg, so check that first: the scan below is
+    # O(directory) and the caller runs it once per item across 5000 items.
+    if (thumbs / f"{media_id}.jpg").exists():
+        return True
     return any(p.stem == media_id for p in thumbs.iterdir())
 
 
