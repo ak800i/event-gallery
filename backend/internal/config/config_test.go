@@ -225,8 +225,8 @@ func TestLoad_IngestDefaults(t *testing.T) {
 	if got, want := cfg.MediaProcessingWorkers, defaultMediaWorkers(); got != want {
 		t.Errorf("MediaProcessingWorkers = %d, want %d", got, want)
 	}
-	if cfg.MediaProcessingWorkers < 2 || cfg.MediaProcessingWorkers > 12 {
-		t.Errorf("MediaProcessingWorkers = %d, want within [2,12]", cfg.MediaProcessingWorkers)
+	if cfg.MediaProcessingWorkers < 2 || cfg.MediaProcessingWorkers > 16 {
+		t.Errorf("MediaProcessingWorkers = %d, want within [2,16]", cfg.MediaProcessingWorkers)
 	}
 	if got, want := cfg.UploadDurabilityWorkers, defaultDurabilityWorkers(); got != want {
 		t.Errorf("UploadDurabilityWorkers = %d, want %d", got, want)
@@ -234,9 +234,18 @@ func TestLoad_IngestDefaults(t *testing.T) {
 	if cfg.UploadDurabilityWorkers < 2 || cfg.UploadDurabilityWorkers > 8 {
 		t.Errorf("UploadDurabilityWorkers = %d, want within [2,8]", cfg.UploadDurabilityWorkers)
 	}
-	if runtime.GOMAXPROCS(0) >= 4 && cfg.MediaProcessingWorkers < 4 {
-		t.Errorf("MediaProcessingWorkers = %d on %d CPUs, want the default to scale",
-			cfg.MediaProcessingWorkers, runtime.GOMAXPROCS(0))
+	// On anything from four usable CPUs up, the defaults must land on the pair
+	// the load campaign actually proved -- 16 and 8 -- and not a fraction of it.
+	// A redeploy that silently halves the pool is the regression this guards.
+	if runtime.GOMAXPROCS(0) >= 4 {
+		if cfg.MediaProcessingWorkers != 16 {
+			t.Errorf("MediaProcessingWorkers = %d on %d CPUs, want the proven 16",
+				cfg.MediaProcessingWorkers, runtime.GOMAXPROCS(0))
+		}
+		if cfg.UploadDurabilityWorkers != 8 {
+			t.Errorf("UploadDurabilityWorkers = %d on %d CPUs, want the proven 8",
+				cfg.UploadDurabilityWorkers, runtime.GOMAXPROCS(0))
+		}
 	}
 	if cfg.UploadDurabilityWait != 75*time.Second {
 		t.Errorf("UploadDurabilityWait = %v, want 75s", cfg.UploadDurabilityWait)

@@ -223,20 +223,28 @@ These are recorded rather than glossed, because a proof that overstates itself i
 
 ---
 
-## 7. Configuration risk — act before the day
+## 7. Configuration risk — resolved in code
 
-The stack ran with `MEDIA_PROCESSING_WORKERS=16` and `UPLOAD_DURABILITY_WORKERS=8`.
-**The defaults in code are 2 and 2**, and these values are *not* persisted: a Portainer
-redeploy regenerates `stack.env` and reverts them. Set them in the Portainer UI so a
-redeploy cannot silently return the stack to 2/2.
+The stack ran with `MEDIA_PROCESSING_WORKERS=16` and `UPLOAD_DURABILITY_WORKERS=8`, set
+by hand in `stack.env`. In the deployed build **the defaults in code are 2 and 2**, and
+those hand-set values are *not* persisted: a Portainer redeploy regenerates `stack.env`
+and reverts the stack to 2/2 without saying so. That was the single configuration risk
+capable of hurting the day.
 
-Recommended derived defaults (not a fixed 16 — CPU oversubscription is benign, but
-memory is not; 16 concurrent ffmpeg on 12 MP images is multiple GB against an 8 GB VM):
+Recommended derived defaults. Both **deliberately oversubscribe**, because a media
+worker spends most of its life waiting on an ffmpeg child and a durability worker on
+fsync — neither is bounded by Go's own parallelism, so sizing them 1:1 with `GOMAXPROCS`
+starves the queue. The multipliers and caps are chosen to reproduce the only pair that
+has actually been proven, 16 and 8:
 
 ```go
-mediaWorkers      := min(max(runtime.GOMAXPROCS(0), 2), 12)
-durabilityWorkers := min(max(runtime.GOMAXPROCS(0)/2, 2), 8)
+mediaWorkers      := min(max(4*runtime.GOMAXPROCS(0), 2), 16)
+durabilityWorkers := min(max(2*runtime.GOMAXPROCS(0), 2), 8)
 ```
+
+On this engine (`GOMAXPROCS` = 4) that evaluates to exactly **16 and 8**, and it stays
+there at 8, 16 or 24 CPUs, so raising the WSL CPU allocation cannot inflate the pool
+beyond what was measured against 8 GB.
 
 Go 1.25's `GOMAXPROCS` is cgroup-aware (verified: with `--cpus=2`, `NumCPU()` = 4 but
 `GOMAXPROCS(0)` = 2), so this adapts correctly if the VM is resized.
@@ -253,17 +261,29 @@ All four defects above are now fixed on `main`, with tests, and the full Go suit
   a hand-built error, because a classifier that silently never matched would look fine
   while changing nothing.
 - `handleBulkPurge` now logs the error it used to discard.
-- The worker defaults are derived as above.
+- The worker defaults are derived as above, and a test asserts they land on 16/8 from
+  four usable CPUs upward — a redeploy silently halving the pool is the regression that
+  guard exists to catch.
 
-**Recommendation: do not rebuild and redeploy before the wedding.** Everything measured
-in this report was measured against the *currently deployed image*. Redeploying replaces
-the artifact the proof applies to, three days out, for changes that are all
-observability and defaults — none of which fix a data-loss risk.
+**Redeploying is now worth doing, and it is what makes the configuration safe.** An
+earlier draft of this report advised against it, on the reasoning that the proof applies
+to the currently deployed artifact. That advice rested on a mistake worth recording: the
+first version of the derived defaults evaluated to **4 and 2** on this engine, not 16 and
+8, because it sized the pools 1:1 with `GOMAXPROCS`. Redeploying would therefore have
+quietly *reduced* the media pool to a quarter of the tested size — a configuration
+nothing in this report covers. That is now fixed.
 
-Instead, get the benefit without the risk: **set `MEDIA_PROCESSING_WORKERS=16` and
-`UPLOAD_DURABILITY_WORKERS=8` in the Portainer UI now.** That removes the only
-configuration risk that could actually hurt the day, requires no new image, and leaves
-the tested binary in place. Deploy the code fixes afterwards.
+With the defaults corrected, a redeploy needs no `stack.env` entries at all: the proven
+16/8 is what the binary chooses on its own, so a Portainer redeploy can no longer revert
+the stack to a slower configuration. Setting the two variables in the Portainer UI is
+still harmless and makes the intent explicit, but it is no longer load-bearing.
+
+One caveat, stated plainly: the redeployed image is not the binary these numbers were
+measured against. The differences are log severity, one added log line, and defaults
+that now match what was tested — the ingest and durability paths are otherwise
+untouched. Re-run `pwsh loadtest/run_wedding.ps1 -Stage smoke` after deploying. It takes
+a couple of minutes, checks all five oracle criteria against the new artifact, and
+restores the proof to the thing that is actually running.
 
 ---
 
@@ -298,4 +318,5 @@ than failing under a thundering herd, and lost **nothing** — 6906 items verifi
 digest, thumbnail, gallery presence and source removal, including one upload that lost
 both of its synchronous safety nets and published anyway.
 
-The system is ready. Do the two things in §7 and §4.3 first.
+The system is ready. Two things remain: deploy the corrected defaults and re-run the
+smoke stage against the new build (§7), and test one upload from a real phone (§4.3).

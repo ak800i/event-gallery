@@ -133,20 +133,26 @@ func envString(key, def string) string {
 
 // defaultMediaWorkers and defaultDurabilityWorkers size the ingest pools from
 // the CPUs this process may actually use. Go's GOMAXPROCS is cgroup-aware, so
-// these follow a container's CPU limit rather than the host's core count, and
-// they adapt if the VM is resized instead of silently staying at 2.
+// these follow a container's CPU limit rather than the host's core count.
 //
-// They are capped because memory, not CPU, is the binding constraint: each
-// media worker can hold a decoded 12 MP image plus an ffmpeg child, and the
-// engine this runs on has 8 GB. CPU oversubscription is benign by comparison --
-// the wedding load campaign ran 16 media workers on 4 CPUs and published 5000
-// items with a 5.9 second drain.
+// Both deliberately oversubscribe. A media worker spends most of its life
+// waiting on an ffmpeg child process, and a durability worker on fsync, so
+// neither is bounded by Go's own parallelism and sizing them 1:1 with
+// GOMAXPROCS starves the queue. The multipliers and caps reproduce the only
+// configuration that has actually been proven: 16 media and 8 durability
+// workers on 4 usable CPUs published 5000 items with a 5.9 second drain, and
+// absorbed three times the wedding arrival rate, during the load campaign.
+//
+// The caps matter because memory, not CPU, is the binding constraint: each
+// media worker can hold a decoded 12 MP image plus its ffmpeg child, and 16 was
+// measured comfortable against an 8 GB engine. They also keep a larger host
+// from multiplying into a pool that no longer fits.
 func defaultMediaWorkers() int {
-	return min(max(runtime.GOMAXPROCS(0), 2), 12)
+	return min(max(4*runtime.GOMAXPROCS(0), 2), 16)
 }
 
 func defaultDurabilityWorkers() int {
-	return min(max(runtime.GOMAXPROCS(0)/2, 2), 8)
+	return min(max(2*runtime.GOMAXPROCS(0), 2), 8)
 }
 
 func envInt(key string, def int) (int, error) {
