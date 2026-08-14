@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -128,6 +129,24 @@ func envString(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// defaultMediaWorkers and defaultDurabilityWorkers size the ingest pools from
+// the CPUs this process may actually use. Go's GOMAXPROCS is cgroup-aware, so
+// these follow a container's CPU limit rather than the host's core count, and
+// they adapt if the VM is resized instead of silently staying at 2.
+//
+// They are capped because memory, not CPU, is the binding constraint: each
+// media worker can hold a decoded 12 MP image plus an ffmpeg child, and the
+// engine this runs on has 8 GB. CPU oversubscription is benign by comparison --
+// the wedding load campaign ran 16 media workers on 4 CPUs and published 5000
+// items with a 5.9 second drain.
+func defaultMediaWorkers() int {
+	return min(max(runtime.GOMAXPROCS(0), 2), 12)
+}
+
+func defaultDurabilityWorkers() int {
+	return min(max(runtime.GOMAXPROCS(0)/2, 2), 8)
 }
 
 func envInt(key string, def int) (int, error) {
@@ -273,7 +292,7 @@ func Load() (*Config, error) {
 	}
 	cfg.StorageCleanupInterval = time.Duration(cleanupIntervalMinutes) * time.Minute
 
-	if cfg.MediaProcessingWorkers, err = envInt("MEDIA_PROCESSING_WORKERS", 2); err != nil {
+	if cfg.MediaProcessingWorkers, err = envInt("MEDIA_PROCESSING_WORKERS", defaultMediaWorkers()); err != nil {
 		return nil, err
 	}
 	if cfg.MediaProcessingTimeout, err = envDuration("MEDIA_PROCESSING_TIMEOUT_MINUTES", 60, time.Minute); err != nil {
@@ -282,7 +301,7 @@ func Load() (*Config, error) {
 	if cfg.UploadDurabilityWait, err = envDuration("UPLOAD_DURABILITY_WAIT_SECONDS", 75, time.Second); err != nil {
 		return nil, err
 	}
-	if cfg.UploadDurabilityWorkers, err = envInt("UPLOAD_DURABILITY_WORKERS", 2); err != nil {
+	if cfg.UploadDurabilityWorkers, err = envInt("UPLOAD_DURABILITY_WORKERS", defaultDurabilityWorkers()); err != nil {
 		return nil, err
 	}
 	if cfg.UploadRetryMaxBackoff, err = envDuration("UPLOAD_RETRY_MAX_BACKOFF_MINUTES", 15, time.Minute); err != nil {

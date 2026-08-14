@@ -204,7 +204,12 @@ func (s *Server) handlePreCreateHook(w http.ResponseWriter, r *http.Request, req
 		UploaderIP:       hookUploaderIP(req),
 	}
 	if err := s.store.CreateUploadingJob(r.Context(), job); err != nil {
-		slog.Error("failed to record upload job", "operation", "pre_create", "error", err)
+		if store.IsBusy(err) {
+			// The client sees 503 and retries; the upload is not lost.
+			slog.Warn("deferred recording upload job, database busy", "operation", "pre_create", "error", err)
+		} else {
+			slog.Error("failed to record upload job", "operation", "pre_create", "error", err)
+		}
 		retryHook(w, 5, "could not record the upload")
 		return
 	}

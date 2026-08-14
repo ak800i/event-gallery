@@ -167,7 +167,14 @@ func (m *Manager) runWorker(worker int) {
 	for {
 		worked, err := m.claimAndRunOnce()
 		if err != nil {
-			slog.Error("ingest worker iteration failed", "operation", "worker_loop", "worker", worker, "error", err)
+			// A busy database is the next tick's problem, not an operator's:
+			// the worker retries and normally succeeds. Logged at ERROR, a
+			// bulk purge on an idle app produced 141 of these in six minutes.
+			if store.IsBusy(err) {
+				slog.Warn("ingest worker iteration deferred, database busy", "operation", "worker_loop", "worker", worker, "error", err)
+			} else {
+				slog.Error("ingest worker iteration failed", "operation", "worker_loop", "worker", worker, "error", err)
+			}
 		}
 		if worked {
 			continue // drain the queue before sleeping

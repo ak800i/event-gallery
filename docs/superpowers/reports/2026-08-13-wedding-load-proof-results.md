@@ -244,6 +244,27 @@ Go 1.25's `GOMAXPROCS` is cgroup-aware (verified: with `--cpus=2`, `NumCPU()` = 
 Separately: `.wslconfig` now requests 16 processors but still only **8 GB** of memory.
 Raising that to 16–24 GB is worthwhile before the extra cores can pay off.
 
+### What has landed, and what to deploy before the day
+
+All four defects above are now fixed on `main`, with tests, and the full Go suite passes:
+
+- `store.IsBusy` classifies SQLITE_BUSY by **result code**, not message text, and the
+  three log sites demote it to WARN. A test provokes a real locked database rather than
+  a hand-built error, because a classifier that silently never matched would look fine
+  while changing nothing.
+- `handleBulkPurge` now logs the error it used to discard.
+- The worker defaults are derived as above.
+
+**Recommendation: do not rebuild and redeploy before the wedding.** Everything measured
+in this report was measured against the *currently deployed image*. Redeploying replaces
+the artifact the proof applies to, three days out, for changes that are all
+observability and defaults — none of which fix a data-loss risk.
+
+Instead, get the benefit without the risk: **set `MEDIA_PROCESSING_WORKERS=16` and
+`UPLOAD_DURABILITY_WORKERS=8` in the Portainer UI now.** That removes the only
+configuration risk that could actually hurt the day, requires no new image, and leaves
+the tested binary in place. Deploy the code fixes afterwards.
+
 ---
 
 ## 8. Cleanup, verified by measurement

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
@@ -218,8 +219,24 @@ func TestLoad_IngestDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.MediaProcessingWorkers != 2 {
-		t.Errorf("MediaProcessingWorkers = %d, want 2", cfg.MediaProcessingWorkers)
+	// The worker defaults are derived from the CPUs the process may use rather
+	// than fixed, so assert the contract -- bounded, and never the old silent 2
+	// on a machine with cores to spare -- instead of a machine-specific number.
+	if got, want := cfg.MediaProcessingWorkers, defaultMediaWorkers(); got != want {
+		t.Errorf("MediaProcessingWorkers = %d, want %d", got, want)
+	}
+	if cfg.MediaProcessingWorkers < 2 || cfg.MediaProcessingWorkers > 12 {
+		t.Errorf("MediaProcessingWorkers = %d, want within [2,12]", cfg.MediaProcessingWorkers)
+	}
+	if got, want := cfg.UploadDurabilityWorkers, defaultDurabilityWorkers(); got != want {
+		t.Errorf("UploadDurabilityWorkers = %d, want %d", got, want)
+	}
+	if cfg.UploadDurabilityWorkers < 2 || cfg.UploadDurabilityWorkers > 8 {
+		t.Errorf("UploadDurabilityWorkers = %d, want within [2,8]", cfg.UploadDurabilityWorkers)
+	}
+	if runtime.GOMAXPROCS(0) >= 4 && cfg.MediaProcessingWorkers < 4 {
+		t.Errorf("MediaProcessingWorkers = %d on %d CPUs, want the default to scale",
+			cfg.MediaProcessingWorkers, runtime.GOMAXPROCS(0))
 	}
 	if cfg.UploadDurabilityWait != 75*time.Second {
 		t.Errorf("UploadDurabilityWait = %v, want 75s", cfg.UploadDurabilityWait)

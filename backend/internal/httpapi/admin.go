@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -183,6 +184,10 @@ func (s *Server) handleBulkPurge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		// Without this the endpoint answers 500 and writes nothing to the log,
+		// leaving an operator with no cause at all. Observed live: a purge of
+		// 500 ids returned 500 after 44.7s in complete silence.
+		slog.Error("bulk purge failed", "operation", "admin_bulk_purge", "ids", len(req.IDs), "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to permanently delete media")
 		return
 	}

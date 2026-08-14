@@ -133,6 +133,14 @@ func (r *durabilityRegistry) run(uploadID string, op *durabilityOp) {
 
 	op.err = r.manager.makeDurable(ctx, uploadID)
 	if op.err != nil {
+		// A busy database here is retried by the queue and the item still
+		// publishes -- observed live during the overload stage, where an upload
+		// lost both this barrier and its completion fence and published anyway.
+		if store.IsBusy(op.err) {
+			slog.Warn("durability barrier deferred, database busy", "operation", "durability", "upload_id", uploadID,
+				"final", errors.Is(op.err, ErrDurabilityFinal), "error", op.err)
+			return
+		}
 		slog.Error("durability barrier failed", "operation", "durability", "upload_id", uploadID,
 			"final", errors.Is(op.err, ErrDurabilityFinal), "error", op.err)
 		return
