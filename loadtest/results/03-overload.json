@@ -1,0 +1,773 @@
+{
+  "stage": "overload",
+  "aborted": "",
+  "items": {
+    "total": 1000,
+    "verified": 1000,
+    "published": 1000,
+    "duplicate": 0,
+    "failed": 0
+  },
+  "oracle_failures": [],
+  "oracle_failure_count": 0,
+  "backpressure": {
+    "503": 3
+  },
+  "unexpected_5xx": 0,
+  "log_levels": {
+    "INFO": 11785,
+    "WARN": 3,
+    "ERROR": 4
+  },
+  "timings": {
+    "to_published_p50": 310.439,
+    "to_published_p95": 386.562,
+    "to_published_max": 399.662
+  },
+  "drain_seconds": 398.8,
+  "queue_summary": {
+    "samples": 71,
+    "with_oldest_pending": 43,
+    "max_oldest_pending_age_seconds": 383,
+    "suspect_gaps_seconds": [
+      48.4
+    ]
+  },
+  "queue_samples": [
+    {
+      "time": "2026-08-14T11:35:42.660670637+02:00",
+      "uploading": 3,
+      "pending": 0,
+      "processing": 4,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:36:05.241468878+02:00",
+      "uploading": 12,
+      "pending": 37,
+      "processing": 12,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 11
+    },
+    {
+      "time": "2026-08-14T11:36:18.318901175+02:00",
+      "uploading": 9,
+      "pending": 72,
+      "processing": 13,
+      "cleanup": 2,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 21
+    },
+    {
+      "time": "2026-08-14T11:36:32.832369247+02:00",
+      "uploading": 14,
+      "pending": 98,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 31
+    },
+    {
+      "time": "2026-08-14T11:36:52.301913412+02:00",
+      "uploading": 6,
+      "pending": 132,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 43
+    },
+    {
+      "time": "2026-08-14T11:37:06.237230734+02:00",
+      "uploading": 8,
+      "pending": 157,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 53
+    },
+    {
+      "time": "2026-08-14T11:37:21.25242628+02:00",
+      "uploading": 8,
+      "pending": 181,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 63
+    },
+    {
+      "time": "2026-08-14T11:37:34.176497181+02:00",
+      "uploading": 5,
+      "pending": 196,
+      "processing": 14,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 70
+    },
+    {
+      "time": "2026-08-14T11:37:49.409614933+02:00",
+      "uploading": 6,
+      "pending": 221,
+      "processing": 14,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 79
+    },
+    {
+      "time": "2026-08-14T11:38:07.156205923+02:00",
+      "uploading": 11,
+      "pending": 232,
+      "processing": 14,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 90
+    },
+    {
+      "time": "2026-08-14T11:38:39.278432577+02:00",
+      "uploading": 16,
+      "pending": 302,
+      "processing": 14,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 112
+    },
+    {
+      "time": "2026-08-14T11:39:00.266403047+02:00",
+      "uploading": 11,
+      "pending": 348,
+      "processing": 15,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 124
+    },
+    {
+      "time": "2026-08-14T11:39:20.911944471+02:00",
+      "uploading": 10,
+      "pending": 399,
+      "processing": 13,
+      "cleanup": 2,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 141
+    },
+    {
+      "time": "2026-08-14T11:39:36.498513386+02:00",
+      "uploading": 9,
+      "pending": 420,
+      "processing": 15,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 148
+    },
+    {
+      "time": "2026-08-14T11:39:55.276625763+02:00",
+      "uploading": 4,
+      "pending": 458,
+      "processing": 14,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 158
+    },
+    {
+      "time": "2026-08-14T11:40:15.996274797+02:00",
+      "uploading": 10,
+      "pending": 489,
+      "processing": 14,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 171
+    },
+    {
+      "time": "2026-08-14T11:40:40.037189874+02:00",
+      "uploading": 12,
+      "pending": 520,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 181
+    },
+    {
+      "time": "2026-08-14T11:41:28.469368334+02:00",
+      "uploading": 6,
+      "pending": 598,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 209
+    },
+    {
+      "time": "2026-08-14T11:41:42.734796848+02:00",
+      "uploading": 2,
+      "pending": 586,
+      "processing": 11,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 216
+    },
+    {
+      "time": "2026-08-14T11:41:55.654007998+02:00",
+      "uploading": 2,
+      "pending": 564,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 221
+    },
+    {
+      "time": "2026-08-14T11:42:08.089858025+02:00",
+      "uploading": 2,
+      "pending": 546,
+      "processing": 14,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 226
+    },
+    {
+      "time": "2026-08-14T11:42:22.325029459+02:00",
+      "uploading": 2,
+      "pending": 522,
+      "processing": 15,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 234
+    },
+    {
+      "time": "2026-08-14T11:42:39.478133406+02:00",
+      "uploading": 2,
+      "pending": 496,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 243
+    },
+    {
+      "time": "2026-08-14T11:42:53.278158393+02:00",
+      "uploading": 2,
+      "pending": 477,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 253
+    },
+    {
+      "time": "2026-08-14T11:43:05.351785596+02:00",
+      "uploading": 2,
+      "pending": 462,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 259
+    },
+    {
+      "time": "2026-08-14T11:43:22.176416053+02:00",
+      "uploading": 2,
+      "pending": 432,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 267
+    },
+    {
+      "time": "2026-08-14T11:43:36.264808861+02:00",
+      "uploading": 2,
+      "pending": 415,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 274
+    },
+    {
+      "time": "2026-08-14T11:43:50.33734986+02:00",
+      "uploading": 2,
+      "pending": 396,
+      "processing": 11,
+      "cleanup": 4,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 280
+    },
+    {
+      "time": "2026-08-14T11:44:05.993520542+02:00",
+      "uploading": 2,
+      "pending": 369,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 290
+    },
+    {
+      "time": "2026-08-14T11:44:19.173999534+02:00",
+      "uploading": 2,
+      "pending": 348,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 296
+    },
+    {
+      "time": "2026-08-14T11:44:35.162528013+02:00",
+      "uploading": 2,
+      "pending": 327,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 307
+    },
+    {
+      "time": "2026-08-14T11:44:50.483646849+02:00",
+      "uploading": 2,
+      "pending": 303,
+      "processing": 12,
+      "cleanup": 2,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 311
+    },
+    {
+      "time": "2026-08-14T11:45:03.712959781+02:00",
+      "uploading": 2,
+      "pending": 281,
+      "processing": 14,
+      "cleanup": 2,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 317
+    },
+    {
+      "time": "2026-08-14T11:45:19.001380116+02:00",
+      "uploading": 2,
+      "pending": 255,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 326
+    },
+    {
+      "time": "2026-08-14T11:45:37.272125613+02:00",
+      "uploading": 2,
+      "pending": 231,
+      "processing": 15,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 334
+    },
+    {
+      "time": "2026-08-14T11:45:46.422354512+02:00",
+      "uploading": 2,
+      "pending": 215,
+      "processing": 15,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 337
+    },
+    {
+      "time": "2026-08-14T11:46:02.373094123+02:00",
+      "uploading": 2,
+      "pending": 186,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 344
+    },
+    {
+      "time": "2026-08-14T11:46:16.34075453+02:00",
+      "uploading": 2,
+      "pending": 164,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 351
+    },
+    {
+      "time": "2026-08-14T11:46:31.115520905+02:00",
+      "uploading": 2,
+      "pending": 139,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 353
+    },
+    {
+      "time": "2026-08-14T11:46:47.034468002+02:00",
+      "uploading": 2,
+      "pending": 114,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 361
+    },
+    {
+      "time": "2026-08-14T11:47:00.609605638+02:00",
+      "uploading": 2,
+      "pending": 88,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 365
+    },
+    {
+      "time": "2026-08-14T11:47:15.842969502+02:00",
+      "uploading": 2,
+      "pending": 63,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 368
+    },
+    {
+      "time": "2026-08-14T11:47:29.81673483+02:00",
+      "uploading": 2,
+      "pending": 39,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 377
+    },
+    {
+      "time": "2026-08-14T11:47:45.063622633+02:00",
+      "uploading": 2,
+      "pending": 9,
+      "processing": 15,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 383
+    },
+    {
+      "time": "2026-08-14T11:47:58.095145623+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 4,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:48:12.872464117+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:48:27.904408375+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:48:42.91944752+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:48:57.933447514+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:49:12.938605309+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:49:27.9584918+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:49:42.967059676+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:49:57.994902802+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:50:13.007647228+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:50:28.010078312+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:50:43.023986661+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:50:58.054508736+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:51:13.04392238+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:51:28.07397291+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:51:43.065517804+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:51:58.083170084+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:52:13.096577849+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:52:28.129502561+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:52:43.195105956+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:52:58.127265816+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:53:13.141527791+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:53:28.16415664+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:53:43.150344093+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:53:58.17168092+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:54:13.164265266+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:54:28.191570857+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    }
+  ],
+  "disk": {
+    "free_before": 246845255680,
+    "free_after": 216232955904
+  },
+  "source_observation": {
+    "samples": 1269,
+    "max_seen": 629,
+    "observed": true,
+    "errors": 0,
+    "error": ""
+  },
+  "passed": false,
+  "by_type": {
+    "image/jpeg": {
+      "uploaded": 628,
+      "published": 628,
+      "with_thumbnail": 628
+    },
+    "image/webp": {
+      "uploaded": 188,
+      "published": 188,
+      "with_thumbnail": 188
+    },
+    "image/png": {
+      "uploaded": 84,
+      "published": 84,
+      "with_thumbnail": 84
+    },
+    "video/mp4": {
+      "uploaded": 42,
+      "published": 42,
+      "with_thumbnail": 42
+    },
+    "video/quicktime": {
+      "uploaded": 58,
+      "published": 58,
+      "with_thumbnail": 58
+    }
+  },
+  "verification_backpressure": {},
+  "poll_problems": {},
+  "gallery_unavailable": "",
+  "arrival_lag": {
+    "p50": 0.001,
+    "p95": 0.022,
+    "max": 0.142
+  },
+  "transport_errors": 0,
+  "provisional": false,
+  "log_lines": {
+    "total": 11792,
+    "parsed": 11792
+  }
+}
