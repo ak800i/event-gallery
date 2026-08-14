@@ -5,6 +5,7 @@ results/*
 !results/02-wedding.json
 !results/03-overload.json
 !results/04-herd.json
+!results/05-tunnel.json
 assets/
 __pycache__/
 *.pyc
