@@ -31,6 +31,11 @@ def main():
     parser.add_argument("--password", default=os.getenv("ADMIN_PASSWORD", ""))
     parser.add_argument("--prefix", default="event-gallery-battle-")
     parser.add_argument("--wait-seconds", type=int, default=10)
+    # Soft delete alone leaves the bytes on disk until trash retention expires.
+    # Purge goes through purgeMedia, so it still honours the storage-health gate
+    # and the in-flight upload-job guard rather than bypassing them.
+    parser.add_argument("--purge", action="store_true",
+                        help="after trashing, permanently delete so the disk is reclaimed now")
     args = parser.parse_args()
     if not args.base_url:
         parser.error("set BASE_URL or pass --base-url")
@@ -65,7 +70,26 @@ def main():
             {"ids": batch},
             {"X-CSRF-Token": csrf},
         )
-    print(json.dumps({"matched": len(ids), "movedToTrash": len(ids), "prefix": args.prefix}, indent=2))
+
+    purged = 0
+    if args.purge:
+        for start in range(0, len(ids), 500):   # the endpoint caps a batch at 500
+            batch = ids[start : start + 500]
+            result = request(
+                opener,
+                args.base_url.rstrip("/") + "/api/admin/media/bulk-purge",
+                "POST",
+                {"ids": batch},
+                {"X-CSRF-Token": csrf},
+            )
+            purged += int(result.get("purged", result.get("changed", len(batch))))
+
+    print(json.dumps({
+        "matched": len(ids),
+        "movedToTrash": len(ids),
+        "purged": purged,
+        "prefix": args.prefix,
+    }, indent=2))
 
 
 if __name__ == "__main__":
