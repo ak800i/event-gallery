@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -155,6 +156,12 @@ func run() error {
 	// data-safe -- recovery is idempotent and commits nothing mid-inventory --
 	// and the next boot repeats the work. Do not convert this to `go Start()`
 	// to shorten it; that reopens the shutdown race above.
+	// The pool sizes default from GOMAXPROCS, so when they are not overridden
+	// nothing in the environment records what they actually came out as.
+	slog.Info("ingest pools", "operation", "startup",
+		"media_workers", cfg.MediaProcessingWorkers,
+		"durability_workers", cfg.UploadDurabilityWorkers,
+		"gomaxprocs", runtime.GOMAXPROCS(0))
 	ingestManager.Start()
 
 	select {
