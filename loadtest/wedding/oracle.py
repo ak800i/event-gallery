@@ -15,6 +15,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from .tusclient import USER_AGENT
+
 TERMINAL_STATES = {"published", "duplicate", "failed", "cancelled"}
 SUCCESS_STATES = {"published", "duplicate"}
 STATUS_BATCH_MAX = 100
@@ -63,7 +65,8 @@ def poll_status(base_url: str, upload_ids: list[str], batch_size: int = STATUS_B
         body = json.dumps({"uploadIds": chunk}).encode()
         req = urllib.request.Request(
             f"{base_url}/api/uploads/status", data=body,
-            headers={"Content-Type": "application/json"}, method="POST")
+            headers={"Content-Type": "application/json",
+                     "User-Agent": USER_AGENT}, method="POST")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             out.update(json.loads(resp.read()).get("results", {}))
     missing = [u for u in upload_ids if u not in out]
@@ -79,7 +82,8 @@ def verify_download(base_url: str, media_id: str, expected_sha: str,
     url = f"{base_url}/api/media/{media_id}/download"
     h = hashlib.sha256()
     got = 0
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         while True:
             block = resp.read(1 << 20)
             if not block:
@@ -103,7 +107,8 @@ def gallery_filenames(base_url: str, timeout: float = 60.0) -> set[str]:
         url = f"{base_url}/api/gallery?limit=100"
         if cursor:
             url += "&cursor=" + urllib.parse.quote(cursor, safe="")
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             page = json.loads(resp.read())
         for item in page.get("items", []):
             name = item.get("originalFilename") or item.get("filename")

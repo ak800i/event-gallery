@@ -26,6 +26,16 @@ TRANSPORT_ERROR = 0
 RETRYABLE = {TRANSPORT_ERROR, 408, 409, 423, 425, 429, 500, 502, 503, 504}
 BACKPRESSURE = {429, 503}
 
+# Cloudflare's bot rules answer the default "Python-urllib/3.13" with a 403 at
+# the edge, which never reaches the app. 403 is not retryable, so the tunnel
+# stage failed every create in milliseconds and looked like a hang. Measured
+# live: default UA -> 403, browser UA -> 200, curl UA -> 200. The client this
+# harness stands in for is a guest's phone browser, so presenting a phone
+# browser is what makes the tunnel stage faithful rather than what evades a
+# control -- the internal stages bypass Cloudflare entirely and never saw this.
+USER_AGENT = ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36")
+
 
 @dataclass
 class Attempt:
@@ -51,6 +61,7 @@ def _request(method: str, url: str, headers: dict, body: bytes | None = None,
     thousand uploads must cost one item, not the whole campaign, and an
     exception here would unwind the worker and the pool with it."""
     req = urllib.request.Request(url, data=body, method=method)
+    req.add_header("User-Agent", USER_AGENT)   # before the caller's, so it can override
     for key, value in headers.items():
         req.add_header(key, value)
     try:
