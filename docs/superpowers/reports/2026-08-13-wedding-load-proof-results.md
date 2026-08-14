@@ -105,7 +105,7 @@ That severity choice is correct, and it is precisely the argument for §4.1.
 
 ### Tunnel — the real public path
 
-300 items through `https://example-gallery.invalid`, i.e. Cloudflare edge → tunnel → app,
+300 items through the public hostname, i.e. Cloudflare edge → tunnel → app,
 the path every guest will use. Bytes verified by re-downloading each original *through
 Cloudflare*.
 

@@ -21,7 +21,7 @@
 - **A missed threshold is reported, not tuned away.** Worker counts are set once, up front, on calibration evidence.
 - **Commit before falsifying.** Where a step says to break the implementation and confirm a test fails, commit first. Reverting the mutation with `git checkout` on uncommitted work discards your own change too — that exact mistake landed a commit containing only a test earlier in this repo's history, leaving `main` red. Revert with the editor, or commit first and then `git checkout` is safe.
 - Target under test: `main@99e06d7`, Portainer stack `wedding-gallery`, project network `wedding-gallery_edge`.
-- Host paths: uploads `<data-dir>\uploads`, media `<data-dir>\media`, app data `<data-dir>\app`.
+- Host paths: uploads `$env:EG_UPLOAD_DIR`, media `$env:EG_MEDIA_DIR`, app data `$env:EG_APP_DIR`.
 
 ## File Structure
 
@@ -1399,8 +1399,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Stage,
     [string]$Network   = 'wedding-gallery_edge',
     [string]$BaseUrl   = 'http://app:8080',
-    [string]$UploadDir = '<data-dir>\uploads',
-    [string]$MediaDir  = '<data-dir>\media',
+    [string]$UploadDir = $env:EG_UPLOAD_DIR,
+    [string]$MediaDir  = $env:EG_MEDIA_DIR,
     [string]$Container = 'wedding-gallery-app-1'
 )
 $ErrorActionPreference = 'Stop'
@@ -1486,15 +1486,15 @@ This directly exercises the most serious defect found in review — a rowless, s
 ```powershell
 # A fresh, rowless partial with no sidecar.
 $id = 'battlewitness' + (Get-Random -Maximum 99999)
-[IO.File]::WriteAllBytes("<data-dir>\uploads\$id", (New-Object byte[] 1048576))
+[IO.File]::WriteAllBytes("$env:EG_UPLOAD_DIR\$id", (New-Object byte[] 1048576))
 Start-Sleep -Seconds 45   # three reconcile passes at 15s
 docker exec wedding-gallery-app-1 sh -c "wget -qO- --post-data='{\"uploadIds\":[\"$id\"]}' --header='Content-Type: application/json' http://127.0.0.1:8080/api/uploads/status"
-Test-Path "<data-dir>\uploads\$id"
+Test-Path "$env:EG_UPLOAD_DIR\$id"
 ```
 
 Expected: status reports `unknown` (never adopted), and the file still exists. If instead it reports `published`, **stop the campaign** — the deployed build predates the fix and would publish truncated files while deleting their sources.
 
-Then remove it: `Remove-Item "<data-dir>\uploads\$id"`
+Then remove it: `Remove-Item "$env:EG_UPLOAD_DIR\$id"`
 
 - [ ] **Step 3: Change the two worker settings**
 
@@ -1734,7 +1734,7 @@ Expected: delta within ~2 GB of zero. A large shortfall means originals or thumb
 
 - [ ] **Step 4: Verify no residue in the upload directory**
 
-Run: `(Get-ChildItem '<data-dir>\uploads' | Measure-Object).Count`
+Run: `(Get-ChildItem $env:EG_UPLOAD_DIR | Measure-Object).Count`
 Expected: 0.
 
 - [ ] **Step 5: Write the results report**

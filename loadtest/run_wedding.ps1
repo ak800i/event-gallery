@@ -5,11 +5,16 @@ param(
     [Parameter(Mandatory = $true)][string]$Stage,
     [string]$Network   = 'wedding-gallery_edge',
     [string]$BaseUrl   = 'http://app:8080',
-    [string]$UploadDir = '<data-dir>\uploads',
-    [string]$MediaDir  = '<data-dir>\media',
+    # Host paths are deployment-specific, so they come from the environment
+    # rather than being baked in: this repo is public.
+    [string]$UploadDir = $env:EG_UPLOAD_DIR,
+    [string]$MediaDir  = $env:EG_MEDIA_DIR,
     [string]$Container = 'wedding-gallery-app-1'
 )
 $ErrorActionPreference = 'Stop'
+if (-not $UploadDir -or -not $MediaDir) {
+    throw "Set EG_UPLOAD_DIR and EG_MEDIA_DIR to the host directories bind-mounted as the tus upload dir and the media dir, or pass -UploadDir and -MediaDir."
+}
 $repo    = Split-Path -Parent $PSScriptRoot
 $results = Join-Path $repo 'loadtest\results'
 New-Item -ItemType Directory -Force -Path $results | Out-Null
