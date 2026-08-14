@@ -1,0 +1,231 @@
+{
+  "stage": "herd",
+  "aborted": "",
+  "items": {
+    "total": 200,
+    "verified": 200,
+    "published": 200,
+    "duplicate": 0,
+    "failed": 0
+  },
+  "oracle_failures": [],
+  "oracle_failure_count": 0,
+  "backpressure": {
+    "503": 72
+  },
+  "unexpected_5xx": 0,
+  "log_levels": {
+    "INFO": 2524,
+    "WARN": 115
+  },
+  "timings": {
+    "to_published_p50": 64.653,
+    "to_published_p95": 115.257,
+    "to_published_max": 120.801
+  },
+  "drain_seconds": 115.0,
+  "queue_summary": {
+    "samples": 15,
+    "with_oldest_pending": 8,
+    "max_oldest_pending_age_seconds": 89,
+    "suspect_gaps_seconds": []
+  },
+  "queue_samples": [
+    {
+      "time": "2026-08-14T11:56:44.02737783+02:00",
+      "uploading": 49,
+      "pending": 0,
+      "processing": 3,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:57:16.257300199+02:00",
+      "uploading": 17,
+      "pending": 149,
+      "processing": 15,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 28
+    },
+    {
+      "time": "2026-08-14T11:57:22.411676259+02:00",
+      "uploading": 2,
+      "pending": 156,
+      "processing": 12,
+      "cleanup": 2,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 33
+    },
+    {
+      "time": "2026-08-14T11:57:31.788953695+02:00",
+      "uploading": 2,
+      "pending": 137,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 38
+    },
+    {
+      "time": "2026-08-14T11:57:46.654675087+02:00",
+      "uploading": 2,
+      "pending": 109,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 48
+    },
+    {
+      "time": "2026-08-14T11:58:01.486126372+02:00",
+      "uploading": 2,
+      "pending": 81,
+      "processing": 15,
+      "cleanup": 1,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 59
+    },
+    {
+      "time": "2026-08-14T11:58:15.951878361+02:00",
+      "uploading": 2,
+      "pending": 55,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 69
+    },
+    {
+      "time": "2026-08-14T11:58:30.499661751+02:00",
+      "uploading": 2,
+      "pending": 30,
+      "processing": 16,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 80
+    },
+    {
+      "time": "2026-08-14T11:58:45.000160843+02:00",
+      "uploading": 2,
+      "pending": 11,
+      "processing": 14,
+      "cleanup": 2,
+      "discarding": 0,
+      "max_processing_failures": 0,
+      "oldest_pending_age_seconds": 89
+    },
+    {
+      "time": "2026-08-14T11:58:59.984176757+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 13,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:59:13.602397656+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 3,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:59:28.495135102+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:59:43.511458908+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T11:59:58.549254664+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    },
+    {
+      "time": "2026-08-14T12:00:13.546794846+02:00",
+      "uploading": 2,
+      "pending": 0,
+      "processing": 0,
+      "cleanup": 0,
+      "discarding": 0,
+      "max_processing_failures": 0
+    }
+  ],
+  "disk": {
+    "free_before": 216232955904,
+    "free_after": 210157600768
+  },
+  "source_observation": {
+    "samples": 137,
+    "max_seen": 185,
+    "observed": true,
+    "errors": 0,
+    "error": ""
+  },
+  "passed": true,
+  "by_type": {
+    "image/jpeg": {
+      "uploaded": 128,
+      "published": 128,
+      "with_thumbnail": 128
+    },
+    "image/png": {
+      "uploaded": 14,
+      "published": 14,
+      "with_thumbnail": 14
+    },
+    "image/webp": {
+      "uploaded": 38,
+      "published": 38,
+      "with_thumbnail": 38
+    },
+    "video/mp4": {
+      "uploaded": 11,
+      "published": 11,
+      "with_thumbnail": 11
+    },
+    "video/quicktime": {
+      "uploaded": 9,
+      "published": 9,
+      "with_thumbnail": 9
+    }
+  },
+  "verification_backpressure": {},
+  "poll_problems": {},
+  "gallery_unavailable": "",
+  "arrival_lag": {
+    "p50": 10.101,
+    "p95": 25.255,
+    "max": 27.013
+  },
+  "transport_errors": 10,
+  "provisional": false,
+  "log_lines": {
+    "total": 2639,
+    "parsed": 2639
+  }
+}
