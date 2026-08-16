@@ -23,6 +23,12 @@ type GallerySlide = Slide & { mediaItem: MediaItem }
 // other browser has to be served the JPEG thumbnail instead.
 const UNDISPLAYABLE_IMAGE_MIME_TYPES = new Set(['image/heic', 'image/heif'])
 
+// Chrome and Firefox report canPlayType('video/quicktime') === '', so a
+// <source> labelled that is discarded before a byte is fetched -- iPhone .mov
+// files never load. Both containers are ISOBMFF and demux fine under the mp4
+// label, which is the only label the browsers will actually try.
+const SOURCE_MIME_OVERRIDES: Record<string, string> = { 'video/quicktime': 'video/mp4' }
+
 function toSlide(item: MediaItem): GallerySlide {
   const width = item.width || 1600
   const height = item.height || 1200
@@ -34,7 +40,7 @@ function toSlide(item: MediaItem): GallerySlide {
       width,
       height,
       poster: item.hasThumbnail ? mediaThumbnailUrl(item.id) : undefined,
-      sources: [{ src: mediaFileUrl(item.id), type: item.mimeType }],
+      sources: [{ src: mediaFileUrl(item.id), type: SOURCE_MIME_OVERRIDES[item.mimeType] ?? item.mimeType }],
       controls: true,
       playsInline: true,
       preload: 'metadata',

@@ -95,4 +95,22 @@ describe('Lightbox media mapping', () => {
     // Without a thumbnail there is nothing to fall back to, so try the original.
     expect(props.slides[1]).toMatchObject({ type: 'image', src: '/api/media/no-thumb-id/file' })
   })
+
+  it('labels QuickTime videos as mp4 so non-Safari browsers will load them', () => {
+    render(
+      <Lightbox
+        items={[item({ id: 'mov-id', originalFilename: 'IMG_0002.MOV', kind: 'video', mimeType: 'video/quicktime' })]}
+        index={0}
+        branding={DEFAULT_BRANDING}
+        onClose={vi.fn()}
+        onIndexChange={vi.fn()}
+      />,
+    )
+
+    const props = lightboxSpy.mock.calls.at(-1)?.[0] as CapturedLightboxProps
+    expect(props.slides[0]).toMatchObject({
+      type: 'video',
+      sources: [{ src: '/api/media/mov-id/file', type: 'video/mp4' }],
+    })
+  })
 })
