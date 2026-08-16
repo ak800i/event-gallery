@@ -1,6 +1,8 @@
 package media
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"time"
 
@@ -21,15 +23,29 @@ func ImageCapturedAt(path string) (*time.Time, error) {
 	}
 	defer f.Close()
 
-	x, err := exif.Decode(f)
-	if err != nil {
-		// No EXIF data, or unparsable: not a hard error, just no capture time.
-		return nil, nil
+	if captured := decodeEXIFDateTime(f); captured != nil {
+		return captured, nil
 	}
-
-	if t, err := x.DateTime(); err == nil {
-		utc := t.UTC()
-		return &utc, nil
+	// HEIC/HEIF/AVIF have no APP1 segment for goexif to find; their EXIF is a
+	// container item that has to be located first.
+	if tiff := heifEXIFTIFF(path); len(tiff) > 0 {
+		if captured := decodeEXIFDateTime(bytes.NewReader(tiff)); captured != nil {
+			return captured, nil
+		}
 	}
 	return nil, nil
+}
+
+func decodeEXIFDateTime(r io.Reader) *time.Time {
+	x, err := exif.Decode(r)
+	if err != nil {
+		// No EXIF data, or unparsable: not a hard error, just no capture time.
+		return nil
+	}
+	t, err := x.DateTime()
+	if err != nil {
+		return nil
+	}
+	utc := t.UTC()
+	return &utc
 }
