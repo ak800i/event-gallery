@@ -19,6 +19,10 @@ interface LightboxProps {
 
 type GallerySlide = Slide & { mediaItem: MediaItem }
 
+// Only Safari can decode these, and iPhones upload HEIC originals, so every
+// other browser has to be served the JPEG thumbnail instead.
+const UNDISPLAYABLE_IMAGE_MIME_TYPES = new Set(['image/heic', 'image/heif'])
+
 function toSlide(item: MediaItem): GallerySlide {
   const width = item.width || 1600
   const height = item.height || 1200
@@ -37,10 +41,12 @@ function toSlide(item: MediaItem): GallerySlide {
     }
   }
 
+  const useThumbnail = item.hasThumbnail && UNDISPLAYABLE_IMAGE_MIME_TYPES.has(item.mimeType)
+
   return {
     type: 'image',
     mediaItem: item,
-    src: mediaFileUrl(item.id),
+    src: useThumbnail ? mediaThumbnailUrl(item.id) : mediaFileUrl(item.id),
     alt: item.originalFilename,
     width,
     height,

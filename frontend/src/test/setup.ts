@@ -28,3 +28,9 @@ if (typeof globalThis.IntersectionObserver === 'undefined') {
   // @ts-expect-error -- partial mock is sufficient for tests
   globalThis.IntersectionObserver = MockIntersectionObserver
 }
+
+// jsdom has no object URLs; Uppy's thumbnail generator rejects without them.
+if (typeof URL.createObjectURL === 'undefined') {
+  URL.createObjectURL = () => 'blob:mock'
+  URL.revokeObjectURL = () => {}
+}

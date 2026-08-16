@@ -51,12 +51,31 @@ export function UploadPanel({ guestName, config, branding, onUploadComplete }: U
   }, [branding])
 
   const uppy = useMemo(() => {
+    const allowedMimeTypes = new Set([...config.allowedImageMimeTypes, ...config.allowedVideoMimeTypes])
+
     const instance = new Uppy({
       restrictions: {
         maxFileSize: config.maxUploadBytes,
-        allowedFileTypes: [...config.allowedImageMimeTypes, ...config.allowedVideoMimeTypes],
+        // Wildcards rather than the exact list on purpose: Uppy renders these
+        // as the file input's `accept`, and iOS only hands over untouched
+        // originals when it sees `image/*` (WebKit maps that to the
+        // `public.image` UTI and picks PHPicker's "current" representation).
+        // With explicit types it falls back to "compatible" mode and
+        // transcodes every selected HEIC/HEVC asset, serially, before the
+        // picker will even close. onBeforeFileAdded restores the real check.
+        allowedFileTypes: ['image/*', 'video/*'],
       },
       autoProceed: false,
+      onBeforeFileAdded: (file) => {
+        // Uppy uses application/octet-stream when it cannot identify a file;
+        // let those through and leave the verdict to the server, which sniffs
+        // the actual bytes and is authoritative either way.
+        if (file.type !== 'application/octet-stream' && !allowedMimeTypes.has(file.type)) {
+          instance.info(`"${file.name ?? 'This file'}" is not a supported file type.`, 'error', 5000)
+          return false
+        }
+        return true
+      },
     })
 
     instance.use(Tus, {

@@ -75,4 +75,24 @@ describe('Lightbox media mapping', () => {
     })
     expect(props.video).toEqual({ controls: true, playsInline: true, preload: 'metadata' })
   })
+
+  it('shows the JPEG thumbnail for HEIC originals that only Safari can decode', () => {
+    render(
+      <Lightbox
+        items={[
+          item({ id: 'heic-id', originalFilename: 'IMG_0001.HEIC', mimeType: 'image/heic' }),
+          item({ id: 'no-thumb-id', mimeType: 'image/heif', hasThumbnail: false }),
+        ]}
+        index={0}
+        branding={DEFAULT_BRANDING}
+        onClose={vi.fn()}
+        onIndexChange={vi.fn()}
+      />,
+    )
+
+    const props = lightboxSpy.mock.calls.at(-1)?.[0] as CapturedLightboxProps
+    expect(props.slides[0]).toMatchObject({ type: 'image', src: '/api/media/heic-id/thumbnail' })
+    // Without a thumbnail there is nothing to fall back to, so try the original.
+    expect(props.slides[1]).toMatchObject({ type: 'image', src: '/api/media/no-thumb-id/file' })
+  })
 })
