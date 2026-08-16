@@ -17,16 +17,18 @@ import (
 type Processor struct {
 	MediaDir              string
 	ThumbnailMaxDimension int
+	PreviewMaxDimension   int
 	AllowedImageMIMEs     []string
 	AllowedVideoMIMEs     []string
 }
 
 // NewProcessor constructs a Processor. mediaDir is the root of the host's
 // persistent media bind mount.
-func NewProcessor(mediaDir string, thumbnailMaxDimension int, allowedImages, allowedVideos []string) *Processor {
+func NewProcessor(mediaDir string, thumbnailMaxDimension, previewMaxDimension int, allowedImages, allowedVideos []string) *Processor {
 	return &Processor{
 		MediaDir:              mediaDir,
 		ThumbnailMaxDimension: thumbnailMaxDimension,
+		PreviewMaxDimension:   previewMaxDimension,
 		AllowedImageMIMEs:     allowedImages,
 		AllowedVideoMIMEs:     allowedVideos,
 	}
@@ -38,9 +40,12 @@ func (p *Processor) OriginalsDir() string { return filepath.Join(p.MediaDir, "or
 // ThumbnailsDir is where generated thumbnails live.
 func (p *Processor) ThumbnailsDir() string { return filepath.Join(p.MediaDir, "thumbnails") }
 
-// EnsureDirs creates the originals/thumbnails directories if missing.
+// PreviewsDir is where generated browser-viewable previews live.
+func (p *Processor) PreviewsDir() string { return filepath.Join(p.MediaDir, "previews") }
+
+// EnsureDirs creates the originals/thumbnails/previews directories if missing.
 func (p *Processor) EnsureDirs() error {
-	for _, dir := range []string{p.OriginalsDir(), p.ThumbnailsDir()} {
+	for _, dir := range []string{p.OriginalsDir(), p.ThumbnailsDir(), p.PreviewsDir()} {
 		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("create media dir %s: %w", dir, err)
 		}
@@ -51,6 +56,11 @@ func (p *Processor) EnsureDirs() error {
 // ThumbnailPath returns the on-disk path of a media item's thumbnail.
 func (p *Processor) ThumbnailPath(id string) string {
 	return filepath.Join(p.ThumbnailsDir(), id+".jpg")
+}
+
+// PreviewPath returns the on-disk path of a media item's generated preview.
+func (p *Processor) PreviewPath(id string) string {
+	return filepath.Join(p.PreviewsDir(), id+".jpg")
 }
 
 // OriginalPath returns the on-disk path of a media item's stored original
@@ -85,8 +95,19 @@ type Result struct {
 	Height          int
 	DurationSeconds float64
 	HasThumbnail    bool
+	HasPreview      bool
 	CapturedAt      *time.Time
 }
+
+// previewMIMEs lists the stored image types that browsers other than Safari
+// cannot decode at all, so the gallery has to serve a derived JPEG instead.
+// AVIF is deliberately absent: Chrome, Firefox and Safari 16+ render it
+// natively, so a preview would only waste disk.
+var previewMIMEs = map[string]bool{"image/heic": true, "image/heif": true}
+
+// NeedsPreview reports whether a stored MIME type requires a derived
+// browser-viewable JPEG alongside the untouched original.
+func NeedsPreview(mimeType string) bool { return previewMIMEs[mimeType] }
 
 // ExtensionForMIME picks the stored file's extension from sniffed content,
 // falling back to the client's filename only for unmapped types.
@@ -99,11 +120,18 @@ func ExtensionForMIME(mimeType, originalFilename string) string {
 
 // Derive generates thumbnails and metadata for an already-stored original.
 // Every failure here is best effort: the item publishes regardless.
-func (p *Processor) Derive(ctx context.Context, finalPath, id string, kind models.MediaKind) *Result {
+func (p *Processor) Derive(ctx context.Context, finalPath, id string, kind models.MediaKind, mimeType string) *Result {
 	result := &Result{ID: id}
 	switch kind {
 	case models.KindImage:
 		p.processImage(ctx, finalPath, id, result)
+		// A missing thumbnail means ffmpeg could not decode this file at all,
+		// so a second attempt at a larger size would only burn another timeout.
+		if result.HasThumbnail && NeedsPreview(mimeType) {
+			if err := GenerateImageThumbnailFFmpeg(ctx, finalPath, p.PreviewPath(id), p.PreviewMaxDimension); err == nil {
+				result.HasPreview = true
+			}
+		}
 	case models.KindVideo:
 		p.processVideo(ctx, finalPath, id, result)
 	}

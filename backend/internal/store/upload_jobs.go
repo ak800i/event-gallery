@@ -535,15 +535,15 @@ func (s *Store) PublishMedia(ctx context.Context, uploadID, leaseToken string, i
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO media_items (
 			id, original_filename, stored_filename, kind, mime_type, size_bytes, sha256,
-			width, height, duration_seconds, has_thumbnail, captured_at, uploaded_at, approved_at,
+			width, height, duration_seconds, has_thumbnail, has_preview, captured_at, uploaded_at, approved_at,
 			uploader_name, uploader_ip, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			CASE WHEN COALESCE((SELECT value FROM app_config WHERE key = ?), 'false') = 'false' THEN ? ELSE NULL END,
 			?, ?, ?)
 		ON CONFLICT(sha256) DO NOTHING`,
 		item.ID, item.OriginalFilename, item.StoredFilename, string(item.Kind), item.MimeType,
 		item.SizeBytes, item.SHA256, nullableInt(item.Width), nullableInt(item.Height),
-		nullableFloat(item.DurationSeconds), boolToInt(item.HasThumbnail),
+		nullableFloat(item.DurationSeconds), boolToInt(item.HasThumbnail), boolToInt(item.HasPreview),
 		formatTimePtr(item.CapturedAt), formatTime(item.UploadedAt), ConfigKeyApprovalRequired,
 		formatTime(item.UploadedAt), item.UploaderName, item.UploaderIP, string(models.StatusActive),
 	)

@@ -51,6 +51,7 @@ function makeItem(overrides: Partial<MediaItem> = {}): MediaItem {
     mimeType: 'image/jpeg',
     sizeBytes: 1000,
     hasThumbnail: true,
+    hasPreview: false,
     uploadedAt: '2024-01-01T00:00:00Z',
     uploaderName: 'Alex',
     likeCount: 0,

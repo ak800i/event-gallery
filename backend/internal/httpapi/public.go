@@ -37,6 +37,7 @@ type mediaItemDTO struct {
 	Height          int     `json:"height,omitempty"`
 	DurationSeconds float64 `json:"durationSeconds,omitempty"`
 	HasThumbnail    bool    `json:"hasThumbnail"`
+	HasPreview      bool    `json:"hasPreview"`
 	CapturedAt      *string `json:"capturedAt,omitempty"`
 	UploadedAt      string  `json:"uploadedAt"`
 	UploaderName    string  `json:"uploaderName"`
@@ -56,6 +57,7 @@ func toDTO(m models.MediaItem, includeStatus bool) mediaItemDTO {
 		Height:          m.Height,
 		DurationSeconds: m.DurationSeconds,
 		HasThumbnail:    m.HasThumbnail,
+		HasPreview:      m.HasPreview,
 		UploadedAt:      m.UploadedAt.UTC().Format(time.RFC3339),
 		UploaderName:    m.UploaderName,
 		LikeCount:       m.LikeCount,
@@ -209,6 +211,22 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	http.ServeFile(w, r, s.processor.ThumbnailPath(item.ID))
+}
+
+// handlePreview streams the browser-viewable JPEG derived for originals no
+// browser but Safari can decode (HEIC/HEIF). Items whose original is already
+// displayable have none, so the lightbox uses the original directly.
+func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
+	item, ok := s.lookupActiveMedia(w, r)
+	if !ok {
+		return
+	}
+	if !item.HasPreview {
+		writeError(w, http.StatusNotFound, "no preview available")
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.ServeFile(w, r, s.processor.PreviewPath(item.ID))
 }
 
 // handleMediaFile streams the full-resolution original inline (used by the

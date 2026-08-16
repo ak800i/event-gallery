@@ -5,7 +5,7 @@ import { Download } from 'lucide-react'
 
 import 'yet-another-react-lightbox/styles.css'
 
-import { mediaDownloadUrl, mediaFileUrl, mediaThumbnailUrl } from '../api/client'
+import { mediaDownloadUrl, mediaFileUrl, mediaPreviewUrl, mediaThumbnailUrl } from '../api/client'
 import type { BrandingConfig, MediaItem } from '../types'
 import { LikeButton } from './LikeButton'
 
@@ -20,8 +20,17 @@ interface LightboxProps {
 type GallerySlide = Slide & { mediaItem: MediaItem }
 
 // Only Safari can decode these, and iPhones upload HEIC originals, so every
-// other browser has to be served the JPEG thumbnail instead.
+// other browser has to be served a derived JPEG instead.
 const UNDISPLAYABLE_IMAGE_MIME_TYPES = new Set(['image/heic', 'image/heif'])
+
+// Best available representation, in order. Items ingested before previews
+// existed fall back to the thumbnail.
+function imageSrc(item: MediaItem): string {
+  if (!UNDISPLAYABLE_IMAGE_MIME_TYPES.has(item.mimeType)) return mediaFileUrl(item.id)
+  if (item.hasPreview) return mediaPreviewUrl(item.id)
+  if (item.hasThumbnail) return mediaThumbnailUrl(item.id)
+  return mediaFileUrl(item.id)
+}
 
 // Chrome and Firefox report canPlayType('video/quicktime') === '', so a
 // <source> labelled that is discarded before a byte is fetched -- iPhone .mov
@@ -47,12 +56,10 @@ function toSlide(item: MediaItem): GallerySlide {
     }
   }
 
-  const useThumbnail = item.hasThumbnail && UNDISPLAYABLE_IMAGE_MIME_TYPES.has(item.mimeType)
-
   return {
     type: 'image',
     mediaItem: item,
-    src: useThumbnail ? mediaThumbnailUrl(item.id) : mediaFileUrl(item.id),
+    src: imageSrc(item),
     alt: item.originalFilename,
     width,
     height,

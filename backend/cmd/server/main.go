@@ -89,7 +89,7 @@ func run() error {
 	defer sqlDB.Close()
 
 	st := store.New(sqlDB)
-	processor := media.NewProcessor(cfg.MediaDir, cfg.ThumbnailMaxDimension, cfg.AllowedImageMIMEs, cfg.AllowedVideoMIMEs)
+	processor := media.NewProcessor(cfg.MediaDir, cfg.ThumbnailMaxDimension, cfg.PreviewMaxDimension, cfg.AllowedImageMIMEs, cfg.AllowedVideoMIMEs)
 	if err := processor.EnsureDirs(); err != nil {
 		return err
 	}

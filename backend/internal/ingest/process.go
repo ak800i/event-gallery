@@ -203,7 +203,7 @@ func (m *Manager) prepareAndPublish(ctx context.Context, job *store.UploadJob) e
 		}
 	}
 
-	result := m.processor.Derive(ctx, m.processor.OriginalPath(storedFilename), job.MediaID, kind)
+	result := m.processor.Derive(ctx, m.processor.OriginalPath(storedFilename), job.MediaID, kind, mimeType)
 
 	item := &models.MediaItem{
 		ID:               job.MediaID,
@@ -217,6 +217,7 @@ func (m *Manager) prepareAndPublish(ctx context.Context, job *store.UploadJob) e
 		Height:           result.Height,
 		DurationSeconds:  result.DurationSeconds,
 		HasThumbnail:     result.HasThumbnail,
+		HasPreview:       result.HasPreview,
 		CapturedAt:       result.CapturedAt,
 		UploadedAt:       time.Now(),
 		UploaderName:     job.GuestName,
@@ -320,6 +321,7 @@ func (m *Manager) removeArtifacts(job *store.UploadJob) {
 		_ = os.Remove(m.processor.OriginalPath(job.StoredFilename))
 	}
 	_ = os.Remove(m.processor.ThumbnailPath(job.MediaID))
+	_ = os.Remove(m.processor.PreviewPath(job.MediaID))
 	_ = media.FsyncDir(m.processor.OriginalsDir())
 }
 

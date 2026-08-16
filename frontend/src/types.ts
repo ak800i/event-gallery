@@ -15,6 +15,7 @@ export interface MediaItem {
   height?: number
   durationSeconds?: number
   hasThumbnail: boolean
+  hasPreview: boolean
   capturedAt?: string
   uploadedAt: string
   uploaderName: string

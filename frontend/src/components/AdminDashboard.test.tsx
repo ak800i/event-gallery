@@ -27,6 +27,7 @@ const pending: MediaItem = {
   mimeType: 'image/jpeg',
   sizeBytes: 100,
   hasThumbnail: true,
+  hasPreview: false,
   uploadedAt: '2026-01-01T00:00:00Z',
   uploaderName: 'Guest',
   likeCount: 0,

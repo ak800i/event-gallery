@@ -10,7 +10,7 @@ import (
 
 func purgeTestProcessor(t *testing.T) (*Processor, models.MediaItem) {
 	t.Helper()
-	processor := NewProcessor(t.TempDir(), 800, nil, nil)
+	processor := NewProcessor(t.TempDir(), 800, 2048, nil, nil)
 	if err := processor.EnsureDirs(); err != nil {
 		t.Fatal(err)
 	}
@@ -19,6 +19,9 @@ func purgeTestProcessor(t *testing.T) (*Processor, models.MediaItem) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(processor.ThumbnailPath(item.ID), []byte("thumbnail"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(processor.PreviewPath(item.ID), []byte("preview"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	return processor, item
@@ -46,6 +49,9 @@ func TestPurgeStageRestore(t *testing.T) {
 	if _, err := os.Stat(processor.ThumbnailPath(item.ID)); err != nil {
 		t.Fatalf("thumbnail not restored: %v", err)
 	}
+	if _, err := os.Stat(processor.PreviewPath(item.ID)); err != nil {
+		t.Fatalf("preview not restored: %v", err)
+	}
 }
 
 func TestPurgeStageFinalize(t *testing.T) {
@@ -63,10 +69,13 @@ func TestPurgeStageFinalize(t *testing.T) {
 	if _, err := os.Stat(processor.OriginalPath(item.StoredFilename)); !os.IsNotExist(err) {
 		t.Fatal("original should be permanently removed")
 	}
+	if _, err := os.Stat(processor.PreviewPath(item.ID)); !os.IsNotExist(err) {
+		t.Fatal("preview should be permanently removed")
+	}
 }
 
 func TestLoadPurgeStagesIsolatesMalformedStage(t *testing.T) {
-	processor := NewProcessor(t.TempDir(), 800, nil, nil)
+	processor := NewProcessor(t.TempDir(), 800, 2048, nil, nil)
 	bad := filepath.Join(processor.PurgingDir(), "bad")
 	if err := os.MkdirAll(bad, 0o750); err != nil {
 		t.Fatal(err)

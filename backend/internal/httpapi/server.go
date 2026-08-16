@@ -156,6 +156,7 @@ func (s *Server) Router() http.Handler {
 			pub.Get("/config/public", s.handlePublicConfig)
 			pub.Post("/uploads/check", s.handleUploadCheck)
 			pub.Get("/media/{id}/thumbnail", s.handleThumbnail)
+			pub.Get("/media/{id}/preview", s.handlePreview)
 			pub.Get("/media/{id}/file", s.handleMediaFile)
 			pub.Get("/media/{id}/download", s.handleMediaDownload)
 			pub.Post("/media/{id}/like", s.handleLike)

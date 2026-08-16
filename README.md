@@ -224,6 +224,7 @@ The most useful optional application settings are:
 | `UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC` | `1073741824` | Upload bandwidth per IP (effectively unthrottled at 1 GiB/s) |
 | `ADMIN_SESSION_TTL_MINUTES` | `720` | Admin session lifetime |
 | `THUMBNAIL_MAX_DIMENSION` | `1600` | Longest thumbnail edge in pixels |
+| `PREVIEW_MAX_DIMENSION` | `2048` | Longest edge of the browser-viewable JPEG derived for HEIC/HEIF originals |
 | `ALLOWED_IMAGE_MIME_TYPES` | common image formats | Comma-separated image MIME types |
 | `ALLOWED_VIDEO_MIME_TYPES` | MP4, QuickTime, WebM | Comma-separated video MIME types |
 | `TRASH_RETENTION_DAYS` | `30` | Permanently purge trash older than this; `0` disables automatic purge |

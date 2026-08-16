@@ -81,6 +81,10 @@ export function mediaThumbnailUrl(id: string): string {
   return `/api/media/${encodeURIComponent(id)}/thumbnail`
 }
 
+export function mediaPreviewUrl(id: string): string {
+  return `/api/media/${encodeURIComponent(id)}/preview`
+}
+
 export function mediaFileUrl(id: string): string {
   return `/api/media/${encodeURIComponent(id)}/file`
 }

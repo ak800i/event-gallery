@@ -26,6 +26,7 @@ function item(overrides: Partial<MediaItem>): MediaItem {
     width: 1600,
     height: 1200,
     hasThumbnail: true,
+    hasPreview: false,
     uploadedAt: '2026-01-01T00:00:00Z',
     uploaderName: 'Alex',
     likeCount: 0,
@@ -94,6 +95,21 @@ describe('Lightbox media mapping', () => {
     expect(props.slides[0]).toMatchObject({ type: 'image', src: '/api/media/heic-id/thumbnail' })
     // Without a thumbnail there is nothing to fall back to, so try the original.
     expect(props.slides[1]).toMatchObject({ type: 'image', src: '/api/media/no-thumb-id/file' })
+  })
+
+  it('prefers the full-size preview over the thumbnail for HEIC originals', () => {
+    render(
+      <Lightbox
+        items={[item({ id: 'heic-id', mimeType: 'image/heic', hasPreview: true })]}
+        index={0}
+        branding={DEFAULT_BRANDING}
+        onClose={vi.fn()}
+        onIndexChange={vi.fn()}
+      />,
+    )
+
+    const props = lightboxSpy.mock.calls.at(-1)?.[0] as CapturedLightboxProps
+    expect(props.slides[0]).toMatchObject({ type: 'image', src: '/api/media/heic-id/preview' })
   })
 
   it('labels QuickTime videos as mp4 so non-Safari browsers will load them', () => {

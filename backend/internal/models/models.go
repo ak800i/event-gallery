@@ -33,6 +33,7 @@ type MediaItem struct {
 	Height           int
 	DurationSeconds  float64
 	HasThumbnail     bool
+	HasPreview       bool
 	CapturedAt       *time.Time
 	UploadedAt       time.Time
 	ApprovedAt       *time.Time

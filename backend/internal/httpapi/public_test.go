@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -46,6 +47,51 @@ func TestHandleGallery_InvalidCursor(t *testing.T) {
 	rec := doRequest(h, http.MethodGet, "/api/gallery?cursor=not-valid!!", nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandlePreview(t *testing.T) {
+	h := newTestHarness(t)
+	if err := h.store.InsertMedia(context.Background(), &models.MediaItem{
+		ID: "heic-id", OriginalFilename: "IMG_0001.HEIC", StoredFilename: "heic-id.heic",
+		Kind: models.KindImage, MimeType: "image/heic", SizeBytes: 100,
+		SHA256: "heic-sha", HasPreview: true, UploadedAt: time.Now(), UploaderName: "Alice",
+	}); err != nil {
+		t.Fatalf("insert media: %v", err)
+	}
+	if err := os.WriteFile(h.proc.PreviewPath("heic-id"), []byte("preview-bytes"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := doRequest(h, http.MethodGet, "/api/media/heic-id/preview", nil)
+	if rec.Code != http.StatusOK || rec.Body.String() != "preview-bytes" {
+		t.Fatalf("expected the preview to be served, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// A JPEG original is displayable as-is, so it never gets a preview file.
+	insertTestMedia(t, h, "jpeg-id", "jpeg-sha", time.Now())
+	if rec := doRequest(h, http.MethodGet, "/api/media/jpeg-id/preview", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for an item without a preview, got %d", rec.Code)
+	}
+}
+
+func TestGalleryDTOReportsPreviewAvailability(t *testing.T) {
+	h := newTestHarness(t)
+	if err := h.store.InsertMedia(context.Background(), &models.MediaItem{
+		ID: "heic-id", OriginalFilename: "IMG_0001.HEIC", StoredFilename: "heic-id.heic",
+		Kind: models.KindImage, MimeType: "image/heic", SizeBytes: 100,
+		SHA256: "heic-sha", HasPreview: true, UploadedAt: time.Now(), UploaderName: "Alice",
+	}); err != nil {
+		t.Fatalf("insert media: %v", err)
+	}
+
+	rec := doRequest(h, http.MethodGet, "/api/gallery", nil)
+	var resp galleryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Items) != 1 || !resp.Items[0].HasPreview {
+		t.Fatalf("expected hasPreview to survive the round trip, got %+v", resp.Items)
 	}
 }
 

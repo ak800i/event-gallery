@@ -46,13 +46,14 @@ func (s *Store) InsertMedia(ctx context.Context, m *models.MediaItem) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO media_items (
 			id, original_filename, stored_filename, kind, mime_type, size_bytes, sha256,
-			width, height, duration_seconds, has_thumbnail, captured_at, uploaded_at, approved_at,
+			width, height, duration_seconds, has_thumbnail, has_preview, captured_at, uploaded_at, approved_at,
 			uploader_name, uploader_ip, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			CASE WHEN COALESCE((SELECT value FROM app_config WHERE key = ?), 'false') = 'false' THEN ? ELSE NULL END,
 			?, ?, ?)`,
 		m.ID, m.OriginalFilename, m.StoredFilename, string(m.Kind), m.MimeType, m.SizeBytes, m.SHA256,
 		nullableInt(m.Width), nullableInt(m.Height), nullableFloat(m.DurationSeconds), boolToInt(m.HasThumbnail),
+		boolToInt(m.HasPreview),
 		formatTimePtr(m.CapturedAt), formatTime(m.UploadedAt), ConfigKeyApprovalRequired, formatTime(m.UploadedAt),
 		m.UploaderName, m.UploaderIP, string(models.StatusActive),
 	)
@@ -95,6 +96,7 @@ type mediaRow struct {
 	Height           sql.NullInt64
 	DurationSeconds  sql.NullFloat64
 	HasThumbnail     int
+	HasPreview       int
 	CapturedAt       sql.NullString
 	UploadedAt       string
 	ApprovedAt       sql.NullString
@@ -110,7 +112,7 @@ func scanMediaRow(row *sql.Rows) (mediaRow, error) {
 	var r mediaRow
 	err := row.Scan(
 		&r.ID, &r.OriginalFilename, &r.StoredFilename, &r.Kind, &r.MimeType, &r.SizeBytes, &r.SHA256,
-		&r.Width, &r.Height, &r.DurationSeconds, &r.HasThumbnail, &r.CapturedAt, &r.UploadedAt, &r.ApprovedAt,
+		&r.Width, &r.Height, &r.DurationSeconds, &r.HasThumbnail, &r.HasPreview, &r.CapturedAt, &r.UploadedAt, &r.ApprovedAt,
 		&r.UploaderName, &r.UploaderIP, &r.Status, &r.DeletedAt, &r.LikeCount, &r.Liked,
 	)
 	return r, err
@@ -145,6 +147,7 @@ func (r mediaRow) toModel() (models.MediaItem, error) {
 		Height:           int(r.Height.Int64),
 		DurationSeconds:  r.DurationSeconds.Float64,
 		HasThumbnail:     r.HasThumbnail != 0,
+		HasPreview:       r.HasPreview != 0,
 		CapturedAt:       captured,
 		UploadedAt:       uploaded,
 		ApprovedAt:       approved,
@@ -159,7 +162,7 @@ func (r mediaRow) toModel() (models.MediaItem, error) {
 
 const mediaSelectColumns = `
 	m.id, m.original_filename, m.stored_filename, m.kind, m.mime_type, m.size_bytes, m.sha256,
-	m.width, m.height, m.duration_seconds, m.has_thumbnail, m.captured_at, m.uploaded_at, m.approved_at,
+	m.width, m.height, m.duration_seconds, m.has_thumbnail, m.has_preview, m.captured_at, m.uploaded_at, m.approved_at,
 	m.uploader_name, m.uploader_ip, m.status, m.deleted_at,
 	COALESCE((SELECT COUNT(*) FROM likes l WHERE l.media_id = m.id), 0) AS like_count,
 	COALESCE((SELECT 1 FROM likes l2 WHERE l2.media_id = m.id AND l2.device_id = ?), 0) AS liked
@@ -283,7 +286,7 @@ func (s *Store) ListGallery(ctx context.Context, p ListGalleryParams) ([]models.
 		var sortKey string
 		if err := rows.Scan(
 			&r.ID, &r.OriginalFilename, &r.StoredFilename, &r.Kind, &r.MimeType, &r.SizeBytes, &r.SHA256,
-			&r.Width, &r.Height, &r.DurationSeconds, &r.HasThumbnail, &r.CapturedAt, &r.UploadedAt, &r.ApprovedAt,
+			&r.Width, &r.Height, &r.DurationSeconds, &r.HasThumbnail, &r.HasPreview, &r.CapturedAt, &r.UploadedAt, &r.ApprovedAt,
 			&r.UploaderName, &r.UploaderIP, &r.Status, &r.DeletedAt, &r.LikeCount, &r.Liked, &sortKey,
 		); err != nil {
 			return nil, "", fmt.Errorf("scan gallery row: %w", err)

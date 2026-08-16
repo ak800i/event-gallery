@@ -58,7 +58,7 @@ func newIngestFixture(t *testing.T) (*store.Store, *media.Processor) {
 	}
 	t.Cleanup(func() { sqlDB.Close() })
 
-	proc := media.NewProcessor(t.TempDir(), 320, []string{"image/jpeg"}, []string{"video/mp4"})
+	proc := media.NewProcessor(t.TempDir(), 320, 640, []string{"image/jpeg"}, []string{"video/mp4"})
 	if err := proc.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}

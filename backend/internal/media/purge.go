@@ -64,6 +64,10 @@ func (p *Processor) StageForPurge(item models.MediaItem) (*PurgeStage, error) {
 		_ = stage.Restore()
 		return nil, fmt.Errorf("stage thumbnail: %w", err)
 	}
+	if err := moveIfExists(p.PreviewPath(item.ID), stage.previewStagePath()); err != nil {
+		_ = stage.Restore()
+		return nil, fmt.Errorf("stage preview: %w", err)
+	}
 	if err := syncDir(dir); err != nil {
 		_ = stage.Restore()
 		return nil, fmt.Errorf("sync purge stage: %w", err)
@@ -119,6 +123,7 @@ func (s *PurgeStage) originalStagePath() string {
 	return filepath.Join(s.Dir, "original"+filepath.Ext(s.manifest.StoredFilename))
 }
 func (s *PurgeStage) thumbnailStagePath() string { return filepath.Join(s.Dir, "thumbnail.jpg") }
+func (s *PurgeStage) previewStagePath() string   { return filepath.Join(s.Dir, "preview.jpg") }
 func (s *PurgeStage) manifestPath() string       { return filepath.Join(s.Dir, purgeManifestName) }
 
 func (s *PurgeStage) Restore() error {
@@ -128,17 +133,23 @@ func (s *PurgeStage) Restore() error {
 	if err := restoreIfExists(s.thumbnailStagePath(), s.processor.ThumbnailPath(s.manifest.MediaID)); err != nil {
 		return err
 	}
+	if err := restoreIfExists(s.previewStagePath(), s.processor.PreviewPath(s.manifest.MediaID)); err != nil {
+		return err
+	}
 	if err := syncDir(s.processor.OriginalsDir()); err != nil {
 		return err
 	}
 	if err := syncDir(s.processor.ThumbnailsDir()); err != nil {
 		return err
 	}
+	if err := syncDir(s.processor.PreviewsDir()); err != nil {
+		return err
+	}
 	return s.removeManifestAndDir()
 }
 
 func (s *PurgeStage) Finalize() error {
-	for _, path := range []string{s.originalStagePath(), s.thumbnailStagePath()} {
+	for _, path := range []string{s.originalStagePath(), s.thumbnailStagePath(), s.previewStagePath()} {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
