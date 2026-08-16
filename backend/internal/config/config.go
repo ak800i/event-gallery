@@ -94,7 +94,8 @@ type Config struct {
 	SessionTTL time.Duration
 
 	// ThumbnailMaxDimension is the longest edge, in pixels, of generated
-	// thumbnails.
+	// thumbnails. Grid tiles are a few hundred CSS pixels wide but phones
+	// render them at 2-3x device pixel ratio, so 800 visibly softened them.
 	ThumbnailMaxDimension int
 
 	// TrashRetention controls automatic permanent deletion of trashed media;
@@ -276,7 +277,7 @@ func Load() (*Config, error) {
 	}
 	cfg.SessionTTL = time.Duration(sessionTTLMinutes) * time.Minute
 
-	if cfg.ThumbnailMaxDimension, err = envInt("THUMBNAIL_MAX_DIMENSION", 800); err != nil {
+	if cfg.ThumbnailMaxDimension, err = envInt("THUMBNAIL_MAX_DIMENSION", 1600); err != nil {
 		return nil, err
 	}
 	if cfg.TrustedProxyCIDRs, err = envPrefixes("TRUSTED_PROXY_CIDRS"); err != nil {
