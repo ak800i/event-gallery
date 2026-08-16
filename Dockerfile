@@ -24,13 +24,17 @@ COPY --from=frontend-builder /src/frontend/dist/ ./internal/staticui/dist/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
 # --- Stage 3: minimal runtime image -----------------------------------------
-FROM alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS runtime
-# ffmpeg: video thumbnail extraction + probing (see internal/media/video.go)
+FROM alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS runtime
+# ffmpeg: video thumbnail extraction + probing, and the decoder for still
+#         images the pure-Go pipeline can't read (HEIC/HEIF/AVIF -- see
+#         internal/media/ffmpeg_image.go). Must stay >= 7.0: earlier builds
+#         have no HEIF demuxer and reject iPhone HEIC with "moov atom not
+#         found", leaving those uploads without a thumbnail.
 # tzdata: makes the TZ env var (e.g. Europe/Belgrade) meaningful for the app
 #         and for ffmpeg-derived timestamps.
 # ca-certificates: not strictly required today (no outbound TLS calls), but
 #         keeps the image ready for that without a rebuild.
-RUN apk add --no-cache ffmpeg=6.1.2-r2 tzdata=2026c-r0 ca-certificates=20260611-r0
+RUN apk add --no-cache ffmpeg=8.1.2-r0 tzdata=2026c-r0 ca-certificates=20260611-r0
 
 WORKDIR /app
 COPY --from=backend-builder /out/server /app/server
