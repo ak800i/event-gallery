@@ -9,6 +9,28 @@ import (
 	"time"
 )
 
+// A tiled HEIC can only be scaled through a complex filtergraph, and ffmpeg
+// has no HEIC muxer so no such fixture can be generated here. Pin the flag
+// itself: with -vf, ffmpeg writes no thumbnail at all for iPhone photos.
+func TestImageThumbnailArgsUseComplexFiltering(t *testing.T) {
+	args := imageThumbnailArgs("/in.heic", "/out.jpg", 1600)
+	var filterFlag, filterValue string
+	for i, a := range args {
+		if a == "-vf" || a == "-filter_complex" {
+			filterFlag = a
+			if i+1 < len(args) {
+				filterValue = args[i+1]
+			}
+		}
+	}
+	if filterFlag != "-filter_complex" {
+		t.Errorf("scaling must use -filter_complex, got %q", filterFlag)
+	}
+	if filterValue != "scale='min(1600,iw)':'min(1600,ih)':force_original_aspect_ratio=decrease" {
+		t.Errorf("unexpected scale filter %q", filterValue)
+	}
+}
+
 func TestOrientImageDimensions(t *testing.T) {
 	cases := []struct {
 		name           string
