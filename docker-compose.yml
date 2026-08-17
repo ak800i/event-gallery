@@ -3,7 +3,7 @@ name: event-gallery
 services:
   app:
     image: ghcr.io/ak800i/event-gallery:${APP_IMAGE_TAG:-latest}
-    restart: unless-stopped
+    restart: always
     user: "${PUID:-1000}:${PGID:-1000}"
     read_only: true
     stop_grace_period: 30s
