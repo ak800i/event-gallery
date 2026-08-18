@@ -62,6 +62,27 @@ export function Gallery({ branding, refreshRequest }: GalleryProps) {
     if (openIndex !== null && hasMore && !loading && openIndex >= items.length - 5) loadMore()
   }, [hasMore, items.length, loadMore, loading, openIndex])
 
+  // An open photo gets its own history entry so Back -- including Android's
+  // hardware button -- closes the photo instead of leaving the gallery. Keyed
+  // on open/closed rather than the index, so swiping costs no extra entries.
+  const lightboxOpen = openIndex !== null
+  useEffect(() => {
+    if (!lightboxOpen) return
+    let closedByBrowser = false
+    window.history.pushState({ eventGalleryLightbox: true }, '')
+    const handlePopState = () => {
+      closedByBrowser = true
+      setOpenIndex(null)
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => {
+      window.removeEventListener('popstate', handlePopState)
+      // Closing from the UI leaves the entry behind; drop it so leaving the
+      // gallery still takes a single Back.
+      if (!closedByBrowser) window.history.back()
+    }
+  }, [lightboxOpen])
+
   useEffect(() => {
     if (refreshRequest.id === 0 || refreshRequest.expectedUploads === 0) return
     let cancelled = false

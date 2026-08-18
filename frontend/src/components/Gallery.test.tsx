@@ -161,3 +161,107 @@ describe('Gallery', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 })
+
+// Without a history entry of its own, the open lightbox is invisible to the
+// browser, so Back leaves the gallery entirely instead of closing the photo --
+// which on a phone reads as the site quitting under you.
+describe('Gallery lightbox history integration', () => {
+  beforeEach(() => {
+    vi.mocked(apiClient.fetchGallery).mockReset()
+    vi.restoreAllMocks()
+  })
+
+  async function openFirstPhoto(user: { click: (el: Element) => Promise<void> }) {
+    const openButton = (await screen.findAllByRole('button', { name: /open/i }))[0]
+    await act(async () => {
+      await user.click(openButton)
+    })
+    return screen.findByRole('dialog')
+  }
+
+  function twoItems() {
+    return {
+      items: [makeItem({ id: 'id1' }), makeItem({ id: 'id2', originalFilename: 'second.jpg' })],
+      nextCursor: '',
+    }
+  }
+
+  it('pushes a history entry when a photo opens so Back has something to pop', async () => {
+    vi.mocked(apiClient.fetchGallery).mockResolvedValue(twoItems())
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const { default: userEvent } = await import('@testing-library/user-event')
+
+    renderGallery()
+    await openFirstPhoto(userEvent.setup())
+
+    expect(pushState).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes the photo instead of navigating away when the browser goes back', async () => {
+    vi.mocked(apiClient.fetchGallery).mockResolvedValue(twoItems())
+    const { default: userEvent } = await import('@testing-library/user-event')
+
+    renderGallery()
+    await openFirstPhoto(userEvent.setup())
+
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  // A back-button close has already consumed the entry. Popping again would
+  // navigate off the gallery -- reintroducing the exact bug being fixed.
+  it('does not pop a second entry when the close came from the browser', async () => {
+    vi.mocked(apiClient.fetchGallery).mockResolvedValue(twoItems())
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { default: userEvent } = await import('@testing-library/user-event')
+
+    renderGallery()
+    await openFirstPhoto(userEvent.setup())
+
+    await act(async () => {
+      window.dispatchEvent(new PopStateEvent('popstate'))
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    expect(back).not.toHaveBeenCalled()
+  })
+
+  // Closing from the UI leaves our entry on the stack; without dropping it the
+  // user would have to press Back twice to leave the gallery.
+  it('pops its own entry when the photo is closed from the UI', async () => {
+    vi.mocked(apiClient.fetchGallery).mockResolvedValue(twoItems())
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+
+    renderGallery()
+    await openFirstPhoto(user)
+
+    await act(async () => {
+      await user.click(screen.getByRole('button', { name: /close/i }))
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    expect(back).toHaveBeenCalledTimes(1)
+  })
+
+  // One entry per viewing session: swiping through twenty photos must not cost
+  // twenty presses of Back to get out.
+  it('keeps a single entry while navigating between photos', async () => {
+    vi.mocked(apiClient.fetchGallery).mockResolvedValue(twoItems())
+    const pushState = vi.spyOn(window.history, 'pushState')
+    const { default: userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+
+    renderGallery()
+    await openFirstPhoto(user)
+    await act(async () => {
+      await user.click(screen.getByRole('button', { name: /next/i }))
+    })
+
+    expect(pushState).toHaveBeenCalledTimes(1)
+  })
+})
