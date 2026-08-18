@@ -502,6 +502,13 @@ select {
   border-radius: 0;
 }
 
+/* Positioned so the video, and the native controls inside it, paint over the
+ * footer. Without this the container is in-flow and the footer always wins. */
+.event-lightbox .yarl__video_container {
+  position: relative;
+  z-index: 1;
+}
+
 .lightbox-footer {
   position: absolute;
   z-index: 2;
@@ -522,7 +529,9 @@ select {
 }
 
 .lightbox-footer-video {
-  bottom: calc(3.5rem + env(safe-area-inset-bottom));
+  /* Below the video, but still positioned, so the like and download buttons
+   * stay clickable wherever the video does not cover them. */
+  z-index: 0;
 }
 
 .lightbox-uploader {
