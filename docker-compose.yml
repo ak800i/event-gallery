@@ -21,13 +21,18 @@ services:
       STORAGE_CLEANUP_INTERVAL_MINUTES: "${STORAGE_CLEANUP_INTERVAL_MINUTES:-60}"
       TRUSTED_PROXY_CIDRS: "${EDGE_SUBNET:-172.30.0.0/24}"
       MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-5368709120}"
+      # Empty means "unset": the app applies its own default pixel ceiling above
+      # which a still is thumbnailed by ffmpeg rather than decoded in-process.
+      IMAGE_DECODE_MAX_PIXELS: "${IMAGE_DECODE_MAX_PIXELS:-}"
       PUBLIC_RATE_LIMIT_PER_MINUTE: "${PUBLIC_RATE_LIMIT_PER_MINUTE:-12000}"
       PUBLIC_RATE_LIMIT_BURST: "${PUBLIC_RATE_LIMIT_BURST:-3000}"
       UPLOAD_CONCURRENCY_PER_IP: "${UPLOAD_CONCURRENCY_PER_IP:-50}"
       UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC: "${UPLOAD_BANDWIDTH_PER_IP_BYTES_PER_SEC:-1073741824}"
       # Empty means "unset": the app then sizes the pool from the CPUs it can
       # actually use. A literal default here would shadow that and pin the pool
-      # no matter how much CPU the host has.
+      # no matter how much CPU the host has. On a memory-constrained host, set
+      # this alongside APP_MEM_LIMIT -- a media worker can hold a decoded still
+      # plus its ffmpeg child.
       MEDIA_PROCESSING_WORKERS: "${MEDIA_PROCESSING_WORKERS:-}"
       MEDIA_PROCESSING_TIMEOUT_MINUTES: "${MEDIA_PROCESSING_TIMEOUT_MINUTES:-60}"
       # Must stay below the 90s -hooks-http-timeout in deploy/tusd-entrypoint.sh;
@@ -58,7 +63,15 @@ services:
         source: "${TUS_UPLOAD_PATH:?Set TUS_UPLOAD_PATH to an existing host directory}"
         target: /data/tusd-incoming
     tmpfs:
-      - /tmp:size=256m,mode=1777
+      # tmpfs pages are charged to the container's memory cgroup, so shrink
+      # this via APP_TMPFS_SIZE whenever APP_MEM_LIMIT is set below it.
+      - /tmp:size=${APP_TMPFS_SIZE:-256m},mode=1777
+    # All three default to 0, which Docker reads as "unset" -- no limit, exactly
+    # as before these keys existed. Set APP_MEMSWAP_LIMIT equal to APP_MEM_LIMIT
+    # to keep the container out of host swap rather than letting it spill.
+    mem_limit: "${APP_MEM_LIMIT:-0}"
+    memswap_limit: "${APP_MEMSWAP_LIMIT:-0}"
+    mem_reservation: "${APP_MEM_RESERVATION:-0}"
     networks:
       - edge
       - uploads
@@ -74,7 +87,10 @@ services:
 
   tusd:
     image: ghcr.io/ak800i/event-gallery-tusd:${APP_IMAGE_TAG:-latest}
-    restart: unless-stopped
+    # always, not unless-stopped: when dockerd itself dies it kills the
+    # containers and flags them manually-stopped, so unless-stopped never
+    # brings them back.
+    restart: always
     user: "${PUID:-1000}:${PGID:-1000}"
     read_only: true
     stop_grace_period: 30s
@@ -92,7 +108,9 @@ services:
         source: "${TUS_UPLOAD_PATH:?Set TUS_UPLOAD_PATH to an existing host directory}"
         target: /data/tusd-incoming
     tmpfs:
-      - /tmp:size=64m,mode=1777
+      - /tmp:size=${TUSD_TMPFS_SIZE:-64m},mode=1777
+    mem_limit: "${TUSD_MEM_LIMIT:-0}"
+    memswap_limit: "${TUSD_MEMSWAP_LIMIT:-0}"
     networks:
       - uploads
     healthcheck:
@@ -104,7 +122,8 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:2026.7.2
-    restart: unless-stopped
+    # See tusd above.
+    restart: always
     read_only: true
     security_opt:
       - no-new-privileges:true
