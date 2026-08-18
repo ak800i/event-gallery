@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"time"
 )
 
@@ -16,6 +17,7 @@ import (
 type ImageProbe struct {
 	CodedWidth  int
 	CodedHeight int
+	Codec       string
 	CapturedAt  *time.Time
 }
 
@@ -31,6 +33,7 @@ func ProbeImage(ctx context.Context, path string) (*ImageProbe, error) {
 	for _, s := range out.Streams {
 		if s.CodecType == "video" && p.CodedWidth == 0 {
 			p.CodedWidth, p.CodedHeight = s.Width, s.Height
+			p.Codec = s.CodecName
 		}
 	}
 	// A tiled still's streams are individual tiles, so the loop above finds
@@ -110,6 +113,30 @@ func orientImageDimensions(codedW, codedH, thumbW, thumbH int) (int, int) {
 	return codedW, codedH
 }
 
+// lowresLevel picks a libavcodec `-lowres` level for a still: the decoder
+// emits the frame at 1/2^level directly from the DCT coefficients, so a 48 MP
+// JPEG costs 54 MB instead of 191 MB. Only codecs whose decoders implement
+// lowres qualify -- HEVC and AV1, which back HEIC/AVIF, do not -- and the
+// level never shrinks the longest edge below maxDimension, so the thumbnail
+// is bit-for-bit the size it would have been at full decode.
+func lowresLevel(codec string, codedW, codedH, maxDimension int) int {
+	if codec != "mjpeg" || maxDimension <= 0 {
+		return 0
+	}
+	longest := codedW
+	if codedH > longest {
+		longest = codedH
+	}
+	level := 0
+	for level < maxLowresLevel && (longest>>(level+1)) >= maxDimension {
+		level++
+	}
+	return level
+}
+
+// maxLowresLevel is libavcodec's ceiling for the mjpeg decoder.
+const maxLowresLevel = 3
+
 // imageThumbnailArgs builds the ffmpeg invocation for scaling a still image.
 //
 // The scale must be attached with -filter_complex rather than -vf. iPhone HEIC
@@ -118,26 +145,43 @@ func orientImageDimensions(codedW, codedH, thumbW, thumbH int) (int, int) {
 // stream -- ffmpeg fails the whole run with "Simple and complex filtering
 // cannot be used together for the same stream" and no thumbnail is written.
 // The complex form is equivalent for every other still we decode here.
-func imageThumbnailArgs(srcPath, dstPath string, maxDimension int) []string {
+//
+// lowres, when non-zero, must precede -i: it is an input decoder option.
+func imageThumbnailArgs(srcPath, dstPath string, maxDimension, lowres int) []string {
 	scaleFilter := fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease", maxDimension, maxDimension)
-	return []string{
-		"-y",
+	args := []string{"-y"}
+	if lowres > 0 {
+		args = append(args, "-lowres", strconv.Itoa(lowres))
+	}
+	return append(args,
 		"-i", srcPath,
 		"-filter_complex", scaleFilter,
 		"-frames:v", "1",
 		"-q:v", "3",
 		dstPath,
-	}
+	)
 }
 
 // GenerateImageThumbnailFFmpeg renders a single scaled JPEG frame from an
 // image ffmpeg can decode, using the same scale filter and quality as the
 // video thumbnail path. Bounded by a 30s context timeout.
-func GenerateImageThumbnailFFmpeg(ctx context.Context, srcPath, dstPath string, maxDimension int) error {
+//
+// A lowres attempt is retried at full resolution on failure: lowres support is
+// a property of the local build's decoder, and a thumbnail that costs more
+// memory beats no thumbnail at all.
+func GenerateImageThumbnailFFmpeg(ctx context.Context, srcPath, dstPath string, maxDimension, lowres int) error {
+	err := runImageThumbnail(ctx, srcPath, dstPath, maxDimension, lowres)
+	if err != nil && lowres > 0 {
+		return runImageThumbnail(ctx, srcPath, dstPath, maxDimension, 0)
+	}
+	return err
+}
+
+func runImageThumbnail(ctx context.Context, srcPath, dstPath string, maxDimension, lowres int) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", imageThumbnailArgs(srcPath, dstPath, maxDimension)...)
+	cmd := exec.CommandContext(ctx, "ffmpeg", imageThumbnailArgs(srcPath, dstPath, maxDimension, lowres)...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

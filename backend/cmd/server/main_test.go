@@ -113,7 +113,7 @@ func TestNewServerWithIngestAttachesTheManager(t *testing.T) {
 	}
 	t.Cleanup(func() { sqlDB.Close() })
 
-	proc := media.NewProcessor(mediaDir, 200, 400, []string{"image/jpeg"}, []string{"video/mp4"})
+	proc := media.NewProcessor(mediaDir, 200, 400, []string{"image/jpeg"}, []string{"video/mp4"}, 0)
 	if err := proc.EnsureDirs(); err != nil {
 		t.Fatalf("ensure media dirs: %v", err)
 	}

@@ -30,6 +30,23 @@ func ImageDimensions(path string) (width, height int, err error) {
 	return cfg.Width, cfg.Height, nil
 }
 
+// shouldDecodeInProcess reports whether the pure-Go thumbnail path may decode
+// this still. imaging.Open materializes the entire image as 4-bytes-per-pixel
+// NRGBA -- a 48 MP photo is 194 MB in a single allocation, which no GOMEMLIMIT
+// can refuse -- so above maxPixels the caller routes to the ffmpeg child
+// instead, whose peak is smaller and reclaimed the moment it exits.
+// maxPixels <= 0 disables the guard.
+func shouldDecodeInProcess(path string, maxPixels int64) bool {
+	if maxPixels <= 0 {
+		return true
+	}
+	w, h, err := ImageDimensions(path)
+	if err != nil {
+		return true
+	}
+	return int64(w)*int64(h) <= maxPixels
+}
+
 // GenerateImageThumbnail creates a JPEG thumbnail of the source image, with
 // its longest edge scaled down to maxDimension (smaller images are left
 // unchanged), honoring EXIF orientation. It also returns the original

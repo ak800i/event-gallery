@@ -11,7 +11,7 @@ import (
 
 func newTestProcessor(t *testing.T) *Processor {
 	t.Helper()
-	p := NewProcessor(t.TempDir(), 320, 640, []string{"image/jpeg"}, nil)
+	p := NewProcessor(t.TempDir(), 320, 640, []string{"image/jpeg"}, nil, 0)
 	if err := p.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}

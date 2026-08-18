@@ -20,17 +20,22 @@ type Processor struct {
 	PreviewMaxDimension   int
 	AllowedImageMIMEs     []string
 	AllowedVideoMIMEs     []string
+
+	// DecodeMaxPixels caps the pixel count a still may have before the
+	// in-process decoder is bypassed for ffmpeg. Zero disables the cap.
+	DecodeMaxPixels int64
 }
 
 // NewProcessor constructs a Processor. mediaDir is the root of the host's
 // persistent media bind mount.
-func NewProcessor(mediaDir string, thumbnailMaxDimension, previewMaxDimension int, allowedImages, allowedVideos []string) *Processor {
+func NewProcessor(mediaDir string, thumbnailMaxDimension, previewMaxDimension int, allowedImages, allowedVideos []string, decodeMaxPixels int64) *Processor {
 	return &Processor{
 		MediaDir:              mediaDir,
 		ThumbnailMaxDimension: thumbnailMaxDimension,
 		PreviewMaxDimension:   previewMaxDimension,
 		AllowedImageMIMEs:     allowedImages,
 		AllowedVideoMIMEs:     allowedVideos,
+		DecodeMaxPixels:       decodeMaxPixels,
 	}
 }
 
@@ -128,7 +133,9 @@ func (p *Processor) Derive(ctx context.Context, finalPath, id string, kind model
 		// A missing thumbnail means ffmpeg could not decode this file at all,
 		// so a second attempt at a larger size would only burn another timeout.
 		if result.HasThumbnail && NeedsPreview(mimeType) {
-			if err := GenerateImageThumbnailFFmpeg(ctx, finalPath, p.PreviewPath(id), p.PreviewMaxDimension); err == nil {
+			// Previews only exist for HEIC/HEIF, whose HEVC decoder has no
+			// lowres support, so there is nothing to ask for here.
+			if err := GenerateImageThumbnailFFmpeg(ctx, finalPath, p.PreviewPath(id), p.PreviewMaxDimension, 0); err == nil {
 				result.HasPreview = true
 			}
 		}
@@ -138,25 +145,38 @@ func (p *Processor) Derive(ctx context.Context, finalPath, id string, kind model
 	return result
 }
 
+// Swapped in tests to prove an oversized still never reaches the in-process
+// decoder; both paths otherwise produce an indistinguishable thumbnail.
+var generateImageThumbnail = GenerateImageThumbnail
+
 func (p *Processor) processImage(ctx context.Context, finalPath, id string, result *Result) {
 	thumbPath := p.ThumbnailPath(id)
 
-	// Fast path: pure-Go decode (jpeg/png/gif/webp).
-	if width, height, err := GenerateImageThumbnail(finalPath, thumbPath, p.ThumbnailMaxDimension); err == nil {
-		result.Width, result.Height = width, height
-		result.HasThumbnail = true
-		if capturedAt, err := ImageCapturedAt(finalPath); err == nil && capturedAt != nil {
-			result.CapturedAt = capturedAt
+	// Fast path: pure-Go decode (jpeg/png/gif/webp), skipped for stills large
+	// enough that decoding in-process would dominate the memory budget.
+	if shouldDecodeInProcess(finalPath, p.DecodeMaxPixels) {
+		if width, height, err := generateImageThumbnail(finalPath, thumbPath, p.ThumbnailMaxDimension); err == nil {
+			result.Width, result.Height = width, height
+			result.HasThumbnail = true
+			if capturedAt, err := ImageCapturedAt(finalPath); err == nil && capturedAt != nil {
+				result.CapturedAt = capturedAt
+			}
+			return
 		}
-		return
 	}
 
 	// Fallback: formats the pure-Go pipeline can't decode (AVIF/HEIC/HEIF, or
-	// otherwise-undecodable images) go through ffmpeg/ffprobe. Non-fatal:
-	// on any failure the item is still ingested, just without a thumbnail.
+	// otherwise-undecodable images), plus anything the guard above diverted,
+	// go through ffmpeg/ffprobe. Non-fatal: on any failure the item is still
+	// ingested, just without a thumbnail.
 	probe, probeErr := ProbeImage(ctx, finalPath)
 
-	if err := GenerateImageThumbnailFFmpeg(ctx, finalPath, thumbPath, p.ThumbnailMaxDimension); err == nil {
+	lowres := 0
+	if probeErr == nil {
+		lowres = lowresLevel(probe.Codec, probe.CodedWidth, probe.CodedHeight, p.ThumbnailMaxDimension)
+	}
+
+	if err := GenerateImageThumbnailFFmpeg(ctx, finalPath, thumbPath, p.ThumbnailMaxDimension, lowres); err == nil {
 		result.HasThumbnail = true
 		// Original display dimensions come only from the probe. If the probe
 		// failed, leave Width/Height unset rather than persisting the scaled

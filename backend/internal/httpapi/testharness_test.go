@@ -37,7 +37,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	t.Cleanup(func() { sqlDB.Close() })
 	st := store.New(sqlDB)
 
-	proc := media.NewProcessor(filepath.Join(dir, "media"), 200, 400, []string{"image/jpeg", "image/png"}, []string{"video/mp4"})
+	proc := media.NewProcessor(filepath.Join(dir, "media"), 200, 400, []string{"image/jpeg", "image/png"}, []string{"video/mp4"}, 0)
 	if err := proc.EnsureDirs(); err != nil {
 		t.Fatalf("ensure dirs: %v", err)
 	}

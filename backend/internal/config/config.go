@@ -102,6 +102,11 @@ type Config struct {
 	// viewable JPEG derived for formats browsers cannot decode (HEIC/HEIF).
 	PreviewMaxDimension int
 
+	// ImageDecodeMaxPixels caps the pixel count of a still the in-process
+	// decoder may handle; larger images are thumbnailed by ffmpeg instead,
+	// which costs far less than 4 bytes per pixel. Zero disables the cap.
+	ImageDecodeMaxPixels int64
+
 	// TrashRetention controls automatic permanent deletion of trashed media;
 	// zero disables automatic purge while keeping the admin purge action.
 	TrashRetention time.Duration
@@ -159,6 +164,15 @@ func defaultMediaWorkers() int {
 func defaultDurabilityWorkers() int {
 	return min(max(2*runtime.GOMAXPROCS(0), 2), 8)
 }
+
+// defaultImageDecodeMaxPixels is the ceiling above which a still is handed to
+// ffmpeg rather than decoded in-process. The in-process decoder materializes
+// the whole image at 4 bytes per pixel; measured container peaks for a single
+// worker producing a 1600px thumbnail were 71 MB at 12 MP, 85 MB at 16 MP and
+// 185 MB at 48 MP, against 59 MB for the same 48 MP file through ffmpeg. 16 MP
+// keeps the common phone photo on the higher-quality Lanczos path and sends
+// only the outliers -- whose thumbnails are indistinguishable -- to ffmpeg.
+const defaultImageDecodeMaxPixels = 16_000_000
 
 func envInt(key string, def int) (int, error) {
 	v, ok := os.LookupEnv(key)
@@ -287,6 +301,9 @@ func Load() (*Config, error) {
 	if cfg.PreviewMaxDimension, err = envInt("PREVIEW_MAX_DIMENSION", 2048); err != nil {
 		return nil, err
 	}
+	if cfg.ImageDecodeMaxPixels, err = envInt64("IMAGE_DECODE_MAX_PIXELS", defaultImageDecodeMaxPixels); err != nil {
+		return nil, err
+	}
 	if cfg.TrustedProxyCIDRs, err = envPrefixes("TRUSTED_PROXY_CIDRS"); err != nil {
 		return nil, err
 	}
@@ -389,6 +406,9 @@ func (c *Config) Validate() error {
 	}
 	if c.UploadConcurrencyPerIP <= 0 {
 		return fmt.Errorf("UPLOAD_CONCURRENCY_PER_IP must be positive")
+	}
+	if c.ImageDecodeMaxPixels < 0 {
+		return fmt.Errorf("IMAGE_DECODE_MAX_PIXELS must not be negative")
 	}
 	if c.TrashRetention < 0 {
 		return fmt.Errorf("TRASH_RETENTION_DAYS must not be negative")

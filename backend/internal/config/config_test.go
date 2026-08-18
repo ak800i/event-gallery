@@ -21,7 +21,7 @@ func clearEnv(t *testing.T) {
 		"UPLOAD_DURABILITY_WAIT_SECONDS", "UPLOAD_DURABILITY_WORKERS",
 		"UPLOAD_RETRY_MAX_BACKOFF_MINUTES", "INGEST_RECONCILE_INTERVAL_SECONDS",
 		"INGEST_MIN_FREE_BYTES", "UPLOAD_JOB_RETENTION_DAYS",
-		"UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE",
+		"UPLOAD_STATUS_RATE_LIMIT_PER_MINUTE", "IMAGE_DECODE_MAX_PIXELS",
 	}
 	for _, k := range keys {
 		t.Setenv(k, "")
@@ -162,6 +162,53 @@ func TestLoad_RejectsNegativeRetention(t *testing.T) {
 	t.Setenv("TRASH_RETENTION_DAYS", "-1")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected negative retention error")
+	}
+}
+
+// The cap is a property of the binary, not of any one deployment's compose
+// file, so an unset value must still protect against a 48 MP decode.
+func TestLoad_ImageDecodeMaxPixels(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("ADMIN_PASSWORD", "supersecretpassword")
+	t.Setenv("TUS_HOOK_SECRET", "supersecrethookvalue")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ImageDecodeMaxPixels != defaultImageDecodeMaxPixels {
+		t.Errorf("default ImageDecodeMaxPixels = %d, want %d", cfg.ImageDecodeMaxPixels, defaultImageDecodeMaxPixels)
+	}
+	// A 48 MP still must fall outside the default, a 12 MP one inside it.
+	if defaultImageDecodeMaxPixels >= 8000*6000 {
+		t.Errorf("default %d must exclude a 48 MP still", defaultImageDecodeMaxPixels)
+	}
+	if defaultImageDecodeMaxPixels < 4032*3024 {
+		t.Errorf("default %d must admit a 12 MP phone photo", defaultImageDecodeMaxPixels)
+	}
+
+	t.Setenv("IMAGE_DECODE_MAX_PIXELS", "12000000")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load with override: %v", err)
+	}
+	if cfg.ImageDecodeMaxPixels != 12000000 {
+		t.Errorf("ImageDecodeMaxPixels = %d, want 12000000", cfg.ImageDecodeMaxPixels)
+	}
+
+	// Zero is the documented escape hatch back to always decoding in-process.
+	t.Setenv("IMAGE_DECODE_MAX_PIXELS", "0")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load with cap disabled: %v", err)
+	}
+	if cfg.ImageDecodeMaxPixels != 0 {
+		t.Errorf("ImageDecodeMaxPixels = %d, want 0", cfg.ImageDecodeMaxPixels)
+	}
+
+	t.Setenv("IMAGE_DECODE_MAX_PIXELS", "-1")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected negative IMAGE_DECODE_MAX_PIXELS to be rejected")
 	}
 }
 
